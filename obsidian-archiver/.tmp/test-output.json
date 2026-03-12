@@ -1,0 +1,29 @@
+{
+    "title":  "Title: Example Domain",
+    "source_type":  "manual",
+    "author":  "example.com",
+    "published":  "2026-03-12T17:08:09.413160",
+    "normalized_text":  "URL Source: https://example.com/\n\nPublished Time: Wed, 11 Mar 2026 19:08:51 GMT\n\nWarning: This is a cached snapshot of the original page, consider retry with caching opt-out.\n\nMarkdown Content:\nThis domain is for use in documentation examples without needing permission. Avoid use in operations.\n\n[Learn more](https://iana.org/domains/example)",
+    "tags":  [
+
+             ],
+    "summary":  "URL Source: https://example.com/\n\nPublished Time: Wed, 11 Mar 2026 19:08:51 GMT\n\nWarning: This is a cached snapshot of the original page, consider retry with caching opt-out.\n\nMarkdown Content:\nThis domain is for use in documentation examples without needing permission. Avoid use...",
+    "key_points":  [
+                       "URL Source: https://example.com/",
+                       "Published Time: Wed, 11 Mar 2026 19:08:51 GMT",
+                       "Warning: This is a cached snapshot of the original page, consider retry with caching opt-out."
+                   ],
+    "metadata":  {
+                     "url":  "https://example.com",
+                     "fetched_at":  "2026-03-12T17:08:09.413160",
+                     "media_type":  "text",
+                     "priority":  "normal",
+                     "category":  "",
+                     "extra":  {
+
+                               },
+                     "inbox_path":  "E:\\Codex_project\\obsidian-skillkit\\obsidian-archiver\\scripts\\..\\.x-reader-runtime\\unified_inbox.json",
+                     "stdout_path":  "E:\\Codex_project\\obsidian-skillkit\\obsidian-archiver\\scripts\\..\\.x-reader-runtime\\x-reader.stdout.log",
+                     "stderr_path":  "E:\\Codex_project\\obsidian-skillkit\\obsidian-archiver\\scripts\\..\\.x-reader-runtime\\x-reader.stderr.log"
+                 }
+}

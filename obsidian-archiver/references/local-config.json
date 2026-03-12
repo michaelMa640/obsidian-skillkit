@@ -1,0 +1,25 @@
+﻿{
+  "x_reader": {
+    "mode": "command",
+    "command": "powershell",
+    "args": [
+      "-ExecutionPolicy",
+      "Bypass",
+      "-File",
+      "E:/Codex_project/obsidian-skillkit/obsidian-archiver/scripts/invoke_x_reader.ps1",
+      "-InputJson",
+      "{input_json}",
+      "-OutputJson",
+      "{output_json}"
+    ]
+  },
+  "obsidian": {
+    "mode": "filesystem",
+    "vault_path": ""
+  },
+  "archiver": {
+    "default_folder": "Inbox",
+    "default_tag": "captured",
+    "prefix_date": true
+  }
+}
