@@ -1,0 +1,22 @@
+{
+  "x_reader": {
+    "mode": "mock",
+    "command": "python",
+    "args": [
+      "path/to/your_x_reader_entry.py",
+      "--input-json",
+      "{input_json}",
+      "--output-json",
+      "{output_json}"
+    ]
+  },
+  "obsidian": {
+    "mode": "filesystem",
+    "vault_path": "E:/Path/To/Your/ObsidianVault"
+  },
+  "archiver": {
+    "default_folder": "Inbox",
+    "default_tag": "captured",
+    "prefix_date": true
+  }
+}

@@ -1,92 +1,113 @@
 ---
 name: obsidian-archiver
-description: Capture, analyze, classify, and archive user-provided multi-format content into an Obsidian vault by combining OpenClaw workflows with x-reader extraction. Use when Codex needs to ingest URLs, webpages, copied text, PDFs, images, local documents, transcripts, or other readable sources, turn them into structured notes, choose the best category folder automatically, and create a new Markdown article in the appropriate Obsidian location.
+description: Orchestrate content capture and archival into Obsidian when OpenClaw receives a command from any connected IM tool and needs to route the task through x-reader for extraction and metadata normalization, then use Obsidian note operations to create a classified Markdown note in the correct vault folder. Use when Codex is acting as the workflow layer between OpenClaw, x-reader, and Obsidian.
 ---
 
 # Obsidian Archiver
 
 ## Overview
 
-Use this skill to turn raw sources into durable Obsidian notes.
+Use this skill as an orchestration layer, not as a standalone extractor.
 
-The goal is consistent intake:
-- Extract normalized content and metadata through the local OpenClaw + x-reader workflow.
-- Analyze the source for topic, type, intent, and long-term value.
-- Choose the best destination folder in the target vault.
-- Create one new Markdown note with a clean title, source metadata, summary, insights, and follow-up items.
+The intended runtime chain is:
+- User sends a command from any IM tool already connected to OpenClaw.
+- Local OpenClaw receives the command.
+- OpenClaw invokes this skill.
+- This skill calls the local x-reader entrypoint to extract text and metadata.
+- This skill organizes the content into an Obsidian-ready note.
+- This skill uses the local Obsidian workflow to write the note into the vault.
 
-If the vault structure is unclear, inspect the vault first and adapt to the folders that already exist instead of inventing a new taxonomy.
+This skill should not vendor x-reader source code into the skill folder. Treat x-reader as an external dependency that must already be installed or otherwise reachable from the local OpenClaw environment.
+
+## System role
+
+Responsibilities of each layer:
+- IM tool: user-facing command entry
+- OpenClaw: command routing, tool invocation, environment ownership
+- `obsidian-archiver`: workflow logic, note synthesis, classification, handoff between tools
+- x-reader: source reading, OCR, parsing, metadata extraction
+- Obsidian integration: note creation, append, move, and vault-aware storage
+
+Keep these responsibilities separate. Do not duplicate x-reader extraction logic inside this skill unless the user explicitly asks to replace x-reader.
+
+## Preconditions
+
+Before using this skill, confirm:
+- OpenClaw is already connected to at least one IM tool and can receive local commands.
+- x-reader is already deployed locally and has a known callable entrypoint.
+- The target Obsidian vault is reachable from the same local environment.
+- The Obsidian write path is already solved, either through the official `obsidian` CLI or direct file creation inside the vault.
+
+If any dependency is missing, stop and report the missing layer instead of inventing one.
 
 ## Workflow
 
-### 1. Identify the source
+### 1. Accept the OpenClaw task
 
-Accept any source that x-reader can help normalize, such as:
-- URL or webpage
-- Copied text or pasted transcript
-- PDF or Office document
-- Image that requires OCR
-- Local file path
-- Existing note that needs to be reorganized into a permanent article
+The input normally comes from OpenClaw, not directly from the end user.
 
-Record the source form before extraction. Preserve the original URL or file path whenever available.
+Expected incoming task payload may include:
+- raw user instruction from the connected IM tool
+- source URL, file path, pasted text, or attachment reference
+- target vault hint
+- optional preferred category or tag hint
 
-### 2. Use the local OpenClaw + x-reader entrypoint
+If OpenClaw provides only partial input, continue with best effort and mark unknown fields explicitly.
 
-Do not invent x-reader commands.
+### 2. Resolve the local x-reader entrypoint
 
-Instead:
-- Search the current workspace or the user's provided repo/config for the actual OpenClaw or x-reader entrypoint.
-- Prefer an existing script, task runner, MCP wrapper, or documented command over handwritten one-off extraction code.
-- If multiple entrypoints exist, choose the one that already outputs clean text plus metadata.
+Do not guess a command.
 
-Target output from extraction:
-- canonical text
+Find the real local integration point first:
+- existing OpenClaw tool wrapper
+- shell command
+- Python entry script
+- MCP server action
+- HTTP endpoint on localhost
+
+Prefer the integration that already returns structured metadata.
+
+Expected x-reader output should include as much of the following as possible:
+- normalized text
 - title
-- author or channel if available
+- source type
 - source URL or file path
-- publish date if available
+- author, site, or channel
+- publish date
+- extracted metadata fields
+
+### 3. Normalize the content for archival
+
+Convert the x-reader output into an archive-ready representation.
+
+Always preserve:
+- original source reference
+- capture date
 - content type
-- any useful structured fields already returned by x-reader
+- extracted title or fallback title
+- summary
+- key points
+- tags
 
-If extraction is partial, continue with the best available content and clearly mark missing metadata as unknown.
+Prefer synthesis over raw dumps. Only preserve the full original text when the user explicitly wants transcript-style archival.
 
-### 3. Analyze before filing
+### 4. Classify the destination
 
-Summarize the source into durable knowledge, not a raw dump.
+Inspect the target vault structure before choosing a folder.
 
-Extract:
-- what the source is
-- what problem or question it addresses
-- the main claims, arguments, or instructions
-- useful facts, quotes, or examples worth preserving
-- actions, decisions, or follow-ups for the user
-- tags and aliases that will make the note easier to find later
+Rules:
+- Prefer an existing folder over creating a new one.
+- Classify by meaning, not by file format.
+- If the vault has a known taxonomy such as PARA or another explicit layout, follow it.
+- If confidence is low, use a safe intake folder such as `Inbox/`, `Capture/`, or `Sources/`.
 
-Prefer concise synthesis. Avoid copying the full source unless the user explicitly wants a transcript archive.
+Use [references/category-rules.md](references/category-rules.md) for default heuristics.
 
-### 4. Choose the destination folder
+### 5. Build the note payload
 
-Inspect the vault structure and infer the best match from existing folders first.
+Prepare one Markdown note that Obsidian can store directly.
 
-Use these rules:
-- If the vault already has clear category folders, file into the closest existing category.
-- If multiple folders fit, prefer the one aligned with the source's long-term use, not its transport format.
-- If no confident match exists, file into a capture or inbox-style folder rather than creating taxonomy drift.
-- Create a new category folder only when the vault already uses that style and the source clearly belongs there.
-
-Read [references/category-rules.md](references/category-rules.md) for default category heuristics and note structure.
-
-### 5. Create the note
-
-Use a new Markdown note. Keep the filename stable and readable.
-
-Preferred filename pattern:
-- `YYYY-MM-DD Title.md` for time-sensitive sources
-- `Title.md` for evergreen references
-- Sanitize characters that are unsafe for filenames
-
-Preferred note shape:
+Preferred structure:
 
 ```md
 ---
@@ -114,51 +135,68 @@ tags:
 
 ## Insights
 - <why this matters>
-- <how it connects to existing knowledge or work>
+- <how it connects to user context>
 
 ## Actions
 - [ ] <optional follow-up>
 
 ## Source
 - Original: <url or file path>
-- Extraction: OpenClaw + x-reader
+- Processed by: x-reader
+- Archived via: obsidian-archiver
 ```
 
-Adapt this template to the vault's established style if the vault already uses frontmatter fields, callouts, or specific sections.
+Adapt to the vault's existing note conventions if they already exist.
 
-### 6. Write into Obsidian safely
+### 6. Handoff to Obsidian storage
 
-Prefer Obsidian-aware workflows when available:
-- Use the official `obsidian` CLI for note creation or moves when it is configured.
-- Otherwise write the Markdown file directly inside the vault.
+Prefer reuse over reinvention.
+
+Storage options, in order:
+- Use the existing `obsidian` skill workflow if that is how the local system already writes notes.
+- Use the official `obsidian` CLI if it is configured.
+- Fall back to direct file creation only when the environment already expects that behavior.
 
 Before writing:
-- Ensure the destination folder exists.
-- Check whether a note with the same source and near-identical title already exists.
-- If a duplicate exists, update or merge only if the user asked for deduplication; otherwise create a clearly distinguished note.
+- ensure the target folder exists
+- check for obvious duplicates by title and source
+- avoid overwriting an existing note silently
 
-## Classification guidance
+### 7. Report the result back through OpenClaw
 
-Classify by meaning, not just by medium.
+Return a concise result that OpenClaw can forward back to the originating IM tool.
 
-Examples:
-- A PDF research paper belongs in `Research/` or `Papers/`, not necessarily `PDFs/`.
-- A YouTube transcript about product strategy belongs in `Strategy/` or `Product/`.
-- A tweet thread that teaches a reusable workflow may belong in `Notes/`, `Methods/`, or `Playbooks/`.
-- A tool announcement belongs in `Tools/` if the vault tracks software references.
+Include:
+- whether extraction succeeded
+- which folder the note was written to
+- final note title
+- source reference
+- any missing metadata or fallback behavior used
 
-When the vault already uses PARA, Johnny.Decimal, MOCs, or another explicit system, follow that system instead of the defaults in the reference file.
+## Deployment model
+
+This skill is deployed separately from x-reader.
+
+Recommended model:
+- Deploy OpenClaw in the local environment.
+- Connect at least one IM tool to OpenClaw.
+- Deploy x-reader in the same environment or another reachable local endpoint.
+- Deploy this skill as the orchestration skill.
+- Keep the existing `obsidian` skill available for vault operations.
+
+Do not copy the full x-reader repository into this skill folder unless the user explicitly wants a vendored, pinned fork.
 
 ## Quality bar
 
-The archived note should be:
-- findable later by title, tags, and source metadata
-- useful without reopening the original source
-- short enough to skim
-- rich enough to support future writing or decision-making
+A successful run should produce:
+- one useful, findable Obsidian note
+- preserved source attribution
+- consistent metadata
+- a folder choice that matches the vault's real structure
+- a clear status message back to OpenClaw
 
 Do not:
-- dump raw extraction without synthesis unless explicitly requested
-- create many new folders casually
-- lose source attribution
-- overwrite an existing note without checking for collisions
+- hardcode non-existent x-reader commands
+- bypass OpenClaw when the workflow is meant to be OpenClaw-driven
+- mix extractor implementation details into this skill unnecessarily
+- create many new categories without evidence from the vault
