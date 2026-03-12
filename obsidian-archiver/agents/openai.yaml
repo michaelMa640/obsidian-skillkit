@@ -1,0 +1,4 @@
+interface:
+  display_name: "Obsidian Archiver"
+  short_description: "Classify and archive extracted sources to Obsidian."
+  default_prompt: "Use $obsidian-archiver to capture a source, analyze it, and save a classified note into my Obsidian vault."

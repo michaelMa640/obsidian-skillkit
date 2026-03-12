@@ -1,10 +1,11 @@
-﻿# Obsidian Skillkit
+# Obsidian Skillkit
 
 This repository is a skillkit for Obsidian-related agent workflows.
 
 ## Included skills
 
 - `obsidian/`: Basic Obsidian vault operations through the official Obsidian CLI
+- `obsidian-archiver/`: Capture multi-format content with OpenClaw + x-reader, analyze it, classify it, and archive it into the right Obsidian folder
 
 ## Structure
 
@@ -25,6 +26,7 @@ The repository is structured to support multiple skills over time. Each skill sh
 ## 当前包含的 skill
 
 - `obsidian/`：通过官方 Obsidian CLI 执行基础的 Obsidian vault 操作
+- `obsidian-archiver/`：结合 OpenClaw 与 x-reader 抓取多种内容，分析分类后归档到合适的 Obsidian 文件夹
 
 ## 当前目录结构
 
