@@ -1,6 +1,6 @@
-﻿# Obsidian Skill
+﻿# Obsidian Skillkit
 
-This skill teaches the agent how to work with Obsidian vaults through the official Obsidian CLI on desktop.
+Obsidian Skillkit teaches the agent how to work with Obsidian vaults through the official Obsidian CLI on desktop.
 
 ## What this skill is for
 
@@ -110,9 +110,9 @@ Because of that, if a command works in a normal Windows terminal but appears sil
 
 ---
 
-# Obsidian Skill 中文说明
+# Obsidian Skillkit 中文说明
 
-这个 skill 的作用，是让代理通过 Obsidian 官方 CLI 在桌面端操作 Obsidian vault。
+Obsidian Skillkit 的作用，是让代理通过 Obsidian 官方 CLI 在桌面端操作 Obsidian vault。
 
 ## 这个 skill 是做什么的
 
