@@ -19,6 +19,21 @@ This skill is the first stage of the new workflow:
 This skill does not do deep knowledge extraction by default.
 Its job is fast capture, stable metadata, and analyzer-ready note structure.
 
+## Current runnable entrypoint
+
+Current first runnable scripts:
+- `scripts/run_clipper.ps1`
+- `scripts/detect_platform.ps1`
+
+This first implementation already supports:
+- URL input
+- route detection
+- clipping note generation
+- filesystem write into an Obsidian vault
+
+It does not yet execute the full external capture stack for every route.
+Treat current route handlers as a minimal executable skeleton that the next implementation steps will deepen.
+
 ## Responsibilities
 
 `obsidian-clipper` is responsible for:
@@ -39,7 +54,7 @@ Its job is fast capture, stable metadata, and analyzer-ready note structure.
 Use the route that matches the source:
 - article pages: browser plus article extraction
 - Xiaohongshu and Douyin: browser page capture
-- Bilibili and YouTube: metadata plus subtitles first
+- Bilibili and YouTube: metadata plus subtitles first, currently implemented through `yt-dlp`, with fallback clipping when extraction fails
 - Xiaoyuzhou and podcasts: transcript/show-notes first
 
 Default rule:

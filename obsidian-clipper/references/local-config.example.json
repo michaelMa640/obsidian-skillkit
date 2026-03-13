@@ -25,7 +25,9 @@
       "command": "E:/REPLACE/WITH/YOUR/social-route"
     },
     "video_metadata": {
-      "command": "E:/REPLACE/WITH/YOUR/video-metadata-route"
+      "command": "yt-dlp",
+      "subtitle_languages": "all,-live_chat",
+      "subtitle_format": "vtt/srt/best"
     },
     "podcast": {
       "command": "E:/REPLACE/WITH/YOUR/podcast-route"

@@ -19,12 +19,31 @@ This skill is designed for the new two-stage workflow:
 - saves a clipping note into `Clippings/`
 - preserves enough structure for later analysis
 
+### First Runnable Version
+
+The current implementation includes a real PowerShell entrypoint:
+- `scripts/run_clipper.ps1`
+- `scripts/detect_platform.ps1`
+
+This first runnable version already supports:
+- URL input
+- platform detection
+- route selection
+- standardized clipping note generation
+- direct write into an Obsidian vault in filesystem mode
+- real `yt-dlp` integration for the `video_metadata` route, with fallback clipping when remote extraction fails
+
+What is still placeholder-based in this version:
+- article full-text extraction
+- browser-based social capture
+- transcript/show-notes acquisition for podcast routes
+
 ### Current Capture Strategy
 
-- article pages: browser + article extraction
-- Xiaohongshu / Douyin: browser page capture
-- Bilibili / YouTube: metadata + subtitles first
-- Xiaoyuzhou / podcasts: transcript + show notes first
+- article pages: browser + article extraction planned, light placeholder capture for now
+- Xiaohongshu / Douyin: browser page capture planned, light placeholder capture for now
+- Bilibili / YouTube: `yt-dlp` metadata + subtitles first, and fallback to minimal clipping if remote extraction fails
+- Xiaoyuzhou / podcasts: transcript + show notes route reserved, placeholder capture for now
 
 Default principle:
 - clip first
@@ -37,35 +56,23 @@ Default principle:
 - `agents/openai.yaml`: UI metadata for the skill
 - `references/local-config.example.json`: local machine config template
 - `references/platform-routing.md`: routing reference for supported source types
+- `scripts/run_clipper.ps1`: first runnable entrypoint
+- `scripts/detect_platform.ps1`: platform routing helper
 
 ### Dependencies
 
-Depending on the route your deployment chooses, the machine may need:
+Current first runnable version needs:
 - OpenClaw
 - PowerShell
-- Python
 - an accessible Obsidian vault path
-- browser automation tooling such as Playwright
-- metadata/subtitle tooling such as `yt-dlp`
+- `yt-dlp` available on `PATH` for the `video_metadata` route
+
+Future route-specific integrations may additionally need:
+- Python
+- Playwright
 - article extraction tooling
 
 This repository does not vendor those external tools.
-
-### Deployment Model
-
-1. Deploy this skill into the OpenClaw skill environment.
-2. Copy `references/local-config.example.json` to `local-config.json` locally.
-3. Fill in your vault path and route-specific commands.
-4. Test clipping a URL into `Clippings/`.
-5. Keep `obsidian-analyzer` available for the second stage.
-
-### Thanks
-
-Thanks to the projects this skill is expected to integrate with:
-- [Obsidian](https://obsidian.md/)
-- OpenClaw
-- [Playwright](https://playwright.dev/)
-- [yt-dlp](https://github.com/yt-dlp/yt-dlp)
 
 ## 中文
 
@@ -86,12 +93,31 @@ Obsidian Clipper 是一个面向 OpenClaw 的第一阶段快速剪藏 skill。
 - 把结果写进 `Clippings/`
 - 保留后续分析所需的结构
 
+### 当前第一版可运行实现
+
+当前已经有真实可运行的 PowerShell 入口：
+- `scripts/run_clipper.ps1`
+- `scripts/detect_platform.ps1`
+
+这第一版已经支持：
+- URL 输入
+- 平台识别
+- 路由选择
+- 标准化 Clippings 笔记生成
+- 文件系统模式下直接写入 Obsidian vault
+- `video_metadata` 路由真实调用 `yt-dlp`
+
+这一版还没有真正接好的部分：
+- 文章正文完整抓取
+- 社交平台浏览器抓取
+- 播客 transcript / show notes 获取
+
 ### 当前抓取策略
 
-- 文章网页：浏览器 + 正文提取
-- 小红书 / 抖音：浏览器页面抓取
-- Bilibili / YouTube：元数据 + 字幕优先
-- 小宇宙 / 播客：transcript + show notes 优先
+- 文章网页：先预留正文路由，当前用轻量占位剪藏
+- 小红书 / 抖音：先预留浏览器抓取路由，当前用轻量占位剪藏
+- Bilibili / YouTube：已接入 `yt-dlp`，优先抓元数据和字幕
+- 小宇宙 / 播客：先预留 transcript 优先路由，当前用轻量占位剪藏
 
 默认原则：
 - 先剪藏
@@ -104,32 +130,18 @@ Obsidian Clipper 是一个面向 OpenClaw 的第一阶段快速剪藏 skill。
 - `agents/openai.yaml`：skill 的元数据
 - `references/local-config.example.json`：本地配置模板
 - `references/platform-routing.md`：平台路由参考
+- `scripts/run_clipper.ps1`：第一版可运行入口
+- `scripts/detect_platform.ps1`：平台识别辅助脚本
 
 ### 依赖
 
-根据不同路由，目标机器可能需要：
+当前这版最小可运行实现需要：
 - OpenClaw
 - PowerShell
-- Python
 - 可访问的 Obsidian vault
-- 浏览器自动化工具，例如 Playwright
-- 元数据/字幕工具，例如 `yt-dlp`
+- `PATH` 中可用的 `yt-dlp`，用于 `video_metadata` 路由
+
+后续接入真实路由时，可能还需要：
+- Python
+- Playwright
 - 正文提取工具
-
-仓库本身不内置这些外部依赖。
-
-### 部署方式
-
-1. 把这个 skill 部署到 OpenClaw 环境。
-2. 在本地复制 `references/local-config.example.json` 为 `local-config.json`。
-3. 配置 vault 路径和各路由命令。
-4. 先测试一条 URL 能否写入 `Clippings/`。
-5. 再搭配 `obsidian-analyzer` 使用第二阶段分析。
-
-### 致谢
-
-感谢这个 skill 预期会集成的项目：
-- [Obsidian](https://obsidian.md/)
-- OpenClaw
-- [Playwright](https://playwright.dev/)
-- [yt-dlp](https://github.com/yt-dlp/yt-dlp)
