@@ -1,16 +1,30 @@
-param(
+﻿param(
     [string]$SourceUrl,
     [string]$SourcePath,
     [string]$RawText,
     [string]$VaultPath,
     [string]$CategoryHint,
-    [string]$ConfigPath = (Join-Path $PSScriptRoot '..\references\local-config.example.json'),
+    [string]$ConfigPath,
     [string]$OutputJsonPath,
     [switch]$DryRun
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+if (-not [string]::IsNullOrWhiteSpace($ConfigPath)) {
+    $resolvedConfigPath = $ConfigPath
+} elseif (Test-Path (Join-Path $PSScriptRoot '..\references\local-config.json')) {
+    $resolvedConfigPath = Join-Path $PSScriptRoot '..\references\local-config.json'
+} else {
+    $resolvedConfigPath = Join-Path $PSScriptRoot '..\references\local-config.example.json'
+}
+$ConfigPath = $resolvedConfigPath
+
+function Read-Utf8Text {
+    param([string]$Path)
+    return [System.IO.File]::ReadAllText($Path, [System.Text.UTF8Encoding]::new($false))
+}
 
 function Get-Config {
     param([string]$Path)
@@ -19,7 +33,7 @@ function Get-Config {
         throw "Config file not found: $Path"
     }
 
-    return Get-Content -Raw $Path | ConvertFrom-Json -Depth 20
+    return Read-Utf8Text -Path $Path | ConvertFrom-Json
 }
 
 function Test-HasValue {
@@ -27,18 +41,11 @@ function Test-HasValue {
     return -not [string]::IsNullOrWhiteSpace($Value)
 }
 
-function Get-Slug {
-    param([string]$Value)
-
-    if (-not (Test-HasValue $Value)) {
-        return 'untitled'
-    }
-
-    $slug = $Value.ToLowerInvariant()
-    $slug = [regex]::Replace($slug, '[^a-z0-9\s-]', '')
-    $slug = [regex]::Replace($slug, '\s+', '-')
-    $slug = [regex]::Replace($slug, '-+', '-')
-    return $slug.Trim('-')
+function New-LocalTempFile {
+    $tempDir = Join-Path $PSScriptRoot '..\.tmp'
+    New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
+    $fileName = '{0}.json' -f ([guid]::NewGuid().ToString('N'))
+    return Join-Path $tempDir $fileName
 }
 
 function Get-SafeFileName {
@@ -92,8 +99,8 @@ function Invoke-XReader {
     }
 
     $payloadJson = $Payload | ConvertTo-Json -Depth 20 -Compress
-    $tempInputPath = [System.IO.Path]::GetTempFileName()
-    $tempOutputPath = [System.IO.Path]::GetTempFileName()
+    $tempInputPath = New-LocalTempFile
+    $tempOutputPath = New-LocalTempFile
 
     try {
         [System.IO.File]::WriteAllText($tempInputPath, $payloadJson, [System.Text.UTF8Encoding]::new($false))
@@ -110,10 +117,10 @@ function Invoke-XReader {
         }
 
         if (Test-Path $tempOutputPath) {
-            $outputText = Get-Content -Raw $tempOutputPath
+            $outputText = Read-Utf8Text -Path $tempOutputPath
             if (Test-HasValue $outputText) {
                 try {
-                    return $outputText | ConvertFrom-Json -Depth 20
+                    return $outputText | ConvertFrom-Json
                 }
                 catch {
                     return [pscustomobject]@{
@@ -132,7 +139,7 @@ function Invoke-XReader {
         $stdoutText = ($stdout | Out-String).Trim()
         if (Test-HasValue $stdoutText) {
             try {
-                return $stdoutText | ConvertFrom-Json -Depth 20
+                return $stdoutText | ConvertFrom-Json
             }
             catch {
                 return [pscustomobject]@{
@@ -250,7 +257,7 @@ function Write-NoteToVault {
     return $targetPath
 }
 
-$providedSources = @($SourceUrl, $SourcePath, $RawText) | Where-Object { Test-HasValue $_ }
+$providedSources = @(@($SourceUrl, $SourcePath, $RawText) | Where-Object { Test-HasValue $_ })
 if ($providedSources.Count -eq 0) {
     throw 'Provide at least one source: -SourceUrl, -SourcePath, or -RawText'
 }
