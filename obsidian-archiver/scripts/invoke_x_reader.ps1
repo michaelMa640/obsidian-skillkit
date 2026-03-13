@@ -20,6 +20,11 @@ function Test-HasValue {
     return -not [string]::IsNullOrWhiteSpace($Value)
 }
 
+function Read-Utf8Text {
+    param([string]$Path)
+    return [System.IO.File]::ReadAllText($Path, [System.Text.UTF8Encoding]::new($false))
+}
+
 if (-not (Test-Path $InputJson)) {
     throw "Input JSON not found: $InputJson"
 }
@@ -28,7 +33,7 @@ if (-not (Test-Path $XReaderRoot)) {
     throw "x-reader package root not found: $XReaderRoot"
 }
 
-$payload = Get-Content -Raw $InputJson | ConvertFrom-Json
+$payload = Read-Utf8Text -Path $InputJson | ConvertFrom-Json
 if (-not (Test-HasValue $payload.source_url)) {
     throw 'x-reader wrapper currently supports SourceUrl inputs only.'
 }
@@ -50,7 +55,7 @@ $env:PYTHONUTF8 = '1'
 
 $process = Start-Process -FilePath python -ArgumentList @('-m', 'x_reader.cli', $payload.source_url) -NoNewWindow -Wait -PassThru -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
 if ($process.ExitCode -ne 0) {
-    $stderr = if (Test-Path $stderrPath) { Get-Content -Raw $stderrPath } else { '' }
+    $stderr = if (Test-Path $stderrPath) { Read-Utf8Text -Path $stderrPath } else { '' }
     throw "x-reader failed with exit code $($process.ExitCode). $stderr"
 }
 
@@ -58,7 +63,7 @@ if (-not (Test-Path $inboxPath)) {
     throw "x-reader did not create inbox output: $inboxPath"
 }
 
-$inbox = Get-Content -Raw $inboxPath | ConvertFrom-Json
+$inbox = Read-Utf8Text -Path $inboxPath | ConvertFrom-Json
 $item = @($inbox)[-1]
 if ($null -eq $item) {
     throw 'x-reader inbox was empty after execution.'

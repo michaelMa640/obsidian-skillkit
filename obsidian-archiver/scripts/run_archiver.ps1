@@ -21,6 +21,11 @@ if (-not [string]::IsNullOrWhiteSpace($ConfigPath)) {
 }
 $ConfigPath = $resolvedConfigPath
 
+function Read-Utf8Text {
+    param([string]$Path)
+    return [System.IO.File]::ReadAllText($Path, [System.Text.UTF8Encoding]::new($false))
+}
+
 function Get-Config {
     param([string]$Path)
 
@@ -28,7 +33,7 @@ function Get-Config {
         throw "Config file not found: $Path"
     }
 
-    return Get-Content -Raw $Path | ConvertFrom-Json
+    return Read-Utf8Text -Path $Path | ConvertFrom-Json
 }
 
 function Test-HasValue {
@@ -112,7 +117,7 @@ function Invoke-XReader {
         }
 
         if (Test-Path $tempOutputPath) {
-            $outputText = Get-Content -Raw $tempOutputPath
+            $outputText = Read-Utf8Text -Path $tempOutputPath
             if (Test-HasValue $outputText) {
                 try {
                     return $outputText | ConvertFrom-Json
