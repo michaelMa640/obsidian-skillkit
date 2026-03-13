@@ -1,2 +1,0 @@
-[console_scripts]
-x-reader = x_reader.cli:main

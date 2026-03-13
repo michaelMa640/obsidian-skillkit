@@ -1,18 +1,21 @@
-{
+﻿{
   "x_reader": {
-    "mode": "mock",
-    "command": "python",
+    "mode": "command",
+    "command": "powershell",
     "args": [
-      "path/to/your_x_reader_entry.py",
-      "--input-json",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-File",
+      "E:/path/to/obsidian-skillkit/obsidian-archiver/scripts/invoke_x_reader.ps1",
+      "-InputJson",
       "{input_json}",
-      "--output-json",
+      "-OutputJson",
       "{output_json}"
     ]
   },
   "obsidian": {
     "mode": "filesystem",
-    "vault_path": "E:/Path/To/Your/ObsidianVault"
+    "vault_path": "E:/path/to/your/ObsidianVault"
   },
   "archiver": {
     "default_folder": "Inbox",

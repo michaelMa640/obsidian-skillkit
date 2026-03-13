@@ -1,4 +1,0 @@
-2026-03-12 17:10:38.075 | INFO     | x_reader.reader:read:69 - [generic] https://example.com...
-2026-03-12 17:10:38.113 | INFO     | x_reader.reader:_fetch:136 - Using Jina fallback for: https://example.com
-2026-03-12 17:10:38.124 | INFO     | x_reader.fetchers.jina:fetch_via_jina:30 - Jina fetch: https://example.com
-2026-03-12 17:10:38.849 | INFO     | x_reader.utils.storage:save_to_markdown:106 - Saved to Markdown: E:\Codex_project\obsidian-skillkit\obsidian-archiver\scripts\..\.x-reader-runtime\output\content_hub.md

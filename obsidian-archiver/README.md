@@ -1,28 +1,17 @@
-# Obsidian Archiver
+ï»¿# Obsidian Archiver
 
-Obsidian Archiver is an orchestration skill for a local OpenClaw workflow.
+## English
 
-Obsidian Archiver ÊÇÒ»¸öÃæÏò±¾µØ OpenClaw ¹¤×÷Á÷µÄ±àÅÅĞÍ skill¡£
+### Overview
 
-Its intended chain is:
+Obsidian Archiver is a local orchestration skill for OpenClaw.
+It sits between OpenClaw, x-reader, and Obsidian:
+- OpenClaw receives the user task
+- `obsidian-archiver` normalizes the input and calls x-reader
+- x-reader extracts the source content
+- `obsidian-archiver` builds a Markdown note and writes it into an Obsidian vault
 
-1. A user sends a command from any IM tool already connected to OpenClaw.
-2. OpenClaw receives the task.
-3. OpenClaw calls this skill.
-4. This skill calls x-reader to extract content and metadata.
-5. This skill organizes the result into a clean Markdown note.
-6. This skill reuses the local Obsidian note-writing workflow to save the note into the vault.
-
-Ä¿±êµ÷ÓÃÁ´ÊÇ£º
-
-1. ÓÃ»§´ÓÈÎÒâÒ»¸öÒÑ¾­½ÓÈë OpenClaw µÄ IM ¹¤¾ß·¢³öÃüÁî¡£
-2. OpenClaw ½ÓÊÕµ½ÈÎÎñ¡£
-3. OpenClaw µ÷ÓÃÕâ¸ö skill¡£
-4. Õâ¸ö skill µ÷ÓÃ x-reader ÌáÈ¡ÕıÎÄºÍÔªÊı¾İ¡£
-5. Õâ¸ö skill ½«½á¹ûÕûÀí³É¸É¾»µÄ Markdown ±Ê¼Ç¡£
-6. Õâ¸ö skill ¸´ÓÃ±¾µØ Obsidian Ğ´ÈëÁ÷³Ì£¬°Ñ±Ê¼Ç±£´æµ½ vault¡£
-
-## Architecture
+### Architecture
 
 ```mermaid
 flowchart LR
@@ -31,167 +20,411 @@ flowchart LR
     C --> D["obsidian-archiver"]
     D --> E["x-reader"]
     E --> D
-    D --> F["obsidian skill / Obsidian CLI / Filesystem"]
+    D --> F["Filesystem / Obsidian write path"]
     F --> G["Obsidian Vault"]
-    D --> H["Status back to OpenClaw"]
-    H --> B
 ```
 
-## Purpose
+### What This Repository Includes
 
-This skill is not a replacement for x-reader or Obsidian integration.
-
-It exists to connect the three layers:
-- OpenClaw for orchestration
-- x-reader for extraction
-- Obsidian for storage
-
-Õâ¸ö skill ²»ÊÇÓÃÀ´Ìæ´ú x-reader »ò Obsidian ¼¯³É²ãµÄ¡£
-
-ËüµÄ×÷ÓÃÊÇÁ¬½ÓÈı²ãÄÜÁ¦£º
-- OpenClaw£º¸ºÔğ±àÅÅ
-- x-reader£º¸ºÔğÌáÈ¡
-- Obsidian£º¸ºÔğ´æ´¢
-
-## Dependencies
-
-Required before deploying this skill:
-- OpenClaw already running locally and connected to at least one IM tool
-- x-reader already installed, deployed, or otherwise reachable from OpenClaw
-- a reachable Obsidian vault
-
-Recommended:
-- the existing `obsidian` skill available in the same skill environment
-- the official `obsidian` CLI configured locally if your write path depends on it
-
-²¿ÊğÕâ¸ö skill Ö®Ç°£¬ÖÁÉÙĞèÒª£º
-- OpenClaw ÒÑÔÚ±¾µØÔËĞĞ£¬²¢Á¬½ÓÖÁÉÙÒ»¸ö IM ¹¤¾ß
-- x-reader ÒÑ¾­°²×°¡¢²¿Êğ£¬»ò¿É±» OpenClaw ·ÃÎÊ
-- Obsidian vault ¿É´Ó±¾µØ»·¾³·ÃÎÊ
-
-ÍÆ¼öÁíÍâ×¼±¸£º
-- Í¬Ò» skill »·¾³ÖĞÒÑÓĞ `obsidian` skill
-- Èç¹ûÄãµÄĞ´ÈëÁ´Â·ÒÀÀµ¹Ù·½ CLI£¬Ôò±¾µØÒÑ¾­ÅäÖÃºÃ `obsidian` CLI
-
-## Repository layout
-
+Required files for deployment:
 - `SKILL.md`: agent-facing orchestration instructions
 - `agents/openai.yaml`: UI-facing metadata and default prompt
-- `references/category-rules.md`: default folder, title, and tag heuristics
-- `references/local-config.example.json`: local configuration example for x-reader and vault settings
-- `scripts/run_archiver.ps1`: minimal wrapper that standardizes local execution
+- `references/category-rules.md`: default classification heuristics
+- `references/local-config.example.json`: local config template
+- `scripts/run_archiver.ps1`: main local entrypoint
+- `scripts/invoke_x_reader.ps1`: adapter that translates the archiver JSON payload into an x-reader call
 
-Ä¿Â¼½á¹¹ËµÃ÷£º
-- `SKILL.md`£º¸ø´úÀí¿´µÄ±àÅÅËµÃ÷
-- `agents/openai.yaml`£º¸ø UI / µ÷ÓÃ²ã¿´µÄÔªÊı¾İºÍÄ¬ÈÏÌáÊ¾
-- `references/category-rules.md`£ºÄ¬ÈÏµÄ·ÖÀà¡¢±êÌâºÍ±êÇ©¹æÔò
-- `references/local-config.example.json`£ºx-reader Óë vault µÄ±¾µØÅäÖÃÑùÀı
-- `scripts/run_archiver.ps1`£º±ê×¼»¯±¾µØÖ´ĞĞ·½Ê½µÄ×îĞ¡°ü×°Æ÷
+This repository does not vendor x-reader itself.
+Anyone deploying this skill must install x-reader separately on the target machine.
 
-## What the wrapper does
+### Prerequisites
 
-`scripts/run_archiver.ps1` is a lightweight local entrypoint.
+Before using this skill, make sure the target machine has:
+- OpenClaw already running locally
+- at least one IM channel connected to OpenClaw
+- Python available in `PATH`
+- a reachable Obsidian vault path
+- permission to run PowerShell scripts locally
+- x-reader installed separately
 
-It is designed to:
-- accept a URL, file path, or raw text
-- load local settings from a JSON config file
-- normalize the incoming payload for x-reader
-- call x-reader in a consistent way when configured
-- build a Markdown note payload
-- optionally write the note directly into the Obsidian vault when `obsidian.mode` is `filesystem`
-- return a JSON result that OpenClaw can consume
+### Install x-reader
 
-`run_archiver.ps1` ÊÇÒ»¸öÇáÁ¿¼¶±¾µØÈë¿Ú¡£
+x-reader is an external dependency.
+Install it yourself on the deployment machine.
 
-ËüµÄ×÷ÓÃÊÇ£º
-- ½ÓÊÕ URL¡¢ÎÄ¼şÂ·¾¶»òÔ­Ê¼ÎÄ±¾
-- ´Ó JSON ÅäÖÃÎÄ¼şÖĞ¶ÁÈ¡±¾µØÉèÖÃ
-- °ÑÊäÈë±ê×¼»¯Îª x-reader ¿É´¦ÀíµÄÔØºÉ
-- ÔÚÅäÖÃÍê³ÉÊ±£¬ÓÃÍ³Ò»·½Ê½µ÷ÓÃ x-reader
-- Éú³É Markdown ±Ê¼ÇÄÚÈİ
-- µ± `obsidian.mode` Îª `filesystem` Ê±£¬Ö±½ÓĞ´Èë Obsidian vault
-- Êä³ö JSON ½á¹û¸ø OpenClaw Ïû·Ñ
+Reference repository:
+- [x-reader](https://github.com/runesleo/x-reader)
 
-## What the local config does
+One workable install method is:
 
-`references/local-config.example.json` separates environment-specific values from the workflow logic.
+```powershell
+pip install git+https://github.com/runesleo/x-reader.git
+```
 
-Use it to define:
-- how x-reader is called
-- which arguments are passed
-- where the Obsidian vault is
-- which default folder/tag should be used
-- whether filenames should be prefixed with the capture date
+After installation, verify your machine can run it in some form.
+For example, if you install it into the default Python environment:
 
-`references/local-config.example.json` ÓÃÀ´°Ñ¡°»·¾³²îÒì¡±´Ó¹¤×÷Á÷Âß¼­Àï²ğ³öÀ´¡£
+```powershell
+python -m x_reader.cli "https://example.com"
+```
 
-Ëü¸ºÔğ¶¨Òå£º
-- x-reader Ó¦¸ÃÈçºÎ±»µ÷ÓÃ
-- ĞèÒª´«ÄÄĞ©²ÎÊı
-- Obsidian vault ÔÚÄÄÀï
-- Ä¬ÈÏ¹éµµµ½ÄÄ¸öÎÄ¼ş¼Ğ¡¢´òÊ²Ã´Ä¬ÈÏ±êÇ©
-- ÎÄ¼şÃûÊÇ·ñĞèÒª¼ÓÈÕÆÚÇ°×º
+If your environment uses a virtualenv, uv, conda, Scoop Python, or another launcher, adapt the command accordingly.
+The key requirement is that this skill can call x-reader from PowerShell on that machine.
 
-## Recommended deployment order
+### Configure Local Settings
 
-1. Deploy and verify OpenClaw.
-2. Connect and verify your IM channel.
-3. Deploy and verify x-reader.
-4. Adjust `references/local-config.example.json` for your environment.
-5. Test `scripts/run_archiver.ps1` with `-DryRun`.
-6. Verify how Obsidian notes are created in your environment.
-7. Deploy `obsidian-archiver`.
+1. Copy `references/local-config.example.json` to `references/local-config.json`.
+2. Edit the copied file for your machine.
+3. Do not commit `local-config.json`; it is machine-specific.
+
+Recommended fields to adjust:
+- `x_reader.command`: the executable used to launch PowerShell on the target machine
+- `x_reader.args`: the absolute path to `scripts/invoke_x_reader.ps1`
+- `obsidian.vault_path`: your real Obsidian vault path
+- `archiver.default_folder`: default folder inside the vault
+- `archiver.default_tag`: fallback tag for captured notes
+
+Example:
+
+```json
+{
+  "x_reader": {
+    "mode": "command",
+    "command": "powershell",
+    "args": [
+      "-ExecutionPolicy",
+      "Bypass",
+      "-File",
+      "E:/path/to/obsidian-skillkit/obsidian-archiver/scripts/invoke_x_reader.ps1",
+      "-InputJson",
+      "{input_json}",
+      "-OutputJson",
+      "{output_json}"
+    ]
+  },
+  "obsidian": {
+    "mode": "filesystem",
+    "vault_path": "E:/path/to/your/ObsidianVault"
+  },
+  "archiver": {
+    "default_folder": "Inbox",
+    "default_tag": "captured",
+    "prefix_date": true
+  }
+}
+```
+
+### How `run_archiver.ps1` Works
+
+`scripts/run_archiver.ps1`:
+- accepts `-SourceUrl`, `-SourcePath`, or `-RawText`
+- loads `references/local-config.json` if present, otherwise falls back to the example config
+- writes a normalized request payload
+- calls `scripts/invoke_x_reader.ps1`
+- builds a Markdown note
+- optionally writes the note into the configured vault
+- returns JSON that OpenClaw can consume
+
+`scripts/invoke_x_reader.ps1` is the compatibility layer between this skill and x-reader.
+It is responsible for:
+- reading the temporary input JSON
+- calling x-reader in a consistent way
+- mapping the extraction result back into the note format expected by `run_archiver.ps1`
+
+### Current Input Support
+
+Recommended production path today:
+- `SourceUrl`
+
+Current implementation is optimized for URL ingestion because x-reader's current CLI is URL-first.
+`run_archiver.ps1` still accepts `-SourcePath` and `-RawText`, but this repository does not yet ship a full non-URL extraction backend for those inputs.
+If you need file-path or raw-text ingestion, add an extra extractor or fallback path in your local deployment.
+
+### Deployment Steps
+
+1. Deploy OpenClaw and make sure it can receive commands.
+2. Install x-reader on the same machine or on a locally reachable execution environment.
+3. Copy `references/local-config.example.json` to `references/local-config.json`.
+4. Replace the placeholder script path and vault path in `local-config.json`.
+5. Verify x-reader itself works on the machine.
+6. Run `scripts/run_archiver.ps1` manually.
+7. Wire OpenClaw to call this skill.
 8. Test the full chain from IM to OpenClaw to x-reader to Obsidian.
 
-ÍÆ¼ö²¿ÊğË³Ğò£º
+### Manual Test Commands
 
-1. ÏÈ²¿Êğ²¢ÑéÖ¤ OpenClaw¡£
-2. ÔÙÁ¬½Ó²¢ÑéÖ¤ÄãµÄ IM ÇşµÀ¡£
-3. ²¿Êğ²¢ÑéÖ¤ x-reader¡£
-4. °´ÄãµÄ±¾µØ»·¾³µ÷Õû `references/local-config.example.json`¡£
-5. ÏÈÓÃ `-DryRun` ²âÊÔ `scripts/run_archiver.ps1`¡£
-6. È·ÈÏ Obsidian µÄĞ´Èë·½Ê½ÒÑ¾­´òÍ¨¡£
-7. ²¿Êğ `obsidian-archiver`¡£
-8. ×öÒ»ÂÖ´Ó IM µ½ OpenClaw ÔÙµ½ x-reader ºÍ Obsidian µÄ¶Ëµ½¶Ë²âÊÔ¡£
-
-## Quick example
+URL dry run:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\run_archiver.ps1 -SourceUrl "https://example.com" -DryRun
 ```
 
+URL end-to-end test writing into a vault:
+
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\run_archiver.ps1 -SourcePath "C:\docs\sample.pdf" -ConfigPath .\references\local-config.example.json
+powershell -ExecutionPolicy Bypass -File .\scripts\run_archiver.ps1 -SourceUrl "https://example.com" -VaultPath "E:\Obsidian\MyVault"
 ```
 
-## Implementation status
+Explicit config path:
 
-Current implementation covers:
-- workflow role definition
-- dependency boundaries
-- x-reader handoff expectations
-- classification and note structure rules
-- Obsidian storage handoff strategy
-- a minimal PowerShell wrapper
-- a local config example
-- deployment guidance
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\run_archiver.ps1 -SourceUrl "https://example.com" -ConfigPath .\references\local-config.json
+```
 
-Current implementation does not yet include:
-- a concrete OpenClaw adapter or webhook handler
-- a vault-specific category mapping file
-- a production-tested x-reader argument contract
+### OpenClaw Integration Expectation
 
-µ±Ç°ÒÑ¾­Íê³É£º
-- ¹¤×÷Á÷½ÇÉ«¶¨Òå
-- ÒÀÀµ±ß½ç»®·Ö
-- x-reader µ÷ÓÃÔ¤ÆÚ
-- ·ÖÀàºÍ±Ê¼Ç½á¹¹¹æÔò
-- Obsidian ´æ´¢½»½Ó²ßÂÔ
-- Ò»¸ö×îĞ¡¿ÉÓÃµÄ PowerShell °ü×°Æ÷
-- Ò»¸ö±¾µØÅäÖÃÑùÀı
-- ²¿ÊğËµÃ÷
+When OpenClaw invokes this skill, it should provide at least one of:
+- a URL
+- a local source path
+- raw text
 
-µ±Ç°»¹Ã»ÓĞÄÚÖÃ£º
-- OpenClaw ×¨ÓÃÊÊÅäÆ÷»ò webhook ´¦ÀíÆ÷
-- vault ×¨Êô·ÖÀàÓ³ÉäÎÄ¼ş
-- ¾­¹ıÉú²úÑéÖ¤µÄ x-reader ²ÎÊıÆõÔ¼
+If OpenClaw already knows the target vault, it can pass the vault path at runtime.
+That means you do not have to hardcode the vault path in `local-config.json` if your OpenClaw workflow always supplies it.
+
+### What Should Be Committed
+
+Commit these files:
+- the skill files in this repository
+- `references/local-config.example.json`
+- documentation and scripts needed for deployment
+
+Do not commit:
+- `references/local-config.json`
+- `.x-reader-site/`
+- `.venv/`
+- `.tmp/`
+- `obsidian-archiver/.tmp/`
+- `obsidian-archiver/.x-reader-runtime/`
+- test vault contents
+- inbox and log files
+
+### Thanks
+
+Thanks to the main projects this skill depends on:
+- [Obsidian](https://obsidian.md/) for the vault-based workflow and ecosystem
+- [x-reader](https://github.com/runesleo/x-reader) for the extraction layer
+- OpenClaw for the orchestration context this skill is designed for
+
+### Summary
+
+If someone only reads this repository, the deployment model should be:
+- install x-reader yourself
+- copy and edit `local-config.example.json`
+- point the config to your local `invoke_x_reader.ps1`
+- set your real Obsidian vault path or pass it at runtime
+- run `scripts/run_archiver.ps1`
+- then connect the same command path to OpenClaw
+
+## ä¸­æ–‡
+
+### è¯´æ˜
+
+Obsidian Archiver æ˜¯ä¸€ä¸ªé¢å‘æœ¬åœ° OpenClaw å·¥ä½œæµçš„ç¼–æ’å‹ skillã€‚
+å®ƒå·¥ä½œåœ¨ OpenClawã€x-reader å’Œ Obsidian ä¹‹é—´ï¼š
+- OpenClaw æ¥æ”¶ç”¨æˆ·ä»»åŠ¡
+- `obsidian-archiver` æ ‡å‡†åŒ–è¾“å…¥å¹¶è°ƒç”¨ x-reader
+- x-reader æå–æ­£æ–‡ä¸å…ƒæ•°æ®
+- `obsidian-archiver` ç”Ÿæˆ Markdown ç¬”è®°å¹¶å†™å…¥ Obsidian vault
+
+### æ¶æ„
+
+```mermaid
+flowchart LR
+    A["ç”¨æˆ·"] --> B["å·²è¿æ¥çš„ IM å·¥å…·"]
+    B --> C["OpenClaw"]
+    C --> D["obsidian-archiver"]
+    D --> E["x-reader"]
+    E --> D
+    D --> F["æ–‡ä»¶ç³»ç»Ÿ / Obsidian å†™å…¥è·¯å¾„"]
+    F --> G["Obsidian Vault"]
+```
+
+### ä»“åº“å†…åŒ…å«çš„å†…å®¹
+
+éƒ¨ç½²æ‰€éœ€æ–‡ä»¶ï¼š
+- `SKILL.md`ï¼šç»™ä»£ç†ä½¿ç”¨çš„ç¼–æ’è¯´æ˜
+- `agents/openai.yaml`ï¼šç»™ UI å’Œè°ƒç”¨å±‚ä½¿ç”¨çš„å…ƒæ•°æ®
+- `references/category-rules.md`ï¼šé»˜è®¤åˆ†ç±»è§„åˆ™å‚è€ƒ
+- `references/local-config.example.json`ï¼šæœ¬åœ°é…ç½®æ ·ä¾‹
+- `scripts/run_archiver.ps1`ï¼šä¸»å…¥å£è„šæœ¬
+- `scripts/invoke_x_reader.ps1`ï¼šæŠŠå½’æ¡£å™¨è¯·æ±‚è½¬æ¢æˆ x-reader è°ƒç”¨çš„é€‚é…è„šæœ¬
+
+è¿™ä¸ªä»“åº“ä¸å†…ç½® x-readerã€‚
+ä»»ä½•éƒ¨ç½²è€…éƒ½éœ€è¦åœ¨ç›®æ ‡æœºå™¨ä¸Šè‡ªè¡Œå®‰è£… x-readerã€‚
+
+### å‰ç½®ä¾èµ–
+
+åœ¨ä½¿ç”¨è¿™ä¸ª skill ä¹‹å‰ï¼Œè¯·ç¡®ä¿ç›®æ ‡æœºå™¨å…·å¤‡ï¼š
+- å·²ç»è¿è¡Œçš„ OpenClaw
+- å·²ç»è¿æ¥åˆ° OpenClaw çš„è‡³å°‘ä¸€ä¸ª IM æ¸ é“
+- `PATH` ä¸­å¯ç”¨çš„ Python
+- å¯è®¿é—®çš„ Obsidian vault è·¯å¾„
+- å¯æ‰§è¡Œæœ¬åœ° PowerShell è„šæœ¬çš„æƒé™
+- å•ç‹¬å®‰è£…å¥½çš„ x-reader
+
+### å®‰è£… x-reader
+
+x-reader æ˜¯å¤–éƒ¨ä¾èµ–ï¼Œéœ€è¦ç”±éƒ¨ç½²è€…è‡ªè¡Œå®‰è£…ã€‚
+
+å‚è€ƒä»“åº“ï¼š
+- [x-reader](https://github.com/runesleo/x-reader)
+
+ä¸€ç§å¯è¡Œçš„å®‰è£…æ–¹å¼æ˜¯ï¼š
+
+```powershell
+pip install git+https://github.com/runesleo/x-reader.git
+```
+
+å®‰è£…åï¼Œè¯·å…ˆç¡®è®¤ç›®æ ‡æœºå™¨èƒ½å¤Ÿä»¥æŸç§æ–¹å¼è¿è¡Œå®ƒã€‚
+ä¾‹å¦‚ï¼Œå¦‚æœä½ æŠŠå®ƒè£…åœ¨é»˜è®¤ Python ç¯å¢ƒé‡Œï¼Œå¯ä»¥è¿™æ ·éªŒè¯ï¼š
+
+```powershell
+python -m x_reader.cli "https://example.com"
+```
+
+å¦‚æœä½ çš„ç¯å¢ƒä½¿ç”¨ virtualenvã€uvã€condaã€Scoop Python æˆ–å…¶ä»–å¯åŠ¨æ–¹å¼ï¼Œè¯·æŒ‰ä½ çš„ç¯å¢ƒè°ƒæ•´å‘½ä»¤ã€‚
+æ ¸å¿ƒè¦æ±‚åªæœ‰ä¸€ä¸ªï¼šè¿™ä¸ª skill å¿…é¡»èƒ½åœ¨ç›®æ ‡æœºå™¨ä¸Šé€šè¿‡ PowerShell è°ƒç”¨åˆ° x-readerã€‚
+
+### é…ç½®æœ¬åœ°è®¾ç½®
+
+1. æŠŠ `references/local-config.example.json` å¤åˆ¶ä¸º `references/local-config.json`ã€‚
+2. æŒ‰ç…§ä½ çš„æœºå™¨ç¯å¢ƒä¿®æ”¹å¤åˆ¶å‡ºçš„æ–‡ä»¶ã€‚
+3. ä¸è¦æäº¤ `local-config.json`ï¼Œå®ƒæ˜¯æœºå™¨ä¸“ç”¨é…ç½®ã€‚
+
+å»ºè®®ä¿®æ”¹çš„å­—æ®µï¼š
+- `x_reader.command`ï¼šç›®æ ‡æœºå™¨ä¸Šç”¨äºå¯åŠ¨ PowerShell çš„å¯æ‰§è¡Œå‘½ä»¤
+- `x_reader.args`ï¼š`scripts/invoke_x_reader.ps1` çš„ç»å¯¹è·¯å¾„
+- `obsidian.vault_path`ï¼šä½ çœŸå®çš„ Obsidian vault è·¯å¾„
+- `archiver.default_folder`ï¼šé»˜è®¤å†™å…¥çš„ vault å­ç›®å½•
+- `archiver.default_tag`ï¼šé»˜è®¤æ ‡ç­¾
+
+æ ·ä¾‹ï¼š
+
+```json
+{
+  "x_reader": {
+    "mode": "command",
+    "command": "powershell",
+    "args": [
+      "-ExecutionPolicy",
+      "Bypass",
+      "-File",
+      "E:/path/to/obsidian-skillkit/obsidian-archiver/scripts/invoke_x_reader.ps1",
+      "-InputJson",
+      "{input_json}",
+      "-OutputJson",
+      "{output_json}"
+    ]
+  },
+  "obsidian": {
+    "mode": "filesystem",
+    "vault_path": "E:/path/to/your/ObsidianVault"
+  },
+  "archiver": {
+    "default_folder": "Inbox",
+    "default_tag": "captured",
+    "prefix_date": true
+  }
+}
+```
+
+### `run_archiver.ps1` çš„ä½œç”¨
+
+`scripts/run_archiver.ps1` ä¼šï¼š
+- æ¥æ”¶ `-SourceUrl`ã€`-SourcePath` æˆ– `-RawText`
+- ä¼˜å…ˆè¯»å– `references/local-config.json`ï¼Œå¦‚æœä¸å­˜åœ¨åˆ™å›é€€åˆ°æ ·ä¾‹é…ç½®
+- ç”Ÿæˆæ ‡å‡†åŒ–è¯·æ±‚è½½è·
+- è°ƒç”¨ `scripts/invoke_x_reader.ps1`
+- æ„å»º Markdown ç¬”è®°
+- åœ¨å¯ç”¨æ–‡ä»¶ç³»ç»Ÿæ¨¡å¼æ—¶ç›´æ¥å†™å…¥ vault
+- è¾“å‡ºå¯ä¾› OpenClaw æ¶ˆè´¹çš„ JSON ç»“æœ
+
+`scripts/invoke_x_reader.ps1` æ˜¯è¿™ä¸ª skill å’Œ x-reader ä¹‹é—´çš„å…¼å®¹å±‚ã€‚
+å®ƒè´Ÿè´£ï¼š
+- è¯»å–ä¸´æ—¶è¾“å…¥ JSON
+- ä»¥ç»Ÿä¸€æ–¹å¼è°ƒç”¨ x-reader
+- æŠŠæå–ç»“æœè½¬æ¢å› `run_archiver.ps1` æ‰€æœŸå¾…çš„ç¬”è®°æ ¼å¼
+
+### å½“å‰è¾“å…¥æ”¯æŒæƒ…å†µ
+
+å½“å‰æœ€æ¨èçš„ç”Ÿäº§æ¥å…¥æ–¹å¼ï¼š
+- `SourceUrl`
+
+å½“å‰å®ç°ä¼˜å…ˆé’ˆå¯¹ URL è¾“å…¥è¿›è¡Œäº†ä¼˜åŒ–ï¼Œå› ä¸º x-reader å½“å‰çš„ CLI æœ¬èº«æ˜¯ä»¥ URL ä¸ºä¸»çš„ã€‚
+`run_archiver.ps1` ä¾ç„¶æ¥å— `-SourcePath` å’Œ `-RawText`ï¼Œä½†è¿™ä¸ªä»“åº“ç›®å‰è¿˜æ²¡æœ‰å†…ç½®å®Œæ•´çš„é URL æå–åç«¯ã€‚
+å¦‚æœä½ éœ€è¦å¤„ç†æœ¬åœ°æ–‡ä»¶æˆ–çº¯æ–‡æœ¬ï¼Œè¯·åœ¨ä½ è‡ªå·±çš„éƒ¨ç½²ç¯å¢ƒä¸­å†è¡¥ä¸€å±‚æå–å™¨æˆ–é™çº§é€»è¾‘ã€‚
+
+### éƒ¨ç½²æ­¥éª¤
+
+1. å…ˆéƒ¨ç½² OpenClawï¼Œå¹¶ç¡®è®¤å®ƒèƒ½æ¥æ”¶å‘½ä»¤ã€‚
+2. åœ¨åŒä¸€å°æœºå™¨æˆ–ä¸€ä¸ªæœ¬åœ°å¯è®¿é—®çš„æ‰§è¡Œç¯å¢ƒä¸­å®‰è£… x-readerã€‚
+3. æŠŠ `references/local-config.example.json` å¤åˆ¶ä¸º `references/local-config.json`ã€‚
+4. æŠŠ `local-config.json` é‡Œçš„å ä½è„šæœ¬è·¯å¾„å’Œ vault è·¯å¾„æ”¹æˆçœŸå®å€¼ã€‚
+5. å•ç‹¬éªŒè¯ x-reader æœ¬èº«èƒ½æ­£å¸¸å·¥ä½œã€‚
+6. æ‰‹åŠ¨è¿è¡Œ `scripts/run_archiver.ps1`ã€‚
+7. å†æŠŠ OpenClaw æ¥åˆ°è¿™ä¸ª skill ä¸Šã€‚
+8. æœ€åæµ‹è¯•ä» IM åˆ° OpenClawã€x-readerã€Obsidian çš„æ•´æ¡é“¾è·¯ã€‚
+
+### æ‰‹åŠ¨æµ‹è¯•å‘½ä»¤
+
+URL dry runï¼š
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\run_archiver.ps1 -SourceUrl "https://example.com" -DryRun
+```
+
+URL ç«¯åˆ°ç«¯å†™å…¥ vaultï¼š
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\run_archiver.ps1 -SourceUrl "https://example.com" -VaultPath "E:\Obsidian\MyVault"
+```
+
+æ˜¾å¼æŒ‡å®šé…ç½®æ–‡ä»¶ï¼š
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\run_archiver.ps1 -SourceUrl "https://example.com" -ConfigPath .\references\local-config.json
+```
+
+### OpenClaw é›†æˆé¢„æœŸ
+
+å½“ OpenClaw è°ƒç”¨è¿™ä¸ª skill æ—¶ï¼Œè‡³å°‘åº”è¯¥æä¾›ä¸‹é¢ä¸€ç§è¾“å…¥ï¼š
+- URL
+- æœ¬åœ°æ–‡ä»¶è·¯å¾„
+- åŸå§‹æ–‡æœ¬
+
+å¦‚æœ OpenClaw å·²ç»çŸ¥é“ç›®æ ‡ vaultï¼Œä¹Ÿå¯ä»¥åœ¨è¿è¡Œæ—¶ç›´æ¥ä¼ å…¥ vault è·¯å¾„ã€‚
+è¿™æ„å‘³ç€å¦‚æœä½ çš„ OpenClaw å·¥ä½œæµæ€»æ˜¯ä¼šä¼ è¿™ä¸ªå‚æ•°ï¼Œä½ å°±ä¸ä¸€å®šéœ€è¦æŠŠ vault è·¯å¾„ç¡¬ç¼–ç åœ¨ `local-config.json` é‡Œã€‚
+
+### åº”è¯¥æäº¤ä»€ä¹ˆ
+
+åº”è¯¥æäº¤ï¼š
+- è¿™ä¸ªä»“åº“é‡Œçš„ skill æ–‡ä»¶
+- `references/local-config.example.json`
+- å…¶ä»–éƒ¨ç½²è€…ä¹Ÿéœ€è¦çš„æ–‡æ¡£å’Œè„šæœ¬
+
+ä¸è¦æäº¤ï¼š
+- `references/local-config.json`
+- `.x-reader-site/`
+- `.venv/`
+- `.tmp/`
+- `obsidian-archiver/.tmp/`
+- `obsidian-archiver/.x-reader-runtime/`
+- æµ‹è¯• vault å†…å®¹
+- inbox æ–‡ä»¶å’Œæ—¥å¿—
+
+### è‡´è°¢
+
+æ„Ÿè°¢è¿™ä¸ª skill ä¾èµ–çš„ä¸»è¦é¡¹ç›®ï¼š
+- [Obsidian](https://obsidian.md/)ï¼Œæä¾›åŸºäº vault çš„å·¥ä½œæµæ¨¡å‹å’Œç”Ÿæ€
+- [x-reader](https://github.com/runesleo/x-reader)ï¼Œæä¾›æå–èƒ½åŠ›
+- OpenClawï¼Œæä¾›è¿™ä¸ª skill é¢å‘çš„ç¼–æ’ç¯å¢ƒ
+
+### æ€»ç»“
+
+å¦‚æœåˆ«äººåªçœ‹è¿™ä¸ªä»“åº“ï¼Œä¹Ÿåº”è¯¥èƒ½æ˜ç™½æ­£ç¡®çš„éƒ¨ç½²æ–¹å¼æ˜¯ï¼š
+- å…ˆè‡ªè¡Œå®‰è£… x-reader
+- å¤åˆ¶å¹¶ä¿®æ”¹ `local-config.example.json`
+- æŠŠé…ç½®æŒ‡å‘è‡ªå·±æœ¬æœºçš„ `invoke_x_reader.ps1`
+- è®¾ç½®çœŸå®çš„ Obsidian vault è·¯å¾„ï¼Œæˆ–è€…åœ¨è¿è¡Œæ—¶ä¼ å…¥
+- è¿è¡Œ `scripts/run_archiver.ps1`
+- å†æŠŠåŒä¸€æ¡å‘½ä»¤é“¾è·¯æ¥å…¥ OpenClaw
