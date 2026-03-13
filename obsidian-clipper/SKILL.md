@@ -55,7 +55,7 @@ Use the route that matches the source:
 - article pages: browser plus article extraction
 - Xiaohongshu and Douyin: browser page capture
 - Bilibili and YouTube: metadata plus subtitles first, currently implemented through `yt-dlp`, with fallback clipping when extraction fails
-- Xiaoyuzhou and podcasts: transcript/show-notes first
+- Xiaoyuzhou and podcasts: page metadata and show-notes-style text first, transcript later
 
 Default rule:
 - save the lightest useful representation first

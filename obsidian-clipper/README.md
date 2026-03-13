@@ -43,7 +43,7 @@ What is still placeholder-based in this version:
 - article pages: browser + article extraction planned, light placeholder capture for now
 - Xiaohongshu / Douyin: browser page capture planned, light placeholder capture for now
 - Bilibili / YouTube: `yt-dlp` metadata + subtitles first, and fallback to minimal clipping if remote extraction fails
-- Xiaoyuzhou / podcasts: transcript + show notes route reserved, placeholder capture for now
+- Xiaoyuzhou / podcasts: page metadata + show-notes-style text capture, with transcript reserved for a later step
 
 Default principle:
 - clip first
@@ -66,6 +66,7 @@ Current first runnable version needs:
 - PowerShell
 - an accessible Obsidian vault path
 - `yt-dlp` available on `PATH` for the `video_metadata` route
+- web access for the built-in podcast metadata route
 
 Future route-specific integrations may additionally need:
 - Python
@@ -110,14 +111,14 @@ Obsidian Clipper 是一个面向 OpenClaw 的第一阶段快速剪藏 skill。
 这一版还没有真正接好的部分：
 - 文章正文完整抓取
 - 社交平台浏览器抓取
-- 播客 transcript / show notes 获取
+- 播客 transcript 获取
 
 ### 当前抓取策略
 
 - 文章网页：先预留正文路由，当前用轻量占位剪藏
 - 小红书 / 抖音：先预留浏览器抓取路由，当前用轻量占位剪藏
 - Bilibili / YouTube：已接入 `yt-dlp`，优先抓元数据和字幕
-- 小宇宙 / 播客：先预留 transcript 优先路由，当前用轻量占位剪藏
+- 小宇宙 / 播客：已接入页面元数据和 show-notes 风格文本抓取，transcript 作为后续增强
 
 默认原则：
 - 先剪藏
@@ -140,6 +141,7 @@ Obsidian Clipper 是一个面向 OpenClaw 的第一阶段快速剪藏 skill。
 - PowerShell
 - 可访问的 Obsidian vault
 - `PATH` 中可用的 `yt-dlp`，用于 `video_metadata` 路由
+- 可访问小宇宙页面的网络环境，用于播客 metadata 路由
 
 后续接入真实路由时，可能还需要：
 - Python
