@@ -13,3 +13,24 @@
 - Preserve source metadata for later analysis
 - Do not download media files by default
 - Prefer transcript/subtitles for long media sources
+
+## Route Notes
+
+### `article`
+- Intended capture: title, author, publish date, cleaned main text
+- Current status: built-in page fetch + main-text extraction with fallback clipping
+
+### `social`
+- Intended capture: visible caption, cover/media references, tags, engagement
+- Current status: placeholder clipping
+
+### `video_metadata`
+- Tooling: `yt-dlp`
+- Preferred assets: metadata, subtitles, description, thumbnail
+- Fallback: minimal clipping with extractor error summary
+
+### `podcast`
+- Tooling: built-in page metadata capture in `run_clipper.ps1`
+- Preferred assets: title, description, show notes, transcript link hints, RSS hints, audio enclosure hints
+- Fallback: minimal clipping with network/error summary
+- Analyzer intent: `learn`, not `analyze`

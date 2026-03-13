@@ -1,7 +1,6 @@
 param(
     [Parameter(Mandatory = $true)]
     [string]$SourceUrl,
-
     [string]$VaultPath,
     [string]$CategoryHint,
     [string]$TitleHint,
@@ -25,23 +24,19 @@ function Write-Utf8Text {
 
 function Test-HasValue {
     param($Value)
-    return $null -ne $Value -and -not [string]::IsNullOrWhiteSpace([string]$Value)
+    $null -ne $Value -and -not [string]::IsNullOrWhiteSpace([string]$Value)
 }
 
 function Get-Config {
     param([string]$Path)
-    if (-not (Test-Path $Path)) {
-        throw "Config file not found: $Path"
-    }
+    if (-not (Test-Path $Path)) { throw "Config file not found: $Path" }
     Read-Utf8Text -Path $Path | ConvertFrom-Json
 }
 
 function Get-SafeFileName {
     param([string]$Value)
     $invalidChars = [System.IO.Path]::GetInvalidFileNameChars()
-    $sanitized = -join ($Value.ToCharArray() | ForEach-Object {
-        if ($invalidChars -contains $_) { '_' } else { $_ }
-    })
+    $sanitized = -join ($Value.ToCharArray() | ForEach-Object { if ($invalidChars -contains $_) { '_' } else { $_ } })
     $sanitized.Trim()
 }
 
@@ -59,8 +54,7 @@ function Get-HostLabel {
 function New-LocalTempDirectory {
     $tempDir = Join-Path $PSScriptRoot '..\.tmp'
     New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
-    $dirName = [guid]::NewGuid().ToString('N')
-    $path = Join-Path $tempDir $dirName
+    $path = Join-Path $tempDir ([guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $path -Force | Out-Null
     $path
 }
@@ -93,11 +87,8 @@ function Get-FirstSubtitleText {
     $subtitleFile = Get-ChildItem -LiteralPath $Directory -Recurse -File -Include *.vtt, *.srt, *.ass, *.lrc -ErrorAction SilentlyContinue |
         Sort-Object Extension, Name |
         Select-Object -First 1
-    if ($null -eq $subtitleFile) {
-        return ''
-    }
-    $raw = Read-Utf8Text -Path $subtitleFile.FullName
-    Clean-SubtitleText -Text $raw
+    if ($null -eq $subtitleFile) { return '' }
+    Clean-SubtitleText -Text (Read-Utf8Text -Path $subtitleFile.FullName)
 }
 
 function Get-RouteConfigValue {
@@ -116,18 +107,14 @@ function Get-MetaContent {
     param([string]$Html, [string]$Key, [string]$Attr = 'property')
     $pattern = '<meta\s+' + $Attr + '="' + [regex]::Escape($Key) + '"[^>]*content="(?<value>[^"]+)"'
     $match = [regex]::Match($Html, $pattern, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
-    if ($match.Success) {
-        return [System.Net.WebUtility]::HtmlDecode($match.Groups['value'].Value).Trim()
-    }
+    if ($match.Success) { return [System.Net.WebUtility]::HtmlDecode($match.Groups['value'].Value).Trim() }
     ''
 }
 
 function Get-HtmlTitle {
     param([string]$Html)
     $match = [regex]::Match($Html, '<title>(?<value>.*?)</title>', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase -bor [System.Text.RegularExpressions.RegexOptions]::Singleline)
-    if ($match.Success) {
-        return [System.Net.WebUtility]::HtmlDecode($match.Groups['value'].Value).Trim()
-    }
+    if ($match.Success) { return [System.Net.WebUtility]::HtmlDecode($match.Groups['value'].Value).Trim() }
     ''
 }
 
@@ -150,251 +137,230 @@ function Get-PreviewText {
     if ($Text.Length -le $Length) { return $Text }
     $Text.Substring(0, $Length) + '...'
 }
+function Resolve-AbsoluteUrl {
+    param([string]$BaseUrl, [string]$Candidate)
+    if (-not (Test-HasValue $Candidate)) { return '' }
+    try { return [System.Uri]::new([System.Uri]$BaseUrl, $Candidate).AbsoluteUri } catch { return $Candidate }
+}
+
+function Get-RegexGroupValue {
+    param([string]$Html, [string]$Pattern, [string]$GroupName = 'value')
+    $match = [regex]::Match($Html, $Pattern, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase -bor [System.Text.RegularExpressions.RegexOptions]::Singleline)
+    if ($match.Success) { return [System.Net.WebUtility]::HtmlDecode($match.Groups[$GroupName].Value).Trim() }
+    ''
+}
+
+function Get-PodcastResourceHints {
+    param([string]$Html, [string]$BaseUrl)
+    $rss = Get-RegexGroupValue -Html $Html -Pattern '<link[^>]+type="application/rss\+xml"[^>]+href="(?<value>[^"]+)"'
+    if (-not (Test-HasValue $rss)) { $rss = Get-RegexGroupValue -Html $Html -Pattern 'href="(?<value>[^"]+\.(xml|rss))(?:\?[^"]*)?"' }
+    $transcript = Get-RegexGroupValue -Html $Html -Pattern 'href="(?<value>[^"]*(transcript|subtitle|captions)[^"]*)"'
+    if (-not (Test-HasValue $transcript)) { $transcript = Get-RegexGroupValue -Html $Html -Pattern 'href="(?<value>[^"]+\.(vtt|srt|lrc|txt))(?:\?[^"]*)?"' }
+    $enclosure = Get-RegexGroupValue -Html $Html -Pattern 'href="(?<value>[^"]+\.(mp3|m4a|aac|wav))(?:\?[^"]*)?"'
+    if (-not (Test-HasValue $enclosure)) { $enclosure = Get-MetaContent -Html $Html -Key 'og:audio' }
+    [pscustomobject]@{
+        rss_url = Resolve-AbsoluteUrl -BaseUrl $BaseUrl -Candidate $rss
+        transcript_url = Resolve-AbsoluteUrl -BaseUrl $BaseUrl -Candidate $transcript
+        enclosure_url = Resolve-AbsoluteUrl -BaseUrl $BaseUrl -Candidate $enclosure
+    }
+}
+
+function Get-TranscriptFromUrl {
+    param([string]$TranscriptUrl)
+    if (-not (Test-HasValue $TranscriptUrl)) { return '' }
+    try {
+        $response = Invoke-WebRequest -Uri $TranscriptUrl -UseBasicParsing
+        if (-not (Test-HasValue $response.Content)) { return '' }
+        return (Clean-SubtitleText -Text ([string]$response.Content))
+    } catch { return '' }
+}
+
+function Get-PodcastShowNotes {
+    param([string]$Html, [string]$Description, [string]$PlainText)
+    $candidates = New-Object System.Collections.Generic.List[string]
+    if (Test-HasValue $Description) { $candidates.Add($Description) }
+    foreach ($pattern in @('<article[^>]*>(?<value>.*?)</article>', '<main[^>]*>(?<value>.*?)</main>', '<section[^>]+(?:show-notes|shownotes|notes|description)[^>]*>(?<value>.*?)</section>', '<div[^>]+(?:show-notes|shownotes|notes|description)[^>]*>(?<value>.*?)</div>')) {
+        $match = [regex]::Match($Html, $pattern, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase -bor [System.Text.RegularExpressions.RegexOptions]::Singleline)
+        if ($match.Success) {
+            $candidateText = Get-PlainTextFromHtml -Html $match.Groups['value'].Value
+            if (Test-HasValue $candidateText) { $candidates.Add($candidateText) }
+        }
+    }
+    if ($candidates.Count -eq 0 -and (Test-HasValue $PlainText)) { $candidates.Add($PlainText) }
+    foreach ($candidate in $candidates) {
+        $trimmed = Get-PreviewText -Text ($candidate.Trim()) -Length 2500
+        if (Test-HasValue $trimmed) { return $trimmed }
+    }
+    ''
+}
+
+function Get-BestArticleText {
+    param([string]$Html)
+    $blocks = New-Object System.Collections.Generic.List[string]
+    foreach ($pattern in @('<article[^>]*>(?<value>.*?)</article>', '<main[^>]*>(?<value>.*?)</main>', '<div[^>]+(?:content|article|post|entry|main|story|text|body)[^>]*>(?<value>.*?)</div>', '<section[^>]+(?:content|article|post|entry|main|story|text|body)[^>]*>(?<value>.*?)</section>')) {
+        $matches = [regex]::Matches($Html, $pattern, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase -bor [System.Text.RegularExpressions.RegexOptions]::Singleline)
+        foreach ($match in $matches) {
+            $text = Get-PlainTextFromHtml -Html $match.Groups['value'].Value
+            if (Test-HasValue $text -and $text.Length -ge 200) { $blocks.Add($text) }
+        }
+    }
+    if ($blocks.Count -gt 0) { return ($blocks | Select-Object -Unique | Sort-Object Length -Descending | Select-Object -First 1) }
+    Get-PlainTextFromHtml -Html $Html
+}
 
 function New-CaptureObject {
-    param(
-        [string]$Title,
-        [string]$Author,
-        [string]$PublishedAt,
-        [string]$Summary,
-        [string]$RawText,
-        [string]$Transcript,
-        [string[]]$Tags,
-        [string[]]$Images,
-        [string[]]$Videos,
-        $Metadata
-    )
+    param([string]$Title,[string]$Author,[string]$PublishedAt,[string]$Summary,[string]$RawText,[string]$Transcript,[string[]]$Tags,[string[]]$Images,[string[]]$Videos,$Metadata)
+    [pscustomobject]@{ title=$Title; author=$Author; published_at=$PublishedAt; summary=$Summary; raw_text=$RawText; transcript=$Transcript; tags=$Tags; images=$Images; videos=$Videos; metadata=$Metadata }
+}
 
-    [pscustomobject]@{
-        title = $Title
-        author = $Author
-        published_at = $PublishedAt
-        summary = $Summary
-        raw_text = $RawText
-        transcript = $Transcript
-        tags = $Tags
-        images = $Images
-        videos = $Videos
-        metadata = $Metadata
-    }
+function New-ArticleFallbackCapture {
+    param([string]$Url,[string]$TitleHint,[string]$ErrorText)
+    $title = if (Test-HasValue $TitleHint) { $TitleHint } else { "Article Clip - $(Get-HostLabel -Url $Url)" }
+    $metadata = [ordered]@{ capture_level='fallback'; transcript_status='not_applicable'; media_downloaded=$false; analysis_ready=$true; extractor='web-article'; fallback_reason=$ErrorText }
+    New-CaptureObject -Title $title -Author 'unknown' -PublishedAt 'unknown' -Summary 'Article clipping fell back to a minimal clipping because page extraction could not be completed in the current environment.' -RawText ("Fallback reason:`n$ErrorText") -Transcript '' -Tags @('clipped','article','fallback') -Images @() -Videos @() -Metadata $metadata
 }
 
 function New-VideoMetadataFallbackCapture {
-    param([string]$Url, [string]$TitleHint, [string]$Platform, [string]$ErrorText)
+    param([string]$Url,[string]$TitleHint,[string]$Platform,[string]$ErrorText)
     $title = if (Test-HasValue $TitleHint) { $TitleHint } else { "Video Clip - $Platform" }
-    $metadata = [ordered]@{
-        capture_level = 'fallback'
-        transcript_status = 'missing'
-        media_downloaded = $false
-        analysis_ready = $true
-        extractor = 'yt-dlp'
-        fallback_reason = $ErrorText
-    }
-    New-CaptureObject -Title $title -Author 'unknown' -PublishedAt 'unknown' -Summary 'Metadata capture fell back to a minimal clipping because yt-dlp could not fetch remote metadata in the current environment.' -RawText ("Fallback reason:`n$ErrorText") -Transcript '' -Tags @('clipped', 'video', $Platform, 'fallback') -Images @() -Videos @($Url) -Metadata $metadata
+    $metadata = [ordered]@{ capture_level='fallback'; transcript_status='missing'; media_downloaded=$false; analysis_ready=$true; extractor='yt-dlp'; fallback_reason=$ErrorText }
+    New-CaptureObject -Title $title -Author 'unknown' -PublishedAt 'unknown' -Summary 'Metadata capture fell back to a minimal clipping because yt-dlp could not fetch remote metadata in the current environment.' -RawText ("Fallback reason:`n$ErrorText") -Transcript '' -Tags @('clipped','video',$Platform,'fallback') -Images @() -Videos @($Url) -Metadata $metadata
 }
 
 function New-PodcastFallbackCapture {
-    param([string]$Url, [string]$TitleHint, [string]$Platform, [string]$ErrorText)
+    param([string]$Url,[string]$TitleHint,[string]$Platform,[string]$ErrorText)
     $title = if (Test-HasValue $TitleHint) { $TitleHint } else { "Podcast Clip - $Platform" }
-    $metadata = [ordered]@{
-        capture_level = 'fallback'
-        transcript_status = 'missing'
-        media_downloaded = $false
-        analysis_ready = $true
-        extractor = 'web-metadata'
-        fallback_reason = $ErrorText
-    }
-    New-CaptureObject -Title $title -Author 'unknown' -PublishedAt 'unknown' -Summary 'Podcast clipping fell back to a minimal clipping because page metadata could not be fetched in the current environment.' -RawText ("Fallback reason:`n$ErrorText") -Transcript '' -Tags @('clipped', 'podcast', $Platform, 'fallback') -Images @() -Videos @($Url) -Metadata $metadata
+    $metadata = [ordered]@{ capture_level='fallback'; transcript_status='missing'; media_downloaded=$false; analysis_ready=$true; extractor='web-metadata'; fallback_reason=$ErrorText; rss_url=''; transcript_url=''; enclosure_url='' }
+    New-CaptureObject -Title $title -Author 'unknown' -PublishedAt 'unknown' -Summary 'Podcast clipping fell back to a minimal clipping because page metadata could not be fetched in the current environment.' -RawText ("Fallback reason:`n$ErrorText") -Transcript '' -Tags @('clipped','podcast',$Platform,'fallback') -Images @() -Videos @($Url) -Metadata $metadata
 }
 
 function Invoke-ArticleCapture {
-    param([string]$Url, [string]$TitleHint)
-    $title = if (Test-HasValue $TitleHint) { $TitleHint } else { "Article Clip - $(Get-HostLabel -Url $Url)" }
-    $metadata = [ordered]@{
-        capture_level = 'light'
-        transcript_status = 'not_applicable'
-        media_downloaded = $false
-        analysis_ready = $true
+    param([string]$Url,[string]$TitleHint,[switch]$DryRun)
+    if ($DryRun) {
+        $title = if (Test-HasValue $TitleHint) { $TitleHint } else { "Article Clip - $(Get-HostLabel -Url $Url)" }
+        $metadata = [ordered]@{ capture_level='light'; transcript_status='not_applicable'; media_downloaded=$false; analysis_ready=$true; extractor='web-article'; dry_run=$true }
+        return (New-CaptureObject -Title $title -Author 'unknown' -PublishedAt 'unknown' -Summary 'Dry run: article extraction route not executed.' -RawText '' -Transcript '' -Tags @('clipped','article') -Images @() -Videos @() -Metadata $metadata)
     }
-    New-CaptureObject -Title $title -Author 'unknown' -PublishedAt 'unknown' -Summary 'Light clipping only. Full article extraction is not wired into the first runnable version yet.' -RawText 'Placeholder article capture. Next step: connect browser + article extraction tooling.' -Transcript '' -Tags @('clipped', 'article') -Images @() -Videos @() -Metadata $metadata
+    try {
+        $response = Invoke-WebRequest -Uri $Url -UseBasicParsing
+        $html = [string]$response.Content
+        if (-not (Test-HasValue $html)) { throw 'Article page returned empty HTML content.' }
+        $ogTitle = Get-MetaContent -Html $html -Key 'og:title'
+        $ogDescription = Get-MetaContent -Html $html -Key 'og:description'
+        if (-not (Test-HasValue $ogDescription)) { $ogDescription = Get-MetaContent -Html $html -Key 'description' -Attr 'name' }
+        $ogImage = Get-MetaContent -Html $html -Key 'og:image'
+        $author = Get-MetaContent -Html $html -Key 'author' -Attr 'name'
+        if (-not (Test-HasValue $author)) { $author = Get-MetaContent -Html $html -Key 'article:author' }
+        $publishedAt = Get-MetaContent -Html $html -Key 'article:published_time'
+        if (-not (Test-HasValue $publishedAt)) { $publishedAt = Get-MetaContent -Html $html -Key 'og:published_time' }
+        if (-not (Test-HasValue $publishedAt)) { $publishedAt = 'unknown' }
+        $pageTitle = Get-HtmlTitle -Html $html
+        $mainText = Get-BestArticleText -Html $html
+        $rawText = Get-PreviewText -Text $mainText -Length 8000
+        $title = if (Test-HasValue $TitleHint) { $TitleHint } elseif (Test-HasValue $ogTitle) { $ogTitle } elseif (Test-HasValue $pageTitle) { $pageTitle } else { "Article Clip - $(Get-HostLabel -Url $Url)" }
+        if (-not (Test-HasValue $author)) { $author = 'unknown' }
+        $summaryParts = New-Object System.Collections.Generic.List[string]
+        if (Test-HasValue $ogDescription) { $summaryParts.Add($ogDescription) } else { $summaryParts.Add('Article text extracted from the page body.') }
+        if (Test-HasValue $mainText) { $summaryParts.Add("Body preview: $(Get-PreviewText -Text $mainText -Length 180)") }
+        $summary = ($summaryParts -join ' ').Trim()
+        $images = @(); if (Test-HasValue $ogImage) { $images = @($ogImage) }
+        $metadata = [ordered]@{ capture_level = if (Test-HasValue $mainText) { 'standard' } else { 'light' }; transcript_status='not_applicable'; media_downloaded=$false; analysis_ready=$true; extractor='web-article'; source_status_code=$response.StatusCode; source_status_description=$response.StatusDescription; main_text_length = if (Test-HasValue $mainText) { $mainText.Length } else { 0 } }
+        return (New-CaptureObject -Title $title -Author $author -PublishedAt $publishedAt -Summary $summary -RawText $rawText -Transcript '' -Tags @('clipped','article') -Images $images -Videos @() -Metadata $metadata)
+    } catch {
+        return (New-ArticleFallbackCapture -Url $Url -TitleHint $TitleHint -ErrorText $_.Exception.Message)
+    }
 }
 
 function Invoke-SocialCapture {
-    param([string]$Url, [string]$TitleHint, [string]$Platform)
+    param([string]$Url,[string]$TitleHint,[string]$Platform)
     $title = if (Test-HasValue $TitleHint) { $TitleHint } else { "Social Clip - $Platform" }
-    $metadata = [ordered]@{
-        capture_level = 'light'
-        transcript_status = 'missing'
-        media_downloaded = $false
-        analysis_ready = $true
-    }
-    New-CaptureObject -Title $title -Author 'unknown' -PublishedAt 'unknown' -Summary 'Light social clipping only. Browser capture integration is planned for the next step.' -RawText 'Placeholder social capture. Intended future fields: visible caption, tags, cover, and engagement data.' -Transcript '' -Tags @('clipped', 'social', $Platform) -Images @() -Videos @($Url) -Metadata $metadata
+    $metadata = [ordered]@{ capture_level='light'; transcript_status='missing'; media_downloaded=$false; analysis_ready=$true }
+    New-CaptureObject -Title $title -Author 'unknown' -PublishedAt 'unknown' -Summary 'Light social clipping only. Browser capture integration is planned for the next step.' -RawText 'Placeholder social capture. Intended future fields: visible caption, tags, cover, and engagement data.' -Transcript '' -Tags @('clipped','social',$Platform) -Images @() -Videos @($Url) -Metadata $metadata
 }
 
 function Invoke-VideoMetadataCapture {
-    param($Config, [string]$Url, [string]$TitleHint, [string]$Platform, [switch]$DryRun)
-
+    param($Config,[string]$Url,[string]$TitleHint,[string]$Platform,[switch]$DryRun)
     if ($DryRun) {
         $title = if (Test-HasValue $TitleHint) { $TitleHint } else { "Video Clip - $Platform" }
-        $metadata = [ordered]@{
-            capture_level = 'light'
-            transcript_status = 'missing'
-            media_downloaded = $false
-            analysis_ready = $true
-            extractor = 'yt-dlp'
-            dry_run = $true
-        }
-        return (New-CaptureObject -Title $title -Author 'unknown' -PublishedAt 'unknown' -Summary 'Dry run: yt-dlp metadata route not executed.' -RawText '' -Transcript '' -Tags @('clipped', 'video', $Platform) -Images @() -Videos @($Url) -Metadata $metadata)
+        $metadata = [ordered]@{ capture_level='light'; transcript_status='missing'; media_downloaded=$false; analysis_ready=$true; extractor='yt-dlp'; dry_run=$true }
+        return (New-CaptureObject -Title $title -Author 'unknown' -PublishedAt 'unknown' -Summary 'Dry run: yt-dlp metadata route not executed.' -RawText '' -Transcript '' -Tags @('clipped','video',$Platform) -Images @() -Videos @($Url) -Metadata $metadata)
     }
-
     $ytDlpCommand = Get-RouteConfigValue -Config $Config -RouteName 'video_metadata' -PropertyName 'command' -DefaultValue 'yt-dlp'
     $subtitleLanguages = Get-RouteConfigValue -Config $Config -RouteName 'video_metadata' -PropertyName 'subtitle_languages' -DefaultValue 'all,-live_chat'
     $subtitleFormat = Get-RouteConfigValue -Config $Config -RouteName 'video_metadata' -PropertyName 'subtitle_format' -DefaultValue 'vtt/srt/best'
-
     $tempDir = New-LocalTempDirectory
     try {
         try {
-            $metadataArgs = @('--dump-single-json', '--skip-download', '--no-warnings', '--no-playlist', $Url)
-            $metadataJson = & $ytDlpCommand @metadataArgs 2>&1
-            $metadataExitCode = $LASTEXITCODE
-            if ($metadataExitCode -ne 0) {
-                throw "yt-dlp metadata extraction failed with exit code $metadataExitCode. Output: $metadataJson"
-            }
-            $metadataText = ($metadataJson | Out-String).Trim()
-            if (-not (Test-HasValue $metadataText)) {
-                throw 'yt-dlp returned no metadata output.'
-            }
+            $metadataJson = & $ytDlpCommand '--dump-single-json' '--skip-download' '--no-warnings' '--no-playlist' $Url 2>&1
+            if ($LASTEXITCODE -ne 0) { throw "yt-dlp metadata extraction failed with exit code $LASTEXITCODE. Output: $metadataJson" }
+            $metadataText = ($metadataJson | Out-String).Trim(); if (-not (Test-HasValue $metadataText)) { throw 'yt-dlp returned no metadata output.' }
             $info = $metadataText | ConvertFrom-Json -Depth 100
-
             $baseTemplate = Join-Path $tempDir 'subtitle'
-            $subtitleArgs = @('--skip-download', '--write-subs', '--write-auto-subs', '--sub-langs', $subtitleLanguages, '--sub-format', $subtitleFormat, '--no-playlist', '--no-warnings', '-o', "$baseTemplate.%(ext)s", $Url)
-            $subtitleOutput = & $ytDlpCommand @subtitleArgs 2>&1
+            $subtitleOutput = & $ytDlpCommand '--skip-download' '--write-subs' '--write-auto-subs' '--sub-langs' $subtitleLanguages '--sub-format' $subtitleFormat '--no-playlist' '--no-warnings' '-o' "$baseTemplate.%(ext)s" $Url 2>&1
             $subtitleExitCode = $LASTEXITCODE
-            $transcript = ''
-            if ($subtitleExitCode -eq 0) {
-                $transcript = Get-FirstSubtitleText -Directory $tempDir
-            }
-
-            $publishedAt = 'unknown'
-            if (Test-HasValue $info.release_date) { $publishedAt = [string]$info.release_date }
-            elseif (Test-HasValue $info.upload_date) { $publishedAt = [string]$info.upload_date }
-
+            $transcript = if ($subtitleExitCode -eq 0) { Get-FirstSubtitleText -Directory $tempDir } else { '' }
+            $publishedAt = 'unknown'; if (Test-HasValue $info.release_date) { $publishedAt = [string]$info.release_date } elseif (Test-HasValue $info.upload_date) { $publishedAt = [string]$info.upload_date }
             $description = if (Test-HasValue $info.description) { $info.description.Trim() } else { '' }
-            $summaryParts = @('Metadata-first clipping via yt-dlp.')
-            if (Test-HasValue $info.uploader) { $summaryParts += "Uploader: $($info.uploader)." }
-            if (Test-HasValue $info.duration_string) { $summaryParts += "Duration: $($info.duration_string)." }
-            if (Test-HasValue $info.view_count) { $summaryParts += "Views: $($info.view_count)." }
-            if (Test-HasValue $info.like_count) { $summaryParts += "Likes: $($info.like_count)." }
-            if (Test-HasValue $description) {
-                $summaryParts += "Description preview: $(Get-PreviewText -Text $description -Length 180)"
-            }
-            $summary = ($summaryParts -join ' ').Trim()
-
-            $title = if (Test-HasValue $TitleHint) { $TitleHint } else { [string]$info.title }
-            if (-not (Test-HasValue $title)) { $title = "Video Clip - $Platform" }
+            $summaryParts = @('Metadata-first clipping via yt-dlp.'); if (Test-HasValue $info.uploader) { $summaryParts += "Uploader: $($info.uploader)." }; if (Test-HasValue $info.duration_string) { $summaryParts += "Duration: $($info.duration_string)." }; if (Test-HasValue $description) { $summaryParts += "Description preview: $(Get-PreviewText -Text $description -Length 180)" }
+            $title = if (Test-HasValue $TitleHint) { $TitleHint } else { [string]$info.title }; if (-not (Test-HasValue $title)) { $title = "Video Clip - $Platform" }
             $author = if (Test-HasValue $info.uploader) { [string]$info.uploader } elseif (Test-HasValue $info.channel) { [string]$info.channel } else { 'unknown' }
-
-            $tags = New-Object System.Collections.Generic.List[string]
-            foreach ($tag in @('clipped', 'video', $Platform)) { if (Test-HasValue $tag) { $tags.Add([string]$tag) } }
-            if ($null -ne $info.categories) {
-                foreach ($category in @($info.categories)) { if (Test-HasValue $category) { $tags.Add([string]$category) } }
-            }
-            if ($null -ne $info.tags) {
-                foreach ($tag in @($info.tags | Select-Object -First 8)) { if (Test-HasValue $tag) { $tags.Add([string]$tag) } }
-            }
-            $tagList = @($tags | Select-Object -Unique)
-
-            $images = @()
-            if (Test-HasValue $info.thumbnail) { $images = @([string]$info.thumbnail) }
+            $images = @(); if (Test-HasValue $info.thumbnail) { $images = @([string]$info.thumbnail) }
             $videos = if (Test-HasValue $info.webpage_url) { @([string]$info.webpage_url) } else { @($Url) }
-            $metadata = [ordered]@{
-                capture_level = if (Test-HasValue $transcript) { 'standard' } else { 'light' }
-                transcript_status = if (Test-HasValue $transcript) { 'available' } else { 'missing' }
-                media_downloaded = $false
-                analysis_ready = $true
-                extractor = 'yt-dlp'
-                duration = $info.duration
-                duration_string = $info.duration_string
-                uploader = $info.uploader
-                channel = $info.channel
-                extractor_key = $info.extractor_key
-                subtitle_command_exit_code = $subtitleExitCode
-                subtitle_command_output = ($subtitleOutput | Out-String).Trim()
-            }
-            return (New-CaptureObject -Title $title -Author $author -PublishedAt $publishedAt -Summary $summary -RawText $description -Transcript $transcript -Tags $tagList -Images $images -Videos $videos -Metadata $metadata)
-        }
-        catch {
+            $metadata = [ordered]@{ capture_level = if (Test-HasValue $transcript) { 'standard' } else { 'light' }; transcript_status = if (Test-HasValue $transcript) { 'available' } else { 'missing' }; media_downloaded=$false; analysis_ready=$true; extractor='yt-dlp'; duration=$info.duration; duration_string=$info.duration_string; uploader=$info.uploader; channel=$info.channel; extractor_key=$info.extractor_key; subtitle_command_exit_code=$subtitleExitCode; subtitle_command_output=($subtitleOutput | Out-String).Trim() }
+            return (New-CaptureObject -Title $title -Author $author -PublishedAt $publishedAt -Summary (($summaryParts -join ' ').Trim()) -RawText $description -Transcript $transcript -Tags @('clipped','video',$Platform) -Images $images -Videos $videos -Metadata $metadata)
+        } catch {
             return (New-VideoMetadataFallbackCapture -Url $Url -TitleHint $TitleHint -Platform $Platform -ErrorText $_.Exception.Message)
         }
-    }
-    finally {
+    } finally {
         Remove-LocalTempDirectory -Path $tempDir
     }
 }
 
 function Invoke-PodcastCapture {
-    param($Config, [string]$Url, [string]$TitleHint, [string]$Platform, [switch]$DryRun)
-
+    param($Config,[string]$Url,[string]$TitleHint,[string]$Platform,[switch]$DryRun)
     if ($DryRun) {
         $title = if (Test-HasValue $TitleHint) { $TitleHint } else { "Podcast Clip - $Platform" }
-        $metadata = [ordered]@{
-            capture_level = 'light'
-            transcript_status = 'missing'
-            media_downloaded = $false
-            analysis_ready = $true
-            extractor = 'web-metadata'
-            dry_run = $true
-        }
-        return (New-CaptureObject -Title $title -Author 'unknown' -PublishedAt 'unknown' -Summary 'Dry run: podcast metadata route not executed.' -RawText '' -Transcript '' -Tags @('clipped', 'podcast', $Platform) -Images @() -Videos @($Url) -Metadata $metadata)
+        $metadata = [ordered]@{ capture_level='light'; transcript_status='missing'; media_downloaded=$false; analysis_ready=$true; extractor='web-metadata'; dry_run=$true }
+        return (New-CaptureObject -Title $title -Author 'unknown' -PublishedAt 'unknown' -Summary 'Dry run: podcast metadata route not executed.' -RawText '' -Transcript '' -Tags @('clipped','podcast',$Platform) -Images @() -Videos @($Url) -Metadata $metadata)
     }
-
     try {
         $response = Invoke-WebRequest -Uri $Url -UseBasicParsing
         $html = [string]$response.Content
-        if (-not (Test-HasValue $html)) {
-            throw 'Podcast page returned empty HTML content.'
-        }
-
+        if (-not (Test-HasValue $html)) { throw 'Podcast page returned empty HTML content.' }
         $ogTitle = Get-MetaContent -Html $html -Key 'og:title'
         $ogDescription = Get-MetaContent -Html $html -Key 'og:description'
+        if (-not (Test-HasValue $ogDescription)) { $ogDescription = Get-MetaContent -Html $html -Key 'description' -Attr 'name' }
         $ogImage = Get-MetaContent -Html $html -Key 'og:image'
         $pageTitle = Get-HtmlTitle -Html $html
         $plainText = Get-PlainTextFromHtml -Html $html
-
+        $resourceHints = Get-PodcastResourceHints -Html $html -BaseUrl $Url
+        $showNotes = Get-PodcastShowNotes -Html $html -Description $ogDescription -PlainText $plainText
+        $transcript = Get-TranscriptFromUrl -TranscriptUrl $resourceHints.transcript_url
         $title = if (Test-HasValue $TitleHint) { $TitleHint } elseif (Test-HasValue $ogTitle) { $ogTitle } elseif (Test-HasValue $pageTitle) { $pageTitle } else { "Podcast Clip - $Platform" }
-        $author = 'unknown'
-        if (Test-HasValue $pageTitle -and $pageTitle -match '^(?<episode>.*?)\s+-\s+(?<podcast>.*?)\s+\|') {
-            $author = $Matches['podcast']
-        }
-
-        $summary = if (Test-HasValue $ogDescription) { $ogDescription } else { 'Podcast metadata captured from the episode page.' }
-        $rawParts = @()
-        if (Test-HasValue $ogDescription) { $rawParts += $ogDescription }
-        if (Test-HasValue $plainText) { $rawParts += (Get-PreviewText -Text $plainText -Length 1200) }
-        $rawText = ($rawParts | Where-Object { Test-HasValue $_ } | Select-Object -Unique) -join "`n`n"
-
-        $images = @()
-        if (Test-HasValue $ogImage) { $images = @($ogImage) }
-        $metadata = [ordered]@{
-            capture_level = 'standard'
-            transcript_status = 'missing'
-            media_downloaded = $false
-            analysis_ready = $true
-            extractor = 'web-metadata'
-            source_status_code = $response.StatusCode
-            source_status_description = $response.StatusDescription
-        }
-        return (New-CaptureObject -Title $title -Author $author -PublishedAt 'unknown' -Summary $summary -RawText $rawText -Transcript '' -Tags @('clipped', 'podcast', $Platform) -Images $images -Videos @($Url) -Metadata $metadata)
-    }
-    catch {
+        $author = 'unknown'; if (Test-HasValue $pageTitle -and $pageTitle -match '^(?<episode>.*?)\s+-\s+(?<podcast>.*?)\s+\|') { $author = $Matches['podcast'] }
+        $summaryParts = New-Object System.Collections.Generic.List[string]
+        if (Test-HasValue $ogDescription) { $summaryParts.Add($ogDescription) } else { $summaryParts.Add('Podcast metadata captured from the episode page.') }
+        if (Test-HasValue $resourceHints.rss_url) { $summaryParts.Add('RSS discovered.') }
+        if (Test-HasValue $resourceHints.transcript_url) { $summaryParts.Add('Transcript hint discovered.') }
+        if (Test-HasValue $resourceHints.enclosure_url) { $summaryParts.Add('Audio enclosure hint discovered.') }
+        if (Test-HasValue $showNotes) { $summaryParts.Add('Show notes extracted from page content.') }
+        $rawParts = New-Object System.Collections.Generic.List[string]
+        if (Test-HasValue $ogDescription) { $rawParts.Add("Description:`n$ogDescription") }
+        if (Test-HasValue $showNotes) { $rawParts.Add("Show Notes:`n$showNotes") } elseif (Test-HasValue $plainText) { $rawParts.Add("Page Text Preview:`n$(Get-PreviewText -Text $plainText -Length 1800)") }
+        $images = @(); if (Test-HasValue $ogImage) { $images = @($ogImage) }
+        $videos = @($Url); if (Test-HasValue $resourceHints.enclosure_url) { $videos += $resourceHints.enclosure_url }; $videos = @($videos | Select-Object -Unique)
+        if (Test-HasValue $transcript) { $captureLevel = 'enhanced' } elseif (Test-HasValue $showNotes -or Test-HasValue $resourceHints.rss_url -or Test-HasValue $resourceHints.enclosure_url) { $captureLevel = 'standard' } else { $captureLevel = 'light' }
+        $metadata = [ordered]@{ capture_level=$captureLevel; transcript_status = if (Test-HasValue $transcript) { 'available' } else { 'missing' }; media_downloaded=$false; analysis_ready=$true; extractor='web-metadata'; source_status_code=$response.StatusCode; source_status_description=$response.StatusDescription; rss_url=$resourceHints.rss_url; transcript_url=$resourceHints.transcript_url; enclosure_url=$resourceHints.enclosure_url; show_notes_extracted=[bool](Test-HasValue $showNotes) }
+        return (New-CaptureObject -Title $title -Author $author -PublishedAt 'unknown' -Summary (($summaryParts -join ' ').Trim()) -RawText (($rawParts | Select-Object -Unique) -join "`n`n") -Transcript $transcript -Tags @('clipped','podcast',$Platform) -Images $images -Videos $videos -Metadata $metadata)
+    } catch {
         return (New-PodcastFallbackCapture -Url $Url -TitleHint $TitleHint -Platform $Platform -ErrorText $_.Exception.Message)
     }
 }
 
 function Invoke-CaptureRoute {
-    param($Config, $Detection, [string]$Url, [string]$TitleHint, [switch]$DryRun)
+    param($Config,$Detection,[string]$Url,[string]$TitleHint,[switch]$DryRun)
     switch ($Detection.route) {
-        'article' { return Invoke-ArticleCapture -Url $Url -TitleHint $TitleHint }
+        'article' { return Invoke-ArticleCapture -Url $Url -TitleHint $TitleHint -DryRun:$DryRun }
         'social' { return Invoke-SocialCapture -Url $Url -TitleHint $TitleHint -Platform $Detection.platform }
         'video_metadata' { return Invoke-VideoMetadataCapture -Config $Config -Url $Url -TitleHint $TitleHint -Platform $Detection.platform -DryRun:$DryRun }
         'podcast' { return Invoke-PodcastCapture -Config $Config -Url $Url -TitleHint $TitleHint -Platform $Detection.platform -DryRun:$DryRun }
@@ -403,39 +369,27 @@ function Invoke-CaptureRoute {
 }
 
 function Build-ClippingNote {
-    param($Config, $Detection, $Capture, [string]$SourceUrl, [string]$CategoryHint)
-
+    param($Config,$Detection,$Capture,[string]$SourceUrl,[string]$CategoryHint)
     $captured = Get-Date -Format 'yyyy-MM-dd'
     $folder = if (Test-HasValue $CategoryHint) { $CategoryHint } elseif (Test-HasValue $Config.clipper.default_folder) { [string]$Config.clipper.default_folder } else { 'Clippings' }
     $title = [string]$Capture.title
     $prefixDate = if ($Config.clipper.prefix_date -eq $true) { "$captured " } else { '' }
     $fileName = Get-SafeFileName "$prefixDate$title.md"
-    $tags = @($Capture.tags | Where-Object { Test-HasValue $_ } | Select-Object -Unique)
-    if ($tags.Count -eq 0) { $tags = @('clipped') }
+    $tags = @($Capture.tags | Where-Object { Test-HasValue $_ } | Select-Object -Unique); if ($tags.Count -eq 0) { $tags = @('clipped') }
     $frontmatterTags = ($tags | ForEach-Object { "  - $_" }) -join "`n"
     $images = if (@($Capture.images).Count -gt 0) { (@($Capture.images) | ForEach-Object { "- $_" }) -join "`n" } else { '- none' }
     $videos = if (@($Capture.videos).Count -gt 0) { (@($Capture.videos) | ForEach-Object { "- $_" }) -join "`n" } else { '- none' }
     $rawText = if (Test-HasValue $Capture.raw_text) { [string]$Capture.raw_text } else { '(none)' }
     $transcript = if (Test-HasValue $Capture.transcript) { [string]$Capture.transcript } else { '(none)' }
-
-    $metadataLines = @(
-        "- Capture Level: $($Capture.metadata.capture_level)",
-        "- Transcript Status: $($Capture.metadata.transcript_status)",
-        "- Media Downloaded: $($Capture.metadata.media_downloaded)",
-        "- Analysis Ready: $($Capture.metadata.analysis_ready)"
-    )
+    $metadataLines = @("- Capture Level: $($Capture.metadata.capture_level)", "- Transcript Status: $($Capture.metadata.transcript_status)", "- Media Downloaded: $($Capture.metadata.media_downloaded)", "- Analysis Ready: $($Capture.metadata.analysis_ready)")
     if ($Capture.metadata -is [System.Collections.IDictionary]) {
         foreach ($entry in $Capture.metadata.GetEnumerator()) {
-            if ($entry.Key -in @('capture_level', 'transcript_status', 'media_downloaded', 'analysis_ready')) { continue }
+            if ($entry.Key -in @('capture_level','transcript_status','media_downloaded','analysis_ready')) { continue }
             if ($null -eq $entry.Value) { continue }
             $value = if ($entry.Value -is [System.Array]) { ($entry.Value -join ', ') } else { [string]$entry.Value }
-            if (Test-HasValue $value) {
-                $metadataLines += "- $($entry.Key): $value"
-            }
+            if (Test-HasValue $value) { $metadataLines += "- $($entry.Key): $value" }
         }
     }
-    $metadataBlock = $metadataLines -join "`n"
-
     $body = @"
 ---
 title: $title
@@ -480,24 +434,15 @@ $images
 $videos
 
 ## Metadata
-$metadataBlock
+$($metadataLines -join "`n")
 "@
-
-    [pscustomobject]@{
-        title = $title
-        folder = $folder
-        file_name = $fileName
-        tags = $tags
-        note_body = $body
-    }
+    [pscustomobject]@{ title=$title; folder=$folder; file_name=$fileName; tags=$tags; note_body=$body }
 }
 
 function Write-NoteToVault {
-    param($Config, $Note, [string]$VaultPath)
+    param($Config,$Note,[string]$VaultPath)
     $resolvedVaultPath = if (Test-HasValue $VaultPath) { $VaultPath } elseif (Test-HasValue $Config.obsidian.vault_path) { [string]$Config.obsidian.vault_path } else { '' }
-    if (-not (Test-HasValue $resolvedVaultPath)) {
-        throw 'No vault path provided. Supply -VaultPath or set obsidian.vault_path in config.'
-    }
+    if (-not (Test-HasValue $resolvedVaultPath)) { throw 'No vault path provided. Supply -VaultPath or set obsidian.vault_path in config.' }
     $targetFolder = Join-Path $resolvedVaultPath $Note.folder
     New-Item -ItemType Directory -Path $targetFolder -Force | Out-Null
     $targetPath = Join-Path $targetFolder $Note.file_name
@@ -506,39 +451,14 @@ function Write-NoteToVault {
 }
 
 if (-not (Test-HasValue $ConfigPath)) {
-    if (Test-Path (Join-Path $PSScriptRoot '..\references\local-config.json')) {
-        $ConfigPath = Join-Path $PSScriptRoot '..\references\local-config.json'
-    } else {
-        $ConfigPath = Join-Path $PSScriptRoot '..\references\local-config.example.json'
-    }
+    if (Test-Path (Join-Path $PSScriptRoot '..\references\local-config.json')) { $ConfigPath = Join-Path $PSScriptRoot '..\references\local-config.json' } else { $ConfigPath = Join-Path $PSScriptRoot '..\references\local-config.example.json' }
 }
-
 $config = Get-Config -Path $ConfigPath
 $detection = Get-Detection -Url $SourceUrl
 $capture = Invoke-CaptureRoute -Config $config -Detection $detection -Url $SourceUrl -TitleHint $TitleHint -DryRun:$DryRun
 $note = Build-ClippingNote -Config $config -Detection $detection -Capture $capture -SourceUrl $SourceUrl -CategoryHint $CategoryHint
-
-$result = [ordered]@{
-    success = $true
-    dry_run = [bool]$DryRun
-    title = $note.title
-    folder = $note.folder
-    file_name = $note.file_name
-    route = $detection.route
-    platform = $detection.platform
-    content_type = $detection.content_type
-    tags = $note.tags
-    note_preview = $note.note_body
-    vault_path = if (Test-HasValue $VaultPath) { $VaultPath } else { $config.obsidian.vault_path }
-}
-
-if (-not $DryRun -and $config.obsidian.mode -eq 'filesystem') {
-    $result.note_path = Write-NoteToVault -Config $config -Note $note -VaultPath $VaultPath
-}
-
+$result = [ordered]@{ success=$true; dry_run=[bool]$DryRun; title=$note.title; folder=$note.folder; file_name=$note.file_name; route=$detection.route; platform=$detection.platform; content_type=$detection.content_type; tags=$note.tags; note_preview=$note.note_body; vault_path = if (Test-HasValue $VaultPath) { $VaultPath } else { $config.obsidian.vault_path } }
+if (-not $DryRun -and $config.obsidian.mode -eq 'filesystem') { $result.note_path = Write-NoteToVault -Config $config -Note $note -VaultPath $VaultPath }
 $json = $result | ConvertTo-Json -Depth 20
-if (Test-HasValue $OutputJsonPath) {
-    Write-Utf8Text -Path $OutputJsonPath -Content $json
-}
-
+if (Test-HasValue $OutputJsonPath) { Write-Utf8Text -Path $OutputJsonPath -Content $json }
 $json

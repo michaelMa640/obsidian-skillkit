@@ -32,18 +32,17 @@ This first runnable version already supports:
 - standardized clipping note generation
 - direct write into an Obsidian vault in filesystem mode
 - real `yt-dlp` integration for the `video_metadata` route, with fallback clipping when remote extraction fails
+- built-in podcast page metadata capture, RSS hint extraction, transcript-link discovery, and show-notes-style text extraction for the `podcast` route
 
 What is still placeholder-based in this version:
-- article full-text extraction
 - browser-based social capture
-- transcript/show-notes acquisition for podcast routes
 
 ### Current Capture Strategy
 
-- article pages: browser + article extraction planned, light placeholder capture for now
+- article pages: built-in page fetch + main-text extraction, with fallback clipping when the page cannot be reached
 - Xiaohongshu / Douyin: browser page capture planned, light placeholder capture for now
 - Bilibili / YouTube: `yt-dlp` metadata + subtitles first, and fallback to minimal clipping if remote extraction fails
-- Xiaoyuzhou / podcasts: page metadata + show-notes-style text capture, with transcript reserved for a later step
+- Xiaoyuzhou / podcasts: page metadata + RSS/transcript hint discovery + show-notes-style text extraction, with graceful fallback when the page cannot be reached
 
 Default principle:
 - clip first
@@ -75,75 +74,60 @@ Future route-specific integrations may additionally need:
 
 This repository does not vendor those external tools.
 
-## 中文
+## 涓枃
 
-### 说明
+### 璇存槑
 
-Obsidian Clipper 是一个面向 OpenClaw 的第一阶段快速剪藏 skill。
-它的目标是把链接尽快保存到 Obsidian 中，而不是在第一步就跑完整的 AI 深度分析。
+Obsidian Clipper 鏄竴涓潰鍚?OpenClaw 鐨勭涓€闃舵蹇€熷壀钘?skill銆?瀹冪殑鐩爣鏄妸閾炬帴灏藉揩淇濆瓨鍒?Obsidian 涓紝鑰屼笉鏄湪绗竴姝ュ氨璺戝畬鏁寸殑 AI 娣卞害鍒嗘瀽銆?
+杩欎釜 skill 鏈嶅姟浜庢柊鐨勪袱闃舵宸ヤ綔娴侊細
+- 绗竴闃舵锛歚obsidian-clipper`
+- 绗簩闃舵锛歚obsidian-analyzer`
 
-这个 skill 服务于新的两阶段工作流：
-- 第一阶段：`obsidian-clipper`
-- 第二阶段：`obsidian-analyzer`
+### 瀹冨仛浠€涔?
+- 鎺ユ敹 OpenClaw 鎻愪氦鐨勯摼鎺?- 璇嗗埆骞冲彴鍜屽唴瀹圭被鍨?- 璺敱鍒板悎閫傜殑鎶撳彇璺緞
+- 鎶婄粨鏋滃啓杩?`Clippings/`
+- 淇濈暀鍚庣画鍒嗘瀽鎵€闇€鐨勭粨鏋?
+### 褰撳墠绗竴鐗堝彲杩愯瀹炵幇
 
-### 它做什么
-
-- 接收 OpenClaw 提交的链接
-- 识别平台和内容类型
-- 路由到合适的抓取路径
-- 把结果写进 `Clippings/`
-- 保留后续分析所需的结构
-
-### 当前第一版可运行实现
-
-当前已经有真实可运行的 PowerShell 入口：
-- `scripts/run_clipper.ps1`
+褰撳墠宸茬粡鏈夌湡瀹炲彲杩愯鐨?PowerShell 鍏ュ彛锛?- `scripts/run_clipper.ps1`
 - `scripts/detect_platform.ps1`
 
-这第一版已经支持：
-- URL 输入
-- 平台识别
-- 路由选择
-- 标准化 Clippings 笔记生成
-- 文件系统模式下直接写入 Obsidian vault
-- `video_metadata` 路由真实调用 `yt-dlp`
+杩欑涓€鐗堝凡缁忔敮鎸侊細
+- URL 杈撳叆
+- 骞冲彴璇嗗埆
+- 璺敱閫夋嫨
+- 鏍囧噯鍖?Clippings 绗旇鐢熸垚
+- 鏂囦欢绯荤粺妯″紡涓嬬洿鎺ュ啓鍏?Obsidian vault
+- `video_metadata` 璺敱鐪熷疄璋冪敤 `yt-dlp`
+- `podcast` 璺敱鍐呭缓椤甸潰 metadata 鎶撳彇銆丷SS 绾跨储鎻愬彇銆乼ranscript 閾炬帴鍙戠幇銆乻how notes 椋庢牸鏂囨湰鎻愬彇
 
-这一版还没有真正接好的部分：
-- 文章正文完整抓取
-- 社交平台浏览器抓取
-- 播客 transcript 获取
+杩欎竴鐗堣繕娌℃湁鐪熸鎺ュソ鐨勯儴鍒嗭細
+- 鏂囩珷姝ｆ枃瀹屾暣鎶撳彇
+- 绀句氦骞冲彴娴忚鍣ㄦ姄鍙?
+### 褰撳墠鎶撳彇绛栫暐
 
-### 当前抓取策略
+- 鏂囩珷缃戦〉锛氬凡鎺ュ叆椤甸潰鎶撳彇鍜屾鏂囨彁鍙栵紝椤甸潰涓嶅彲杈炬椂鑷姩闄嶇骇
+- 灏忕孩涔?/ 鎶栭煶锛氬厛棰勭暀娴忚鍣ㄦ姄鍙栬矾寰勶紝褰撳墠鐢ㄨ交閲忓崰浣嶅壀钘?- Bilibili / YouTube锛氬凡鎺ュ叆 `yt-dlp`锛屼紭鍏堟姄鍏冩暟鎹拰瀛楀箷锛屽け璐ユ椂鑷姩闄嶇骇涓烘渶灏?clipping
+- 灏忓畤瀹?/ 鎾锛氬凡鎺ュ叆椤甸潰 metadata銆丷SS/transcript 绾跨储銆乻how notes 椋庢牸鏂囨湰鎻愬彇锛岄〉闈笉鍙揪鏃惰嚜鍔ㄩ檷绾?
+榛樿鍘熷垯锛?- 鍏堝壀钘?- 淇濇寔杞婚噺
+- 闄ら潪鏄惧紡闇€瑕侊紝鍚﹀垯涓嶅仛閲嶅瀷濯掍綋涓嬭浇
 
-- 文章网页：先预留正文路由，当前用轻量占位剪藏
-- 小红书 / 抖音：先预留浏览器抓取路由，当前用轻量占位剪藏
-- Bilibili / YouTube：已接入 `yt-dlp`，优先抓元数据和字幕
-- 小宇宙 / 播客：已接入页面元数据和 show-notes 风格文本抓取，transcript 作为后续增强
+### 杩欎釜 skill 鐩綍閲岀殑鏂囦欢
 
-默认原则：
-- 先剪藏
-- 保持轻量
-- 除非显式需要，否则不做重型媒体下载
+- `SKILL.md`锛氱粰浠ｇ悊鐪嬬殑璇存槑
+- `agents/openai.yaml`锛歴kill 鐨勫厓鏁版嵁
+- `references/local-config.example.json`锛氭湰鍦伴厤缃ā鏉?- `references/platform-routing.md`锛氬钩鍙拌矾鐢卞弬鑰?- `scripts/run_clipper.ps1`锛氱涓€鐗堝彲杩愯鍏ュ彛
+- `scripts/detect_platform.ps1`锛氬钩鍙拌瘑鍒緟鍔╄剼鏈?
+### 渚濊禆
 
-### 这个 skill 目录里的文件
-
-- `SKILL.md`：给代理看的说明
-- `agents/openai.yaml`：skill 的元数据
-- `references/local-config.example.json`：本地配置模板
-- `references/platform-routing.md`：平台路由参考
-- `scripts/run_clipper.ps1`：第一版可运行入口
-- `scripts/detect_platform.ps1`：平台识别辅助脚本
-
-### 依赖
-
-当前这版最小可运行实现需要：
+褰撳墠杩欑増鏈€灏忓彲杩愯瀹炵幇闇€瑕侊細
 - OpenClaw
 - PowerShell
-- 可访问的 Obsidian vault
-- `PATH` 中可用的 `yt-dlp`，用于 `video_metadata` 路由
-- 可访问小宇宙页面的网络环境，用于播客 metadata 路由
+- 鍙闂殑 Obsidian vault
+- `PATH` 涓彲鐢ㄧ殑 `yt-dlp`锛岀敤浜?`video_metadata` 璺敱
+- 鍙闂洰鏍囨挱瀹㈤〉闈㈢殑缃戠粶鐜锛岀敤浜?`podcast` 璺敱
 
-后续接入真实路由时，可能还需要：
+鍚庣画鎺ュ叆鐪熷疄璺嚎鏃讹紝鍙兘杩橀渶瑕侊細
 - Python
 - Playwright
-- 正文提取工具
+- 姝ｆ枃鎻愬彇宸ュ叿

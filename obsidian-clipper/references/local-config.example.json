@@ -1,11 +1,16 @@
-{
+﻿{
   "_instructions": {
     "purpose": "Copy this file to local-config.json and edit it for the target machine.",
     "do_not_commit": "Do not commit local-config.json. It is machine-specific.",
     "must_update": [
       "obsidian.vault_path unless your workflow always passes a vault path at runtime",
-      "routes.*.command values so they point to real local executables or wrappers",
+      "routes.article.command and routes.social.command if you wire local extractors for those placeholder routes",
       "clipper.default_folder if your vault does not use Clippings"
+    ],
+    "notes": [
+      "video_metadata uses yt-dlp by default",
+      "podcast currently uses the built-in web metadata route inside run_clipper.ps1 and does not require a separate command",
+      "use local-config.json to point future article/social wrappers to real local executables"
     ]
   },
   "obsidian": {
@@ -30,7 +35,9 @@
       "subtitle_format": "vtt/srt/best"
     },
     "podcast": {
-      "command": "E:/REPLACE/WITH/YOUR/podcast-route"
+      "built_in": true,
+      "prefer_transcript": true,
+      "prefer_show_notes": true
     }
   }
 }
