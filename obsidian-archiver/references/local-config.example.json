@@ -1,4 +1,19 @@
 ﻿{
+  "_instructions": {
+    "purpose": "Copy this file to local-config.json and edit it for the target machine.",
+    "do_not_commit": "Do not commit local-config.json. It is machine-specific.",
+    "must_update": [
+      "x_reader.command if PowerShell is not available as 'powershell' on the target machine",
+      "x_reader.args[3] so it points to the real invoke_x_reader.ps1 on the target machine",
+      "obsidian.vault_path unless your workflow always passes -VaultPath at runtime"
+    ],
+    "notes": [
+      "This example is a template only. Do not reuse the paths below without editing them.",
+      "The invoke_x_reader.ps1 path should normally point to the same deployed skill folder that contains this config file.",
+      "If OpenClaw deploys the skill into its own workspace, update the path to that workspace copy, not your development copy.",
+      "If your workflow always provides VaultPath at runtime, obsidian.vault_path may be left empty."
+    ]
+  },
   "x_reader": {
     "mode": "command",
     "command": "powershell",
@@ -6,7 +21,7 @@
       "-ExecutionPolicy",
       "Bypass",
       "-File",
-      "E:/path/to/obsidian-skillkit/obsidian-archiver/scripts/invoke_x_reader.ps1",
+      "E:/REPLACE/WITH/YOUR/DEPLOYED/obsidian-archiver/scripts/invoke_x_reader.ps1",
       "-InputJson",
       "{input_json}",
       "-OutputJson",
@@ -15,7 +30,7 @@
   },
   "obsidian": {
     "mode": "filesystem",
-    "vault_path": "E:/path/to/your/ObsidianVault"
+    "vault_path": "E:/REPLACE/WITH/YOUR/ObsidianVault"
   },
   "archiver": {
     "default_folder": "Inbox",
