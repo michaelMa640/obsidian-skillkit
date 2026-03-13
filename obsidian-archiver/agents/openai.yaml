@@ -1,4 +1,4 @@
 interface:
-  display_name: "Obsidian Archiver"
-  short_description: "Archive IM tasks into Obsidian via x-reader."
-  default_prompt: "Use $obsidian-archiver to orchestrate OpenClaw, x-reader, and Obsidian for source archival."
+  display_name: "Obsidian Archiver (Legacy)"
+  short_description: "Legacy one-step archive flow via x-reader."
+  default_prompt: "Use $obsidian-archiver only when you need the legacy x-reader based one-step archival path for Obsidian."

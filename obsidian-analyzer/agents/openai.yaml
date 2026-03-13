@@ -1,0 +1,4 @@
+interface:
+  display_name: "Obsidian Analyzer"
+  short_description: "Analyze an existing clipping into structured knowledge."
+  default_prompt: "Use $obsidian-analyzer to read an existing Obsidian clipping and turn it into a learn note or a short-content breakdown."

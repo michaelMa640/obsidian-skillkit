@@ -1,16 +1,22 @@
-﻿# Local Python / package installs
+# Local Python / package installs
 .venv/
 .x-reader-site/
 
 # Local temp and test artifacts
 .tmp/
 .obsidian-test-vault/
+.obsidian-test-vault-check/
+.obsidian-test-vault-zh/
 unified_inbox.json
 
-# Obsidian archiver local runtime and machine-specific config
+# Legacy archiver local runtime and machine-specific config
 obsidian-archiver/.tmp/
 obsidian-archiver/.x-reader-runtime/
 obsidian-archiver/references/local-config.json
+
+# New skill local machine-specific configs
+obsidian-clipper/references/local-config.json
+obsidian-analyzer/references/local-config.json
 
 # Optional local helper outputs
 *.log

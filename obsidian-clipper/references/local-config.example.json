@@ -1,0 +1,34 @@
+{
+  "_instructions": {
+    "purpose": "Copy this file to local-config.json and edit it for the target machine.",
+    "do_not_commit": "Do not commit local-config.json. It is machine-specific.",
+    "must_update": [
+      "obsidian.vault_path unless your workflow always passes a vault path at runtime",
+      "routes.*.command values so they point to real local executables or wrappers",
+      "clipper.default_folder if your vault does not use Clippings"
+    ]
+  },
+  "obsidian": {
+    "mode": "filesystem",
+    "vault_path": "E:/REPLACE/WITH/YOUR/ObsidianVault"
+  },
+  "clipper": {
+    "default_folder": "Clippings",
+    "prefix_date": true,
+    "default_tag": "clipped"
+  },
+  "routes": {
+    "article": {
+      "command": "E:/REPLACE/WITH/YOUR/article-route"
+    },
+    "social": {
+      "command": "E:/REPLACE/WITH/YOUR/social-route"
+    },
+    "video_metadata": {
+      "command": "E:/REPLACE/WITH/YOUR/video-metadata-route"
+    },
+    "podcast": {
+      "command": "E:/REPLACE/WITH/YOUR/podcast-route"
+    }
+  }
+}

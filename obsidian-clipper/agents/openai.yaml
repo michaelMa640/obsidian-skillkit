@@ -1,0 +1,4 @@
+interface:
+  display_name: "Obsidian Clipper"
+  short_description: "Quickly clip a link into Obsidian Clippings."
+  default_prompt: "Use $obsidian-clipper to capture a link into Obsidian Clippings with the lightest useful route for that source."
