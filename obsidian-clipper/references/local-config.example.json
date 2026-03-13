@@ -1,43 +1,46 @@
-﻿{
-  "_instructions": {
-    "purpose": "Copy this file to local-config.json and edit it for the target machine.",
-    "do_not_commit": "Do not commit local-config.json. It is machine-specific.",
-    "must_update": [
-      "obsidian.vault_path unless your workflow always passes a vault path at runtime",
-      "routes.article.command and routes.social.command if you wire local extractors for those placeholder routes",
-      "clipper.default_folder if your vault does not use Clippings"
-    ],
-    "notes": [
-      "video_metadata uses yt-dlp by default",
-      "podcast currently uses the built-in web metadata route inside run_clipper.ps1 and does not require a separate command",
-      "use local-config.json to point future article/social wrappers to real local executables"
-    ]
-  },
-  "obsidian": {
-    "mode": "filesystem",
-    "vault_path": "E:/REPLACE/WITH/YOUR/ObsidianVault"
-  },
-  "clipper": {
-    "default_folder": "Clippings",
-    "prefix_date": true,
-    "default_tag": "clipped"
-  },
-  "routes": {
-    "article": {
-      "command": "E:/REPLACE/WITH/YOUR/article-route"
-    },
-    "social": {
-      "command": "E:/REPLACE/WITH/YOUR/social-route"
-    },
-    "video_metadata": {
-      "command": "yt-dlp",
-      "subtitle_languages": "all,-live_chat",
-      "subtitle_format": "vtt/srt/best"
-    },
-    "podcast": {
-      "built_in": true,
-      "prefer_transcript": true,
-      "prefer_show_notes": true
-    }
-  }
+{
+    "_instructions":  {
+                          "purpose":  "Copy this file to local-config.json and edit it for the target machine.",
+                          "do_not_commit":  "Do not commit local-config.json. It is machine-specific.",
+                          "must_update":  [
+                                              "obsidian.vault_path unless your workflow always passes a vault path at runtime",
+                                              "routes.article.command if you wire a custom extractor instead of the built-in web article route",
+                                              "clipper.default_folder if your vault does not use Clippings"
+                                          ],
+                          "notes":  [
+                                        "article uses the built-in web article route inside run_clipper.ps1 by default",
+                                        "social uses python + scripts/capture_social_playwright.py by default",
+                                        "video_metadata uses yt-dlp by default",
+                                        "podcast uses the built-in web metadata route inside run_clipper.ps1 and does not require a separate command"
+                                    ]
+                      },
+    "obsidian":  {
+                     "mode":  "filesystem",
+                     "vault_path":  "E:/REPLACE/WITH/YOUR/ObsidianVault"
+                 },
+    "clipper":  {
+                    "default_folder":  "Clippings",
+                    "prefix_date":  true,
+                    "default_tag":  "clipped"
+                },
+    "routes":  {
+                   "article":  {
+                                   "built_in":  true
+                               },
+                   "social":  {
+                                  "command":  "python",
+                                  "script":  "E:/REPLACE/WITH/YOUR/obsidian-clipper/scripts/capture_social_playwright.py",
+                                  "timeout_ms":  25000
+                              },
+                   "video_metadata":  {
+                                          "command":  "yt-dlp",
+                                          "subtitle_languages":  "all,-live_chat",
+                                          "subtitle_format":  "vtt/srt/best"
+                                      },
+                   "podcast":  {
+                                   "built_in":  true,
+                                   "prefer_transcript":  true,
+                                   "prefer_show_notes":  true
+                               }
+               }
 }

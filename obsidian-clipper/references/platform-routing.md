@@ -22,7 +22,7 @@
 
 ### `social`
 - Intended capture: visible caption, cover/media references, tags, engagement
-- Current status: placeholder clipping
+- Current status: built-in Playwright page capture with fallback clipping
 
 ### `video_metadata`
 - Tooling: `yt-dlp`

@@ -158,11 +158,7 @@ function Get-PodcastResourceHints {
     if (-not (Test-HasValue $transcript)) { $transcript = Get-RegexGroupValue -Html $Html -Pattern 'href="(?<value>[^"]+\.(vtt|srt|lrc|txt))(?:\?[^"]*)?"' }
     $enclosure = Get-RegexGroupValue -Html $Html -Pattern 'href="(?<value>[^"]+\.(mp3|m4a|aac|wav))(?:\?[^"]*)?"'
     if (-not (Test-HasValue $enclosure)) { $enclosure = Get-MetaContent -Html $Html -Key 'og:audio' }
-    [pscustomobject]@{
-        rss_url = Resolve-AbsoluteUrl -BaseUrl $BaseUrl -Candidate $rss
-        transcript_url = Resolve-AbsoluteUrl -BaseUrl $BaseUrl -Candidate $transcript
-        enclosure_url = Resolve-AbsoluteUrl -BaseUrl $BaseUrl -Candidate $enclosure
-    }
+    [pscustomobject]@{ rss_url = Resolve-AbsoluteUrl -BaseUrl $BaseUrl -Candidate $rss; transcript_url = Resolve-AbsoluteUrl -BaseUrl $BaseUrl -Candidate $transcript; enclosure_url = Resolve-AbsoluteUrl -BaseUrl $BaseUrl -Candidate $enclosure }
 }
 
 function Get-TranscriptFromUrl {
@@ -220,6 +216,13 @@ function New-ArticleFallbackCapture {
     New-CaptureObject -Title $title -Author 'unknown' -PublishedAt 'unknown' -Summary 'Article clipping fell back to a minimal clipping because page extraction could not be completed in the current environment.' -RawText ("Fallback reason:`n$ErrorText") -Transcript '' -Tags @('clipped','article','fallback') -Images @() -Videos @() -Metadata $metadata
 }
 
+function New-SocialFallbackCapture {
+    param([string]$Url,[string]$TitleHint,[string]$Platform,[string]$ErrorText)
+    $title = if (Test-HasValue $TitleHint) { $TitleHint } else { "Social Clip - $Platform" }
+    $metadata = [ordered]@{ capture_level='fallback'; transcript_status='missing'; media_downloaded=$false; analysis_ready=$true; extractor='playwright'; fallback_reason=$ErrorText }
+    New-CaptureObject -Title $title -Author 'unknown' -PublishedAt 'unknown' -Summary 'Social clipping fell back to a minimal clipping because Playwright capture could not be completed in the current environment.' -RawText ("Fallback reason:`n$ErrorText") -Transcript '' -Tags @('clipped','social',$Platform,'fallback') -Images @() -Videos @($Url) -Metadata $metadata
+}
+
 function New-VideoMetadataFallbackCapture {
     param([string]$Url,[string]$TitleHint,[string]$Platform,[string]$ErrorText)
     $title = if (Test-HasValue $TitleHint) { $TitleHint } else { "Video Clip - $Platform" }
@@ -272,10 +275,31 @@ function Invoke-ArticleCapture {
 }
 
 function Invoke-SocialCapture {
-    param([string]$Url,[string]$TitleHint,[string]$Platform)
-    $title = if (Test-HasValue $TitleHint) { $TitleHint } else { "Social Clip - $Platform" }
-    $metadata = [ordered]@{ capture_level='light'; transcript_status='missing'; media_downloaded=$false; analysis_ready=$true }
-    New-CaptureObject -Title $title -Author 'unknown' -PublishedAt 'unknown' -Summary 'Light social clipping only. Browser capture integration is planned for the next step.' -RawText 'Placeholder social capture. Intended future fields: visible caption, tags, cover, and engagement data.' -Transcript '' -Tags @('clipped','social',$Platform) -Images @() -Videos @($Url) -Metadata $metadata
+    param($Config,[string]$Url,[string]$TitleHint,[string]$Platform,[switch]$DryRun)
+    if ($DryRun) {
+        $title = if (Test-HasValue $TitleHint) { $TitleHint } else { "Social Clip - $Platform" }
+        $metadata = [ordered]@{ capture_level='light'; transcript_status='missing'; media_downloaded=$false; analysis_ready=$true; extractor='playwright'; dry_run=$true }
+        return (New-CaptureObject -Title $title -Author 'unknown' -PublishedAt 'unknown' -Summary 'Dry run: Playwright social capture route not executed.' -RawText '' -Transcript '' -Tags @('clipped','social',$Platform) -Images @() -Videos @($Url) -Metadata $metadata)
+    }
+    $pythonCommand = Get-RouteConfigValue -Config $Config -RouteName 'social' -PropertyName 'command' -DefaultValue 'python'
+    $scriptPath = Get-RouteConfigValue -Config $Config -RouteName 'social' -PropertyName 'script' -DefaultValue ''
+    if (-not (Test-HasValue $scriptPath) -or $scriptPath -like '*REPLACE/WITH/YOUR*' -or $scriptPath -like '*REPLACE\WITH\YOUR*' -or -not (Test-Path $scriptPath)) { $scriptPath = Join-Path $PSScriptRoot 'capture_social_playwright.py' }
+    $timeoutMs = Get-RouteConfigValue -Config $Config -RouteName 'social' -PropertyName 'timeout_ms' -DefaultValue '25000'
+    try {
+        $json = & $pythonCommand $scriptPath '--url' $Url '--platform' $Platform '--timeout-ms' $timeoutMs 2>&1
+        if ($LASTEXITCODE -ne 0) { throw "Playwright social capture failed with exit code $LASTEXITCODE. Output: $json" }
+        $payload = ($json | Out-String).Trim()
+        if (-not (Test-HasValue $payload)) { throw 'Playwright social capture returned no output.' }
+        $obj = $payload | ConvertFrom-Json -Depth 50
+        $title = if (Test-HasValue $TitleHint) { $TitleHint } else { [string]$obj.title }
+        if (-not (Test-HasValue $title)) { $title = "Social Clip - $Platform" }
+        $tags = @($obj.tags | ForEach-Object { [string]$_ })
+        $images = @($obj.images | ForEach-Object { [string]$_ })
+        $videos = @($obj.videos | ForEach-Object { [string]$_ })
+        return (New-CaptureObject -Title $title -Author ([string]$obj.author) -PublishedAt ([string]$obj.published_at) -Summary ([string]$obj.summary) -RawText ([string]$obj.raw_text) -Transcript ([string]$obj.transcript) -Tags $tags -Images $images -Videos $videos -Metadata $obj.metadata)
+    } catch {
+        return (New-SocialFallbackCapture -Url $Url -TitleHint $TitleHint -Platform $Platform -ErrorText $_.Exception.Message)
+    }
 }
 
 function Invoke-VideoMetadataCapture {
@@ -361,7 +385,7 @@ function Invoke-CaptureRoute {
     param($Config,$Detection,[string]$Url,[string]$TitleHint,[switch]$DryRun)
     switch ($Detection.route) {
         'article' { return Invoke-ArticleCapture -Url $Url -TitleHint $TitleHint -DryRun:$DryRun }
-        'social' { return Invoke-SocialCapture -Url $Url -TitleHint $TitleHint -Platform $Detection.platform }
+        'social' { return Invoke-SocialCapture -Config $Config -Url $Url -TitleHint $TitleHint -Platform $Detection.platform -DryRun:$DryRun }
         'video_metadata' { return Invoke-VideoMetadataCapture -Config $Config -Url $Url -TitleHint $TitleHint -Platform $Detection.platform -DryRun:$DryRun }
         'podcast' { return Invoke-PodcastCapture -Config $Config -Url $Url -TitleHint $TitleHint -Platform $Detection.platform -DryRun:$DryRun }
         default { throw "Unsupported route: $($Detection.route)" }
@@ -375,7 +399,8 @@ function Build-ClippingNote {
     $title = [string]$Capture.title
     $prefixDate = if ($Config.clipper.prefix_date -eq $true) { "$captured " } else { '' }
     $fileName = Get-SafeFileName "$prefixDate$title.md"
-    $tags = @($Capture.tags | Where-Object { Test-HasValue $_ } | Select-Object -Unique); if ($tags.Count -eq 0) { $tags = @('clipped') }
+    $tags = @($Capture.tags | Where-Object { Test-HasValue $_ } | Select-Object -Unique)
+    if ($tags.Count -eq 0) { $tags = @('clipped') }
     $frontmatterTags = ($tags | ForEach-Object { "  - $_" }) -join "`n"
     $images = if (@($Capture.images).Count -gt 0) { (@($Capture.images) | ForEach-Object { "- $_" }) -join "`n" } else { '- none' }
     $videos = if (@($Capture.videos).Count -gt 0) { (@($Capture.videos) | ForEach-Object { "- $_" }) -join "`n" } else { '- none' }
