@@ -65,6 +65,53 @@ function Get-HostLabel {
     ([System.Uri]$Url).Host.ToLowerInvariant()
 }
 
+function Get-ResolvedVaultPath {
+    param($Config, [string]$VaultPath)
+    if (Test-HasValue $VaultPath) { return $VaultPath }
+    if ($null -ne $Config.obsidian -and (Test-HasValue $Config.obsidian.vault_path)) { return [string]$Config.obsidian.vault_path }
+    ''
+}
+
+function Get-DataValue {
+    param($Data, [string]$Name)
+    if ($null -eq $Data) { return $null }
+    if ($Data -is [System.Collections.IDictionary]) {
+        if ($Data.Contains($Name)) { return $Data[$Name] }
+        return $null
+    }
+    $property = $Data.PSObject.Properties[$Name]
+    if ($null -eq $property) { return $null }
+    $property.Value
+}
+
+function Get-StringValue {
+    param($Data, [string]$Name, [string]$DefaultValue = '')
+    $value = Get-DataValue -Data $Data -Name $Name
+    if ($null -eq $value) { return $DefaultValue }
+    if ($value -is [System.Array]) {
+        $text = ($value | ForEach-Object { [string]$_ }) -join ', '
+        if (Test-HasValue $text) { return $text }
+        return $DefaultValue
+    }
+    $text = [string]$value
+    if (Test-HasValue $text) { return $text }
+    $DefaultValue
+}
+
+function Get-StringArrayValue {
+    param($Data, [string]$Name)
+    $value = Get-DataValue -Data $Data -Name $Name
+    if ($null -eq $value) { return @() }
+    if ($value -is [System.Array]) {
+        return @($value | ForEach-Object { [string]$_ } | Where-Object { Test-HasValue $_ })
+    }
+    if ($value -is [System.Collections.IEnumerable] -and -not ($value -is [string])) {
+        return @($value | ForEach-Object { [string]$_ } | Where-Object { Test-HasValue $_ })
+    }
+    if (Test-HasValue ([string]$value)) { return @([string]$value) }
+    @()
+}
+
 function New-LocalTempDirectory {
     $tempDir = Join-Path $PSScriptRoot '..\.tmp'
     New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
@@ -219,8 +266,20 @@ function Get-BestArticleText {
 }
 
 function New-CaptureObject {
-    param([string]$Title,[string]$Author,[string]$PublishedAt,[string]$Summary,[string]$RawText,[string]$Transcript,[string[]]$Tags,[string[]]$Images,[string[]]$Videos,$Metadata)
-    [pscustomobject]@{ title=$Title; author=$Author; published_at=$PublishedAt; summary=$Summary; raw_text=$RawText; transcript=$Transcript; tags=$Tags; images=$Images; videos=$Videos; metadata=$Metadata }
+    param([string]$Title,[string]$Author,[string]$PublishedAt,[string]$Summary,[string]$RawText,[string]$Transcript,[string[]]$Tags,[string[]]$Images,[string[]]$Videos,$Metadata,$ExtraProperties)
+    $capture = [ordered]@{ title=$Title; author=$Author; published_at=$PublishedAt; summary=$Summary; raw_text=$RawText; transcript=$Transcript; tags=$Tags; images=$Images; videos=$Videos; metadata=$Metadata }
+    if ($null -ne $ExtraProperties) {
+        if ($ExtraProperties -is [System.Collections.IDictionary]) {
+            foreach ($entry in $ExtraProperties.GetEnumerator()) {
+                $capture[$entry.Key] = $entry.Value
+            }
+        } else {
+            foreach ($property in $ExtraProperties.PSObject.Properties) {
+                $capture[$property.Name] = $property.Value
+            }
+        }
+    }
+    [pscustomobject]$capture
 }
 
 function New-ArticleFallbackCapture {
@@ -289,7 +348,7 @@ function Invoke-ArticleCapture {
 }
 
 function Invoke-SocialCapture {
-    param($Config,[string]$Url,[string]$TitleHint,[string]$Platform,[switch]$DryRun)
+    param($Config,[string]$Url,[string]$TitleHint,[string]$Platform,[string]$ResolvedVaultPath,[switch]$DryRun)
     if ($DryRun) {
         $title = if (Test-HasValue $TitleHint) { $TitleHint } else { "Social Clip - $Platform" }
         $metadata = [ordered]@{ capture_level='light'; transcript_status='missing'; media_downloaded=$false; analysis_ready=$true; extractor='playwright'; dry_run=$true }
@@ -308,12 +367,32 @@ function Invoke-SocialCapture {
         $payload = Read-Utf8Text -Path $outputJsonPath
         if (-not (Test-HasValue $payload)) { throw 'Playwright social capture returned no output.' }
         $obj = ConvertFrom-JsonCompat -Json $payload -Depth 50
+        if (Test-HasValue $ResolvedVaultPath) {
+            $downloadScriptPath = Join-Path $PSScriptRoot 'download_social_media.ps1'
+            if (Test-Path $downloadScriptPath) {
+                $downloadCommand = Get-RouteConfigValue -Config $Config -RouteName 'social' -PropertyName 'download_command' -DefaultValue 'yt-dlp'
+                $attachmentsRoot = if ($null -ne $Config.clipper -and (Test-HasValue $Config.clipper.attachments_root)) { [string]$Config.clipper.attachments_root } else { 'Attachments/ShortVideos' }
+                $downloadOutputPath = Join-Path $tempDir 'social-download.json'
+                & $downloadScriptPath -PayloadJsonPath $outputJsonPath -VaultPath $ResolvedVaultPath -Platform $Platform -SourceUrl $Url -AttachmentsRoot $attachmentsRoot -YtDlpCommand $downloadCommand -OutputJsonPath $downloadOutputPath 2>&1 | Out-Null
+                if ($LASTEXITCODE -eq 0 -and (Test-Path $downloadOutputPath)) {
+                    $downloadPayload = Read-Utf8Text -Path $downloadOutputPath
+                    if (Test-HasValue $downloadPayload) {
+                        $obj = ConvertFrom-JsonCompat -Json $downloadPayload -Depth 100
+                    }
+                }
+            }
+        }
         $title = if (Test-HasValue $TitleHint) { $TitleHint } else { [string]$obj.title }
         if (-not (Test-HasValue $title)) { $title = "Social Clip - $Platform" }
         $tags = @($obj.tags | ForEach-Object { [string]$_ })
         $images = @($obj.images | ForEach-Object { [string]$_ })
         $videos = @($obj.videos | ForEach-Object { [string]$_ })
-        return (New-CaptureObject -Title $title -Author ([string]$obj.author) -PublishedAt ([string]$obj.published_at) -Summary ([string]$obj.summary) -RawText ([string]$obj.raw_text) -Transcript ([string]$obj.transcript) -Tags $tags -Images $images -Videos $videos -Metadata $obj.metadata)
+        $extraProperties = [ordered]@{}
+        foreach ($property in $obj.PSObject.Properties) {
+            if ($property.Name -in @('title','author','published_at','summary','raw_text','transcript','tags','images','videos','metadata')) { continue }
+            $extraProperties[$property.Name] = $property.Value
+        }
+        return (New-CaptureObject -Title $title -Author ([string]$obj.author) -PublishedAt ([string]$obj.published_at) -Summary ([string]$obj.summary) -RawText ([string]$obj.raw_text) -Transcript ([string]$obj.transcript) -Tags $tags -Images $images -Videos $videos -Metadata $obj.metadata -ExtraProperties $extraProperties)
     } catch {
         return (New-SocialFallbackCapture -Url $Url -TitleHint $TitleHint -Platform $Platform -ErrorText $_.Exception.Message)
     } finally {
@@ -400,10 +479,10 @@ function Invoke-PodcastCapture {
 }
 
 function Invoke-CaptureRoute {
-    param($Config,$Detection,[string]$Url,[string]$TitleHint,[switch]$DryRun)
+    param($Config,$Detection,[string]$Url,[string]$TitleHint,[string]$ResolvedVaultPath,[switch]$DryRun)
     switch ($Detection.route) {
         'article' { return Invoke-ArticleCapture -Url $Url -TitleHint $TitleHint -DryRun:$DryRun }
-        'social' { return Invoke-SocialCapture -Config $Config -Url $Url -TitleHint $TitleHint -Platform $Detection.platform -DryRun:$DryRun }
+        'social' { return Invoke-SocialCapture -Config $Config -Url $Url -TitleHint $TitleHint -Platform $Detection.platform -ResolvedVaultPath $ResolvedVaultPath -DryRun:$DryRun }
         'video_metadata' { return Invoke-VideoMetadataCapture -Config $Config -Url $Url -TitleHint $TitleHint -Platform $Detection.platform -DryRun:$DryRun }
         'podcast' { return Invoke-PodcastCapture -Config $Config -Url $Url -TitleHint $TitleHint -Platform $Detection.platform -DryRun:$DryRun }
         default { throw "Unsupported route: $($Detection.route)" }
@@ -424,29 +503,89 @@ function Build-ClippingNote {
     $videos = if (@($Capture.videos).Count -gt 0) { (@($Capture.videos) | ForEach-Object { "- $_" }) -join "`n" } else { '- none' }
     $rawText = if (Test-HasValue $Capture.raw_text) { [string]$Capture.raw_text } else { '(none)' }
     $transcript = if (Test-HasValue $Capture.transcript) { [string]$Capture.transcript } else { '(none)' }
-    $metadataLines = @("- Capture Level: $($Capture.metadata.capture_level)", "- Transcript Status: $($Capture.metadata.transcript_status)", "- Media Downloaded: $($Capture.metadata.media_downloaded)", "- Analysis Ready: $($Capture.metadata.analysis_ready)")
-    if ($Capture.metadata -is [System.Collections.IDictionary]) {
-        foreach ($entry in $Capture.metadata.GetEnumerator()) {
+    $metadata = Get-DataValue -Data $Capture -Name 'metadata'
+    $captureLevel = if ($null -ne $metadata) { Get-StringValue -Data $metadata -Name 'capture_level' -DefaultValue 'light' } else { 'light' }
+    $transcriptStatus = if ($null -ne $metadata) { Get-StringValue -Data $metadata -Name 'transcript_status' -DefaultValue 'missing' } else { 'missing' }
+    $mediaDownloaded = if ($null -ne $metadata -and (Get-DataValue -Data $metadata -Name 'media_downloaded') -eq $true) { $true } else { $false }
+    $analysisReady = if ($null -eq $metadata -or (Get-DataValue -Data $metadata -Name 'analysis_ready') -ne $false) { $true } else { $false }
+    $captureId = Get-StringValue -Data $Capture -Name 'capture_id' -DefaultValue ''
+    if (-not (Test-HasValue $captureId) -and $null -ne $metadata) { $captureId = Get-StringValue -Data $metadata -Name 'capture_id' -DefaultValue '' }
+    $captureKey = Get-StringValue -Data $Capture -Name 'capture_key' -DefaultValue ''
+    if (-not (Test-HasValue $captureKey) -and $null -ne $metadata) { $captureKey = Get-StringValue -Data $metadata -Name 'capture_key' -DefaultValue '' }
+    $normalizedUrl = Get-StringValue -Data $Capture -Name 'normalized_url' -DefaultValue ''
+    if (-not (Test-HasValue $normalizedUrl) -and $null -ne $metadata) { $normalizedUrl = Get-StringValue -Data $metadata -Name 'normalized_url' -DefaultValue '' }
+    $sourceItemId = Get-StringValue -Data $Capture -Name 'source_item_id' -DefaultValue ''
+    if (-not (Test-HasValue $sourceItemId) -and $null -ne $metadata) { $sourceItemId = Get-StringValue -Data $metadata -Name 'source_item_id' -DefaultValue '' }
+    $downloadStatus = Get-StringValue -Data $Capture -Name 'download_status' -DefaultValue ''
+    if (-not (Test-HasValue $downloadStatus) -and $null -ne $metadata) { $downloadStatus = Get-StringValue -Data $metadata -Name 'download_status' -DefaultValue '' }
+    $downloadMethod = Get-StringValue -Data $Capture -Name 'download_method' -DefaultValue ''
+    if (-not (Test-HasValue $downloadMethod) -and $null -ne $metadata) { $downloadMethod = Get-StringValue -Data $metadata -Name 'download_method' -DefaultValue '' }
+    $videoPath = Get-StringValue -Data $Capture -Name 'video_path' -DefaultValue ''
+    if (-not (Test-HasValue $videoPath) -and $null -ne $metadata) { $videoPath = Get-StringValue -Data $metadata -Name 'video_path' -DefaultValue '' }
+    $coverPath = Get-StringValue -Data $Capture -Name 'cover_path' -DefaultValue ''
+    if (-not (Test-HasValue $coverPath) -and $null -ne $metadata) { $coverPath = Get-StringValue -Data $metadata -Name 'cover_path' -DefaultValue '' }
+    $sidecarPath = Get-StringValue -Data $Capture -Name 'sidecar_path' -DefaultValue ''
+    if (-not (Test-HasValue $sidecarPath) -and $null -ne $metadata) { $sidecarPath = Get-StringValue -Data $metadata -Name 'sidecar_path' -DefaultValue '' }
+    $commentsPath = Get-StringValue -Data $Capture -Name 'comments_path' -DefaultValue ''
+    if (-not (Test-HasValue $commentsPath) -and $null -ne $metadata) { $commentsPath = Get-StringValue -Data $metadata -Name 'comments_path' -DefaultValue '' }
+    $metadataPath = Get-StringValue -Data $Capture -Name 'metadata_path' -DefaultValue ''
+    if (-not (Test-HasValue $metadataPath) -and $null -ne $metadata) { $metadataPath = Get-StringValue -Data $metadata -Name 'metadata_path' -DefaultValue '' }
+    $topComments = Get-StringArrayValue -Data $Capture -Name 'top_comments'
+    $topCommentsText = if (@($topComments).Count -gt 0) { (@($topComments) | ForEach-Object { "- $_" }) -join "`n" } else { '- none' }
+    $engagementLines = New-Object System.Collections.Generic.List[string]
+    $engagement = Get-DataValue -Data $Capture -Name 'engagement'
+    if ($null -ne $engagement) {
+        foreach ($property in $engagement.PSObject.Properties) {
+            $value = [string]$property.Value
+            if (Test-HasValue $value) { $engagementLines.Add("- $($property.Name): $value") }
+        }
+    }
+    if ($engagementLines.Count -eq 0) { $engagementLines.Add('- none') }
+    $attachmentLines = New-Object System.Collections.Generic.List[string]
+    if (Test-HasValue $videoPath) { $attachmentLines.Add("- Video Path: $videoPath") }
+    if (Test-HasValue $coverPath) { $attachmentLines.Add("- Cover Path: $coverPath") }
+    if (Test-HasValue $sidecarPath) { $attachmentLines.Add("- Capture Sidecar: $sidecarPath") }
+    if (Test-HasValue $commentsPath) { $attachmentLines.Add("- Comments Sidecar: $commentsPath") }
+    if (Test-HasValue $metadataPath) { $attachmentLines.Add("- Download Metadata: $metadataPath") }
+    if ($attachmentLines.Count -eq 0) { $attachmentLines.Add('- none') }
+    $metadataLines = @("- Capture Level: $captureLevel", "- Transcript Status: $transcriptStatus", "- Media Downloaded: $mediaDownloaded", "- Analysis Ready: $analysisReady")
+    if ($metadata -is [System.Collections.IDictionary]) {
+        foreach ($entry in $metadata.GetEnumerator()) {
             if ($entry.Key -in @('capture_level','transcript_status','media_downloaded','analysis_ready')) { continue }
             if ($null -eq $entry.Value) { continue }
             $value = if ($entry.Value -is [System.Array]) { ($entry.Value -join ', ') } else { [string]$entry.Value }
             if (Test-HasValue $value) { $metadataLines += "- $($entry.Key): $value" }
+        }
+    } elseif ($null -ne $metadata) {
+        foreach ($property in $metadata.PSObject.Properties) {
+            if ($property.Name -in @('capture_level','transcript_status','media_downloaded','analysis_ready')) { continue }
+            if ($null -eq $property.Value) { continue }
+            $value = if ($property.Value -is [System.Array]) { ($property.Value -join ', ') } else { [string]$property.Value }
+            if (Test-HasValue $value) { $metadataLines += "- $($property.Name): $value" }
         }
     }
     $body = @"
 ---
 title: $title
 source_url: $SourceUrl
+normalized_url: $normalizedUrl
 platform: $($Detection.platform)
 content_type: $($Detection.content_type)
 author: $($Capture.author)
 published_at: $($Capture.published_at)
 captured_at: $captured
 route: $($Detection.route)
-capture_level: $($Capture.metadata.capture_level)
-transcript_status: $($Capture.metadata.transcript_status)
-media_downloaded: $($Capture.metadata.media_downloaded.ToString().ToLowerInvariant())
-analysis_ready: $($Capture.metadata.analysis_ready.ToString().ToLowerInvariant())
+capture_id: $captureId
+capture_key: $captureKey
+source_item_id: $sourceItemId
+capture_level: $captureLevel
+transcript_status: $transcriptStatus
+media_downloaded: $($mediaDownloaded.ToString().ToLowerInvariant())
+analysis_ready: $($analysisReady.ToString().ToLowerInvariant())
+download_status: $downloadStatus
+download_method: $downloadMethod
+video_path: $videoPath
+sidecar_path: $sidecarPath
 tags:
 $frontmatterTags
 status: clipped
@@ -456,9 +595,12 @@ status: clipped
 
 ## Source
 - URL: $SourceUrl
+- Normalized URL: $(if (Test-HasValue $normalizedUrl) { $normalizedUrl } else { 'n/a' })
 - Platform: $($Detection.platform)
 - Content Type: $($Detection.content_type)
 - Route: $($Detection.route)
+- Capture ID: $(if (Test-HasValue $captureId) { $captureId } else { 'n/a' })
+- Source Item ID: $(if (Test-HasValue $sourceItemId) { $sourceItemId } else { 'n/a' })
 
 ## Summary of Raw Content
 $($Capture.summary)
@@ -475,6 +617,15 @@ $images
 
 ## Videos
 $videos
+
+## Attachments
+$($attachmentLines -join "`n")
+
+## Top Comments
+$topCommentsText
+
+## Engagement
+$($engagementLines -join "`n")
 
 ## Metadata
 $($metadataLines -join "`n")
@@ -497,11 +648,24 @@ if (-not (Test-HasValue $ConfigPath)) {
     if (Test-Path (Join-Path $PSScriptRoot '..\references\local-config.json')) { $ConfigPath = Join-Path $PSScriptRoot '..\references\local-config.json' } else { $ConfigPath = Join-Path $PSScriptRoot '..\references\local-config.example.json' }
 }
 $config = Get-Config -Path $ConfigPath
+$resolvedVaultPath = Get-ResolvedVaultPath -Config $config -VaultPath $VaultPath
+if (-not $DryRun -and -not (Test-HasValue $resolvedVaultPath)) { throw 'No vault path provided. Supply -VaultPath or set obsidian.vault_path in config.' }
 $detection = Get-Detection -Url $SourceUrl
-$capture = Invoke-CaptureRoute -Config $config -Detection $detection -Url $SourceUrl -TitleHint $TitleHint -DryRun:$DryRun
+$capture = Invoke-CaptureRoute -Config $config -Detection $detection -Url $SourceUrl -TitleHint $TitleHint -ResolvedVaultPath $resolvedVaultPath -DryRun:$DryRun
 $note = Build-ClippingNote -Config $config -Detection $detection -Capture $capture -SourceUrl $SourceUrl -CategoryHint $CategoryHint
-$result = [ordered]@{ success=$true; dry_run=[bool]$DryRun; title=$note.title; folder=$note.folder; file_name=$note.file_name; route=$detection.route; platform=$detection.platform; content_type=$detection.content_type; tags=$note.tags; note_preview=$note.note_body; vault_path = if (Test-HasValue $VaultPath) { $VaultPath } else { $config.obsidian.vault_path } }
-if (-not $DryRun -and $config.obsidian.mode -eq 'filesystem') { $result.note_path = Write-NoteToVault -Config $config -Note $note -VaultPath $VaultPath }
+$captureMetadata = Get-DataValue -Data $capture -Name 'metadata'
+$captureIdForResult = Get-StringValue -Data $capture -Name 'capture_id' -DefaultValue ''
+if (-not (Test-HasValue $captureIdForResult) -and $null -ne $captureMetadata) { $captureIdForResult = Get-StringValue -Data $captureMetadata -Name 'capture_id' -DefaultValue '' }
+$downloadStatusForResult = Get-StringValue -Data $capture -Name 'download_status' -DefaultValue ''
+if (-not (Test-HasValue $downloadStatusForResult) -and $null -ne $captureMetadata) { $downloadStatusForResult = Get-StringValue -Data $captureMetadata -Name 'download_status' -DefaultValue '' }
+$downloadMethodForResult = Get-StringValue -Data $capture -Name 'download_method' -DefaultValue ''
+if (-not (Test-HasValue $downloadMethodForResult) -and $null -ne $captureMetadata) { $downloadMethodForResult = Get-StringValue -Data $captureMetadata -Name 'download_method' -DefaultValue '' }
+$videoPathForResult = Get-StringValue -Data $capture -Name 'video_path' -DefaultValue ''
+if (-not (Test-HasValue $videoPathForResult) -and $null -ne $captureMetadata) { $videoPathForResult = Get-StringValue -Data $captureMetadata -Name 'video_path' -DefaultValue '' }
+$sidecarPathForResult = Get-StringValue -Data $capture -Name 'sidecar_path' -DefaultValue ''
+if (-not (Test-HasValue $sidecarPathForResult) -and $null -ne $captureMetadata) { $sidecarPathForResult = Get-StringValue -Data $captureMetadata -Name 'sidecar_path' -DefaultValue '' }
+$result = [ordered]@{ success=$true; dry_run=[bool]$DryRun; title=$note.title; folder=$note.folder; file_name=$note.file_name; route=$detection.route; platform=$detection.platform; content_type=$detection.content_type; capture_id=$captureIdForResult; download_status=$downloadStatusForResult; download_method=$downloadMethodForResult; video_path=$videoPathForResult; sidecar_path=$sidecarPathForResult; tags=$note.tags; note_preview=$note.note_body; vault_path = $resolvedVaultPath }
+if (-not $DryRun -and $config.obsidian.mode -eq 'filesystem') { $result.note_path = Write-NoteToVault -Config $config -Note $note -VaultPath $resolvedVaultPath }
 $json = $result | ConvertTo-Json -Depth 20
 if (Test-HasValue $OutputJsonPath) { Write-Utf8Text -Path $OutputJsonPath -Content $json }
 $json

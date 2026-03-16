@@ -1,7 +1,9 @@
 import argparse
+import hashlib
 import json
 import re
 from typing import Any
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
@@ -34,11 +36,20 @@ PLATFORM_RULES = {
             'article',
             'main',
         ],
-        "metric_selectors": [
-            '[class*="like"]',
-            '[class*="collect"]',
-            '[class*="comment"]',
-        ],
+        "metric_map": {
+            "like_count": [
+                '[class*="like"] [class*="count"]',
+                '[class*="like"]',
+            ],
+            "collect_count": [
+                '[class*="collect"] [class*="count"]',
+                '[class*="collect"]',
+            ],
+            "comment_count": [
+                '[class*="comment"] [class*="count"]',
+                '[class*="comment"]',
+            ],
+        },
         "comment_selectors": [
             '[class*="comment"] [class*="content"]',
             '[class*="comment"] p',
@@ -91,6 +102,22 @@ PLATFORM_RULES = {
 }
 
 
+MAYBE_MOJIBAKE_MARKERS = ["娑", "閸", "閹", "閽", "闂", "閻", "閵"]
+TRACKING_QUERY_KEYS = {
+    "share_app_id",
+    "share_from_user_hidden",
+    "share_token",
+    "share_sign",
+    "sec_uid",
+    "timestamp",
+    "tt_from",
+    "u_code",
+    "user_id",
+    "xsec_token",
+    "xsec_source",
+}
+
+
 def first_non_empty(*values: Any) -> str:
     for value in values:
         if value is None:
@@ -99,19 +126,6 @@ def first_non_empty(*values: Any) -> str:
         if text:
             return text
     return ""
-
-
-MAYBE_MOJIBAKE_MARKERS = [
-    "涓",
-    "鍙",
-    "鎶",
-    "钂",
-    "闂",
-    "鍣",
-    "鍐",
-    "鐗",
-    "銆",
-]
 
 
 def repair_mojibake(text: str) -> str:
@@ -140,6 +154,61 @@ def truncate(text: str, length: int) -> str:
     if len(text) <= length:
         return text
     return text[:length] + "..."
+
+
+def normalize_identity_url(url: str) -> str:
+    try:
+        parts = urlsplit(url)
+    except Exception:
+        return (url or "").strip()
+
+    filtered_query = []
+    for key, value in parse_qsl(parts.query, keep_blank_values=True):
+        lowered = key.lower()
+        if lowered.startswith("utm_"):
+            continue
+        if lowered in TRACKING_QUERY_KEYS:
+            continue
+        filtered_query.append((key, value))
+    filtered_query.sort()
+
+    normalized_path = parts.path.rstrip("/") or "/"
+    normalized = urlunsplit(
+        (
+            parts.scheme.lower(),
+            parts.netloc.lower(),
+            normalized_path,
+            urlencode(filtered_query),
+            "",
+        )
+    )
+    return normalized
+
+
+def extract_source_item_id(url: str, platform: str) -> str:
+    patterns_by_platform = {
+        "douyin": [
+            r"/video/(\d+)",
+            r"modal_id=(\d+)",
+            r"item_ids?=(\d+)",
+        ],
+        "xiaohongshu": [
+            r"/explore/([0-9a-zA-Z]+)",
+            r"/discovery/item/([0-9a-zA-Z]+)",
+            r"noteId=([0-9a-zA-Z]+)",
+        ],
+    }
+    for pattern in patterns_by_platform.get(platform, []):
+        match = re.search(pattern, url or "")
+        if match:
+            return match.group(1)
+    return ""
+
+
+def build_capture_identity(platform: str, normalized_url: str, source_item_id: str) -> tuple[str, str]:
+    capture_key = f"{platform}:{source_item_id}" if source_item_id else f"{platform}:{normalized_url}"
+    digest = hashlib.sha256(capture_key.encode("utf-8")).hexdigest()[:16]
+    return capture_key, f"{platform}_{digest}"
 
 
 def collect_tags(text: str, platform: str) -> list[str]:
@@ -201,8 +270,9 @@ def collect_media_refs(page, css_selector: str, script: str, limit: int) -> list
     items: list[str] = []
     try:
         for src in page.locator(css_selector).evaluate_all(script):
-            if src and src not in items:
-                items.append(src)
+            candidate = first_non_empty(src)
+            if candidate and candidate not in items:
+                items.append(candidate)
     except Exception:
         return []
     return items[:limit]
@@ -249,7 +319,7 @@ def should_keep_video_ref(src: str) -> bool:
     return src.startswith("http") or src.startswith("blob:")
 
 
-def build_social_raw_text(platform: str, description: str, visible_text: str, comments: list[str]) -> str:
+def build_social_raw_text(description: str, visible_text: str, comments: list[str]) -> str:
     parts: list[str] = []
     if description:
         parts.append(description)
@@ -257,27 +327,52 @@ def build_social_raw_text(platform: str, description: str, visible_text: str, co
         parts.append(visible_text)
     if comments:
         parts.append("Top Comments:\n" + "\n".join(f"- {comment}" for comment in comments))
-    if not parts and platform == "douyin":
-        return ""
-    return "\n\n".join(parts).strip()
+    return "\n\n".join(part for part in parts if part).strip()
 
 
-def extract_social_payload(page, url: str, platform: str, timeout_ms: int) -> dict[str, Any]:
+def build_comment_objects(comments: list[str]) -> list[dict[str, str]]:
+    return [{"text": comment} for comment in comments]
+
+
+def build_engagement(metrics: dict[str, str]) -> dict[str, str]:
+    return {
+        "like": first_non_empty(metrics.get("like_count")),
+        "comment": first_non_empty(metrics.get("comment_count")),
+        "share": first_non_empty(metrics.get("share_count")),
+        "collect": first_non_empty(metrics.get("collect_count")),
+    }
+
+
+def extract_social_payload(page, source_url: str, platform: str, timeout_ms: int) -> dict[str, Any]:
     rules = PLATFORM_RULES.get(platform, {})
+    final_url = normalize_identity_url(page.url)
+    source_item_id = first_non_empty(
+        extract_source_item_id(final_url, platform),
+        extract_source_item_id(source_url, platform),
+    )
+    capture_key, capture_id = build_capture_identity(platform, final_url, source_item_id)
+
     title = first_non_empty(
         safe_meta_content(page, 'meta[property="og:title"]'),
         pick_text_by_selectors(page, rules.get("title_selectors", [])),
         page.title().strip(),
         f"Social Clip - {platform}",
     )
-    description = first_non_empty(
-        safe_meta_content(page, 'meta[property="og:description"]'),
-        safe_meta_content(page, 'meta[name="description"]'),
+    description = normalize_ws(
+        first_non_empty(
+            safe_meta_content(page, 'meta[property="og:description"]'),
+            safe_meta_content(page, 'meta[name="description"]'),
+        )
     )
     author = first_non_empty(
         safe_meta_content(page, 'meta[name="author"]'),
         safe_meta_content(page, 'meta[property="article:author"]'),
         pick_text_by_selectors(page, rules.get("author_selectors", [])),
+        "unknown",
+    )
+    published_at = first_non_empty(
+        safe_meta_content(page, 'meta[property="article:published_time"]'),
+        safe_meta_content(page, 'meta[name="publish-date"]'),
         "unknown",
     )
 
@@ -292,48 +387,49 @@ def extract_social_payload(page, url: str, platform: str, timeout_ms: int) -> di
             pick_text_by_selectors(page, rules.get("text_selectors", []), timeout_ms=timeout_ms),
             normalize_ws(page.locator("body").inner_text(timeout=timeout_ms)),
         )
+    visible_text = normalize_ws(visible_text)
 
     comments = collect_visible_comments(page, rules.get("comment_selectors", []), limit=8)
-    raw_text = build_social_raw_text(platform, normalize_ws(description), normalize_ws(visible_text), comments)
+    comment_objects = build_comment_objects(comments)
+    raw_text = build_social_raw_text(description, visible_text, comments)
     visible_preview = truncate(raw_text, 8000)
 
-    image_urls: list[str]
-    if platform == "douyin":
-        image_urls = []
-    else:
-        og_image = safe_meta_content(page, 'meta[property="og:image"]')
-        image_urls = collect_media_refs(
-            page,
-            "img",
-            "els => els.map(e => e.currentSrc || e.src || '').filter(Boolean).slice(0, 12)",
-            12,
-        )
-        if og_image and og_image not in image_urls:
-            image_urls.insert(0, og_image)
+    image_urls: list[str] = []
+    og_image = safe_meta_content(page, 'meta[property="og:image"]')
+    collected_images = collect_media_refs(
+        page,
+        "img",
+        "els => els.map(e => e.currentSrc || e.src || '').filter(Boolean).slice(0, 12)",
+        12,
+    )
+    for candidate in [og_image, *collected_images]:
+        normalized_candidate = first_non_empty(candidate)
+        if normalized_candidate and normalized_candidate not in image_urls:
+            image_urls.append(normalized_candidate)
 
-    video_refs = [url]
+    candidate_video_refs: list[str] = []
     for src in collect_media_refs(
         page,
         "video",
         "els => els.map(e => e.currentSrc || e.src || e.poster || '').filter(Boolean).slice(0, 6)",
         6,
     ):
-        if should_keep_video_ref(src) and src not in video_refs:
-            video_refs.append(src)
+        if should_keep_video_ref(src) and src not in candidate_video_refs:
+            candidate_video_refs.append(src)
 
     metrics = collect_metric_values(page, rules.get("metric_map", {}))
+    engagement = build_engagement(metrics)
 
     summary_parts = []
     if description:
-        summary_parts.append(normalize_ws(description))
+        summary_parts.append(description)
     elif visible_preview:
         summary_parts.append(truncate(visible_preview, 180))
     else:
         summary_parts.append("Visible social page content captured via Playwright.")
-    if metrics:
-        metric_text = ", ".join(f"{key}: {value}" for key, value in metrics.items() if value)
-        if metric_text:
-            summary_parts.append("Metrics: " + metric_text)
+    metric_text = ", ".join(f"{key}: {value}" for key, value in metrics.items() if value)
+    if metric_text:
+        summary_parts.append("Metrics: " + metric_text)
     if comments:
         summary_parts.append(f"Visible comments captured: {len(comments)}.")
     summary_parts.append(f"Captured with Playwright from {platform}.")
@@ -344,9 +440,19 @@ def extract_social_payload(page, url: str, platform: str, timeout_ms: int) -> di
         "media_downloaded": False,
         "analysis_ready": True,
         "extractor": "playwright",
+        "route": "social",
+        "platform": platform,
+        "content_type": "short_video",
+        "source_url": source_url,
+        "normalized_url": final_url,
+        "source_item_id": source_item_id,
+        "capture_key": capture_key,
+        "capture_id": capture_id,
         "final_url": page.url,
+        "download_status": "skipped",
+        "download_method": "none",
         "image_count": len(image_urls),
-        "video_ref_count": len(video_refs),
+        "candidate_video_ref_count": len(candidate_video_refs),
         "text_length": len(visible_preview),
         "comment_count_visible": len(comments),
     }
@@ -355,17 +461,42 @@ def extract_social_payload(page, url: str, platform: str, timeout_ms: int) -> di
         metadata["comments_preview"] = comments
 
     return {
+        "capture_version": "phase2-social-v1",
+        "capture_id": capture_id,
+        "capture_key": capture_key,
+        "source_url": source_url,
+        "normalized_url": final_url,
+        "platform": platform,
+        "content_type": "short_video",
+        "route": "social",
+        "source_item_id": source_item_id,
         "title": normalize_ws(title),
         "author": normalize_ws(author),
-        "published_at": "unknown",
+        "published_at": published_at,
         "summary": " ".join(summary_parts).strip(),
+        "description": description,
         "raw_text": visible_preview,
         "transcript": "",
         "tags": collect_tags(first_non_empty(description, visible_text), platform),
         "images": image_urls,
-        "videos": video_refs,
+        "videos": candidate_video_refs,
+        "candidate_video_refs": candidate_video_refs,
+        "cover_url": first_non_empty(og_image, image_urls[0] if image_urls else ""),
+        "top_comments": comments,
+        "comments": comment_objects,
+        "comments_count": len(comments),
+        "engagement": engagement,
+        "metrics_like": first_non_empty(engagement.get("like")),
+        "metrics_comment": first_non_empty(engagement.get("comment")),
+        "metrics_share": first_non_empty(engagement.get("share")),
+        "metrics_collect": first_non_empty(engagement.get("collect")),
+        "status": "clipped",
+        "download_status": "skipped",
+        "download_method": "none",
+        "media_downloaded": False,
+        "analyzer_status": "pending",
+        "bitable_sync_status": "pending",
         "metadata": metadata,
-        "comments": comments,
     }
 
 

@@ -5,21 +5,22 @@
 ### Overview
 
 This repository is a skillkit for OpenClaw workflows built around Obsidian.
-It now follows a two-stage architecture for structured knowledge capture:
-- `obsidian-clipper`: fast capture into `Clippings/`
-- `obsidian-analyzer`: turn clippings into formal knowledge
+It currently follows a two-stage architecture for structured knowledge capture:
+- `obsidian-clipper`: capture raw source records into `Clippings/`
+- `obsidian-analyzer`: turn clipped records into formal knowledge
 - `obsidian/`: direct Obsidian vault operations through the official CLI
 
-A legacy skill is still present:
-- `obsidian-archiver/`: the earlier x-reader based one-step archive flow
+A legacy skill is still present for compatibility:
+- `obsidian-archiver/`: the older x-reader based one-step archive flow
 
 ### Recommended Architecture
 
 Preferred current workflow:
 1. OpenClaw receives a link
-2. `obsidian-clipper` stores it into Obsidian `Clippings/`
-3. later, `obsidian-analyzer` reads that clipping
-4. the analyzer writes structured output into `Insights/`, `Breakdowns/`, or another formal knowledge folder
+2. `obsidian-clipper` stores a raw record into Obsidian `Clippings/`
+3. for short social video, the clipper stage owns raw capture, media download, and attachment-sidecar landing
+4. `obsidian-analyzer` reads that stored record
+5. the analyzer writes structured output into `Insights/`, `Breakdowns/`, or another formal knowledge folder
 
 This replaces the older one-step archiver-first model for new development.
 
@@ -28,7 +29,7 @@ This replaces the older one-step archiver-first model for new development.
 - `obsidian/`: basic Obsidian vault operations through the official Obsidian CLI
 - `obsidian-clipper/`: first-stage clipping skill for raw-content capture
 - `obsidian-analyzer/`: second-stage analysis skill for structured knowledge generation
-- `obsidian-archiver/`: legacy x-reader based archival skill kept for compatibility and reference
+- `obsidian-archiver/`: legacy archival skill kept for compatibility and reference
 
 ### Repository Layout
 
@@ -62,22 +63,6 @@ For `obsidian-analyzer/`:
 For `obsidian-archiver/` legacy flow:
 - x-reader installed separately
 
-### Commit Policy
-
-Commit:
-- skill definitions
-- deployment documentation
-- example configs
-- shared wrappers that other deployers need
-
-Do not commit:
-- `.venv/`
-- `.x-reader-site/`
-- `.tmp/`
-- machine-specific local configs
-- test vault outputs
-- runtime logs and inbox files
-
 ### Thanks
 
 Thanks to the main projects this skillkit depends on:
@@ -92,23 +77,24 @@ Thanks to the main projects this skillkit depends on:
 ### 仓库说明
 
 这是一个围绕 Obsidian 搭建、面向 OpenClaw 工作流的 skill 仓库。
-目前仓库已经转向新的“两阶段结构化知识流”架构：
-- `obsidian-clipper`：快速剪藏到 `Clippings/`
-- `obsidian-analyzer`：把剪藏内容转成正式知识
+当前采用两阶段内容处理架构：
+- `obsidian-clipper`：把原始内容快速写入 `Clippings/`
+- `obsidian-analyzer`：把剪藏内容转成正式知识资产
 - `obsidian/`：通过官方 CLI 直接操作 Obsidian
 
-仓库里仍然保留一套旧方案：
+仓库中仍保留一套旧方案用于兼容与参考：
 - `obsidian-archiver/`：基于 x-reader 的旧一体式归档链路
 
 ### 推荐架构
 
-当前推荐的工作流是：
-1. OpenClaw 接收到链接
-2. `obsidian-clipper` 先把内容写入 `Clippings/`
-3. 后续再由 `obsidian-analyzer` 读取剪藏内容
-4. analyzer 把结果写入 `Insights/`、`Breakdowns/` 或其他正式知识目录
+当前推荐流程：
+1. OpenClaw 接收链接
+2. `obsidian-clipper` 先把原始记录写入 Obsidian 的 `Clippings/`
+3. 对短视频内容，clipper 阶段负责原始 capture，后续再承接视频下载与附件落盘
+4. `obsidian-analyzer` 读取已剪藏内容
+5. analyzer 将结果写入 `Insights/`、`Breakdowns/` 或其他正式知识目录
 
-这套流程将作为后续新开发的主路线。
+这套流程作为后续新开发的主路径。
 
 ### 当前包含的 Skill
 
@@ -144,26 +130,10 @@ Thanks to the main projects this skillkit depends on:
 - OpenClaw
 - PowerShell 或其他本地执行路径
 - 可访问的 Obsidian vault
-- 配置好的大模型提供方或本地模型能力
+- 已配置好的大模型提供方或本地模型能力
 
 对于 legacy 的 `obsidian-archiver/`：
-- 仍需要单独安装 x-reader
-
-### 提交策略
-
-应该提交：
-- skill 定义文件
-- 部署文档
-- 示例配置
-- 其他部署者也需要的包装层
-
-不应该提交：
-- `.venv/`
-- `.x-reader-site/`
-- `.tmp/`
-- 机器专用本地配置
-- 测试 vault 产物
-- 运行日志和 inbox 文件
+- 仍需单独安装 x-reader
 
 ### 致谢
 
@@ -172,4 +142,4 @@ Thanks to the main projects this skillkit depends on:
 - OpenClaw
 - [Playwright](https://playwright.dev/)
 - [yt-dlp](https://github.com/yt-dlp/yt-dlp)
-- [x-reader](https://github.com/runesleo/x-reader)，用于 legacy archiver 路线
+- [x-reader](https://github.com/runesleo/x-reader) for the legacy archiver path
