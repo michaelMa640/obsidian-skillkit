@@ -1,4 +1,5 @@
-import argparse
+﻿import argparse
+from datetime import datetime
 import hashlib
 import json
 import re
@@ -20,7 +21,7 @@ PLATFORM_RULES = {
         ],
         "title_selectors": [
             'meta[property="og:title"]',
-            'h1',
+            "h1",
             '[class*="title"]',
         ],
         "author_selectors": [
@@ -63,14 +64,14 @@ PLATFORM_RULES = {
             '[data-e2e="browse-video-desc"]',
         ],
         "title_selectors": [
-            'meta[property="og:title"]',
             '[data-e2e="video-desc"]',
             '[data-e2e="browse-video-desc"]',
+            'meta[property="og:title"]',
             'h1',
         ],
         "author_selectors": [
-            'meta[name="author"]',
             '[data-e2e="user-title"]',
+            'meta[name="author"]',
             '[class*="author"]',
             '[class*="account"]',
         ],
@@ -87,6 +88,10 @@ PLATFORM_RULES = {
                 '[data-e2e="comment-count"]',
                 '[class*="comment"] [class*="count"]',
             ],
+            "collect_count": [
+                '[data-e2e="collect-count"]',
+                '[class*="collect"] [class*="count"]',
+            ],
             "share_count": [
                 '[data-e2e="share-count"]',
                 '[class*="share"] [class*="count"]',
@@ -102,7 +107,7 @@ PLATFORM_RULES = {
 }
 
 
-MAYBE_MOJIBAKE_MARKERS = ["娑", "閸", "閹", "閽", "闂", "閻", "閵"]
+MAYBE_MOJIBAKE_MARKERS = ["婁", "闁", "闂", "锟", "鈥", "Ã", "æ"]
 TRACKING_QUERY_KEYS = {
     "share_app_id",
     "share_from_user_hidden",
@@ -121,8 +126,12 @@ LOGIN_PROMPT_PATTERNS = (
     "登录查看更多评论",
     "登录查看全部评论",
     "登录查看评论",
-    "登录后查看更多评论",
     "请先登录",
+    "绔嬪嵆鐧诲綍",
+    "鐧诲綍鏌ョ湅鏇村璇勮",
+    "鐧诲綍鏌ョ湅鍏ㄩ儴璇勮",
+    "鐧诲綍鏌ョ湅璇勮",
+    "璇峰厛鐧诲綍",
 )
 LIKELY_STATIC_IMAGE_MARKERS = (
     "douyinstatic.com/obj/douyin-pc-web",
@@ -193,7 +202,7 @@ def normalize_identity_url(url: str) -> str:
     filtered_query.sort()
 
     normalized_path = parts.path.rstrip("/") or "/"
-    normalized = urlunsplit(
+    return urlunsplit(
         (
             parts.scheme.lower(),
             parts.netloc.lower(),
@@ -202,7 +211,6 @@ def normalize_identity_url(url: str) -> str:
             "",
         )
     )
-    return normalized
 
 
 def extract_source_item_id(url: str, platform: str) -> str:
@@ -234,7 +242,7 @@ def build_capture_identity(platform: str, normalized_url: str, source_item_id: s
 def collect_tags(text: str, platform: str) -> list[str]:
     tags = ["clipped", "social", platform]
     for match in re.findall(r"#([^#\s]{1,30})", text or "")[:10]:
-        cleaned = match.strip()
+        cleaned = normalize_ws(match)
         if cleaned and cleaned not in tags:
             tags.append(cleaned)
     return tags
@@ -245,8 +253,7 @@ def safe_locator_text(page, selector: str, timeout_ms: int = 1500) -> str:
         locator = page.locator(selector).first
         if locator.count() == 0:
             return ""
-        text = locator.inner_text(timeout=timeout_ms)
-        return normalize_ws(text)
+        return normalize_ws(locator.inner_text(timeout=timeout_ms))
     except Exception:
         return ""
 
@@ -289,13 +296,16 @@ def pick_text_by_selectors(page, selectors: list[str], timeout_ms: int = 2000) -
 def collect_media_refs(page, css_selector: str, script: str, limit: int) -> list[str]:
     items: list[str] = []
     try:
-        for src in page.locator(css_selector).evaluate_all(script):
-            candidate = first_non_empty(src)
-            if candidate and candidate not in items:
-                items.append(candidate)
+        values = page.locator(css_selector).evaluate_all(script)
     except Exception:
-        return []
-    return items[:limit]
+        return items
+    for value in values:
+        candidate = first_non_empty(value)
+        if candidate and candidate not in items:
+            items.append(candidate)
+        if len(items) >= limit:
+            break
+    return items
 
 
 def collect_metric_values(page, metric_map: dict[str, list[str]]) -> dict[str, str]:
@@ -315,7 +325,7 @@ def collect_visible_comments(page, selectors: list[str], limit: int = 8) -> tupl
     for selector in selectors:
         try:
             values = page.locator(selector).evaluate_all(
-                "els => els.map(e => (e.innerText || e.textContent || '').trim()).filter(Boolean).slice(0, 24)"
+                "els => els.map(e => (e.innerText || e.textContent || '').trim()).filter(Boolean).slice(0, 40)"
             )
         except Exception:
             values = []
@@ -338,9 +348,7 @@ def collect_visible_comments(page, selectors: list[str], limit: int = 8) -> tupl
 
 def should_keep_video_ref(src: str) -> bool:
     src = (src or "").strip()
-    if not src:
-        return False
-    return src.startswith("http") or src.startswith("blob:")
+    return bool(src and (src.startswith("http") or src.startswith("blob:")))
 
 
 def should_keep_image_ref(src: str, platform: str) -> bool:
@@ -367,8 +375,216 @@ def build_social_raw_text(description: str, visible_text: str) -> str:
     return "\n\n".join(part for part in parts if part).strip()
 
 
-def build_comment_objects(comments: list[str]) -> list[dict[str, str]]:
-    return [{"text": comment} for comment in comments]
+def stringify_count(value: Any) -> str:
+    if value is None or value == "":
+        return ""
+    if isinstance(value, bool):
+        return ""
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        return str(int(value)) if value.is_integer() else str(value)
+    return normalize_ws(str(value))
+
+
+def format_unix_timestamp(value: Any) -> str:
+    try:
+        timestamp = int(value)
+    except (TypeError, ValueError):
+        return ""
+    if timestamp <= 0:
+        return ""
+    try:
+        return datetime.fromtimestamp(timestamp).isoformat(sep=" ", timespec="seconds")
+    except Exception:
+        return ""
+
+
+def iter_url_candidates(value: Any) -> list[str]:
+    urls: list[str] = []
+    if value is None:
+        return urls
+    if isinstance(value, str):
+        candidate = value.strip()
+        if candidate:
+            urls.append(candidate)
+        return urls
+    if isinstance(value, list):
+        for item in value:
+            for candidate in iter_url_candidates(item):
+                if candidate not in urls:
+                    urls.append(candidate)
+        return urls
+    if isinstance(value, dict):
+        for key in ("url_list", "url", "play_addr", "download_addr", "play_addr_h264", "origin_cover", "cover", "dynamic_cover"):
+            if key in value:
+                for candidate in iter_url_candidates(value.get(key)):
+                    if candidate not in urls:
+                        urls.append(candidate)
+        return urls
+    return urls
+
+
+def first_url_candidate(*values: Any) -> str:
+    for value in values:
+        for candidate in iter_url_candidates(value):
+            if candidate:
+                return candidate
+    return ""
+
+
+def build_comment_display(comment: dict[str, str]) -> str:
+    author = normalize_ws(comment.get("author", ""))
+    text = normalize_ws(comment.get("text", ""))
+    if author and text:
+        return f"{author}: {text}"
+    return first_non_empty(text, author)
+
+
+def build_comment_objects_from_text(comments: list[str]) -> list[dict[str, str]]:
+    objects: list[dict[str, str]] = []
+    for comment in comments:
+        cleaned = normalize_ws(comment)
+        if cleaned:
+            objects.append({"text": cleaned, "display_text": cleaned})
+    return objects
+
+
+def fetch_json_via_page(page, path: str, timeout_ms: int = 4000) -> dict[str, Any]:
+    try:
+        result = page.evaluate(
+            """
+            async ({ path, timeoutMs }) => {
+                const controller = new AbortController();
+                const timer = setTimeout(() => controller.abort(), timeoutMs);
+                try {
+                    const response = await fetch(path, {
+                        credentials: \"include\",
+                        signal: controller.signal,
+                    });
+                    const text = await response.text();
+                    try {
+                        return {
+                            ok: response.ok,
+                            status: response.status,
+                            data: JSON.parse(text),
+                            text_preview: text.slice(0, 2000),
+                        };
+                    } catch (error) {
+                        return {
+                            ok: false,
+                            status: response.status,
+                            data: null,
+                            text_preview: text.slice(0, 2000),
+                            error: String(error),
+                        };
+                    }
+                } catch (error) {
+                    return {
+                        ok: false,
+                        status: 0,
+                        data: null,
+                        text_preview: \"\",
+                        error: String(error),
+                    };
+                } finally {
+                    clearTimeout(timer);
+                }
+            }
+            """,
+            {"path": path, "timeoutMs": max(timeout_ms, 1000)},
+        )
+    except Exception as exc:
+        return {"ok": False, "status": 0, "data": None, "text_preview": "", "error": str(exc)}
+    return result if isinstance(result, dict) else {"ok": False, "status": 0, "data": None, "text_preview": ""}
+
+
+def collect_douyin_video_refs(video_data: dict[str, Any]) -> list[str]:
+    refs: list[str] = []
+    candidates: list[Any] = [
+        video_data.get("play_addr"),
+        video_data.get("download_addr"),
+        video_data.get("play_addr_h264"),
+    ]
+    for bit_rate in video_data.get("bit_rate") or []:
+        if isinstance(bit_rate, dict):
+            candidates.append(bit_rate.get("play_addr"))
+    for candidate_group in candidates:
+        for candidate in iter_url_candidates(candidate_group):
+            if should_keep_video_ref(candidate) and candidate not in refs:
+                refs.append(candidate)
+    return refs
+
+
+def extract_douyin_api_payload(page, aweme_id: str, timeout_ms: int, comment_limit: int = 8) -> dict[str, Any]:
+    if not aweme_id:
+        return {}
+
+    detail_result = fetch_json_via_page(page, f"/aweme/v1/web/aweme/detail/?aweme_id={aweme_id}", timeout_ms=timeout_ms)
+    comments_result = fetch_json_via_page(
+        page,
+        f"/aweme/v1/web/comment/list/?aweme_id={aweme_id}&cursor=0&count={max(comment_limit, 10)}",
+        timeout_ms=timeout_ms,
+    )
+
+    detail_data = detail_result.get("data") or {}
+    aweme = detail_data.get("aweme_detail") or {}
+    stats = aweme.get("statistics") or {}
+    author = aweme.get("author") or {}
+    video_data = aweme.get("video") or {}
+    comments_data = comments_result.get("data") or {}
+
+    comment_items: list[dict[str, str]] = []
+    for item in comments_data.get("comments") or []:
+        if not isinstance(item, dict):
+            continue
+        text = normalize_ws(item.get("text", ""))
+        if not text or looks_like_login_prompt(text):
+            continue
+        comment = {
+            "cid": first_non_empty(item.get("cid")),
+            "author": normalize_ws((item.get("user") or {}).get("nickname", "")),
+            "text": text,
+            "like_count": stringify_count(item.get("digg_count")),
+            "reply_count": stringify_count(item.get("reply_comment_total")),
+            "created_at": format_unix_timestamp(item.get("create_time")),
+        }
+        comment["display_text"] = build_comment_display(comment)
+        if comment["display_text"]:
+            comment_items.append(comment)
+        if len(comment_items) >= comment_limit:
+            break
+
+    metrics = {
+        "like_count": stringify_count(stats.get("digg_count")),
+        "comment_count": stringify_count(stats.get("comment_count")),
+        "collect_count": stringify_count(stats.get("collect_count")),
+        "share_count": stringify_count(stats.get("share_count")),
+    }
+    cover_url = first_url_candidate(
+        video_data.get("origin_cover"),
+        video_data.get("cover"),
+        video_data.get("dynamic_cover"),
+        aweme.get("images"),
+    )
+
+    return {
+        "title": normalize_ws(first_non_empty(aweme.get("desc"))),
+        "description": normalize_ws(first_non_empty(aweme.get("desc"))),
+        "author": normalize_ws(first_non_empty(author.get("nickname"), author.get("unique_id"))),
+        "published_at": format_unix_timestamp(aweme.get("create_time")),
+        "metrics": metrics,
+        "candidate_video_refs": collect_douyin_video_refs(video_data),
+        "cover_url": cover_url,
+        "image_urls": [cover_url] if cover_url else [],
+        "comments": comment_items,
+        "top_comments": [item["display_text"] for item in comment_items if item.get("display_text")],
+        "comments_total": stringify_count(first_non_empty(comments_data.get("total"), stats.get("comment_count"))),
+        "detail_status": detail_result.get("status", 0),
+        "comments_status": comments_result.get("status", 0),
+        "detail_ok": bool(detail_result.get("ok") and aweme),
+        "comments_ok": bool(comments_result.get("ok")),
+    }
 
 
 def build_engagement(metrics: dict[str, str]) -> dict[str, str]:
@@ -381,29 +597,24 @@ def build_engagement(metrics: dict[str, str]) -> dict[str, str]:
 
 
 def fill_metric_fallbacks(platform: str, metrics: dict[str, str], *texts: str) -> dict[str, str]:
+    if platform == "douyin":
+        return metrics
     combined = "\n".join(normalize_ws(text) for text in texts if text).strip()
     if not combined:
         return metrics
-    if platform == "douyin":
-        if not metrics.get("like_count"):
-            for pattern in (
-                r"已经收获了\s*([0-9A-Za-z\.\u4e07wW]+)\s*个喜欢",
-                r"获赞\s*([0-9A-Za-z\.\u4e07wW]+)",
-                r"点赞\s*([0-9A-Za-z\.\u4e07wW]+)",
-            ):
-                match = re.search(pattern, combined)
-                if match:
-                    metrics["like_count"] = match.group(1)
-                    break
-        if not metrics.get("comment_count"):
-            for pattern in (
-                r"评论\s*([0-9A-Za-z\.\u4e07wW]+)",
-                r"([0-9A-Za-z\.\u4e07wW]+)\s*条评论",
-            ):
-                match = re.search(pattern, combined)
-                if match:
-                    metrics["comment_count"] = match.group(1)
-                    break
+    patterns_by_key = {
+        "like_count": (r"点赞\s*([0-9A-Za-z\.\u4e07wW]+)", r"获赞\s*([0-9A-Za-z\.\u4e07wW]+)"),
+        "comment_count": (r"评论\s*([0-9A-Za-z\.\u4e07wW]+)",),
+        "collect_count": (r"收藏\s*([0-9A-Za-z\.\u4e07wW]+)",),
+    }
+    for key, patterns in patterns_by_key.items():
+        if metrics.get(key):
+            continue
+        for pattern in patterns:
+            match = re.search(pattern, combined)
+            if match:
+                metrics[key] = match.group(1)
+                break
     return metrics
 
 
@@ -416,7 +627,12 @@ def extract_social_payload(page, source_url: str, platform: str, timeout_ms: int
     )
     capture_key, capture_id = build_capture_identity(platform, final_url, source_item_id)
 
+    structured_payload: dict[str, Any] = {}
+    if platform == "douyin" and source_item_id:
+        structured_payload = extract_douyin_api_payload(page, source_item_id, timeout_ms=min(timeout_ms, 5000))
+
     title = first_non_empty(
+        structured_payload.get("title", ""),
         safe_meta_content(page, 'meta[property="og:title"]'),
         pick_text_by_selectors(page, rules.get("title_selectors", [])),
         page.title().strip(),
@@ -424,17 +640,20 @@ def extract_social_payload(page, source_url: str, platform: str, timeout_ms: int
     )
     description = normalize_ws(
         first_non_empty(
+            structured_payload.get("description", ""),
             safe_meta_content(page, 'meta[property="og:description"]'),
             safe_meta_content(page, 'meta[name="description"]'),
         )
     )
     author = first_non_empty(
+        structured_payload.get("author", ""),
         safe_meta_content(page, 'meta[name="author"]'),
         safe_meta_content(page, 'meta[property="article:author"]'),
         pick_text_by_selectors(page, rules.get("author_selectors", [])),
         "unknown",
     )
     published_at = first_non_empty(
+        structured_payload.get("published_at", ""),
         safe_meta_content(page, 'meta[property="article:published_time"]'),
         safe_meta_content(page, 'meta[name="publish-date"]'),
         "unknown",
@@ -442,6 +661,7 @@ def extract_social_payload(page, source_url: str, platform: str, timeout_ms: int
 
     if platform == "douyin":
         visible_text = first_non_empty(
+            structured_payload.get("description", ""),
             pick_text_by_selectors(page, rules.get("text_selectors", []), timeout_ms=timeout_ms),
             description,
             title,
@@ -453,58 +673,79 @@ def extract_social_payload(page, source_url: str, platform: str, timeout_ms: int
         )
     visible_text = normalize_ws(visible_text)
 
-    comments, login_prompt_seen = collect_visible_comments(page, rules.get("comment_selectors", []), limit=8)
-    comment_objects = build_comment_objects(comments)
+    api_comments = structured_payload.get("comments") or []
+    api_top_comments = structured_payload.get("top_comments") or []
+    if api_comments:
+        comment_objects = api_comments
+        top_comments = api_top_comments
+        login_prompt_seen = False
+    else:
+        visible_comments, login_prompt_seen = collect_visible_comments(page, rules.get("comment_selectors", []), limit=8)
+        comment_objects = build_comment_objects_from_text(visible_comments)
+        top_comments = [item["display_text"] for item in comment_objects if item.get("display_text")]
+
     raw_text = build_social_raw_text(description, visible_text)
     visible_preview = truncate(raw_text, 8000)
 
     image_urls: list[str] = []
+    structured_images = structured_payload.get("image_urls") or []
     og_image = safe_meta_content(page, 'meta[property="og:image"]')
-    collected_images = collect_media_refs(
-        page,
-        "img",
-        "els => els.map(e => e.currentSrc || e.src || '').filter(Boolean).slice(0, 12)",
-        12,
-    )
-    for candidate in [og_image, *collected_images]:
-        normalized_candidate = first_non_empty(candidate)
-        if (
-            normalized_candidate
-            and normalized_candidate not in image_urls
-            and should_keep_image_ref(normalized_candidate, platform)
-        ):
-            image_urls.append(normalized_candidate)
+    if platform == "douyin" and structured_images:
+        image_urls.extend([image for image in structured_images if image and image not in image_urls])
+    else:
+        collected_images = collect_media_refs(
+            page,
+            "img",
+            "els => els.map(e => e.currentSrc || e.src || '').filter(Boolean).slice(0, 16)",
+            16,
+        )
+        for candidate in [og_image, *collected_images]:
+            normalized_candidate = first_non_empty(candidate)
+            if (
+                normalized_candidate
+                and normalized_candidate not in image_urls
+                and should_keep_image_ref(normalized_candidate, platform)
+            ):
+                image_urls.append(normalized_candidate)
 
     candidate_video_refs: list[str] = []
-    for src in collect_media_refs(
+    for candidate in structured_payload.get("candidate_video_refs") or []:
+        if should_keep_video_ref(candidate) and candidate not in candidate_video_refs:
+            candidate_video_refs.append(candidate)
+    for candidate in collect_media_refs(
         page,
         "video",
         "els => els.map(e => e.currentSrc || e.src || e.poster || '').filter(Boolean).slice(0, 6)",
         6,
     ):
-        if should_keep_video_ref(src) and src not in candidate_video_refs:
-            candidate_video_refs.append(src)
+        if should_keep_video_ref(candidate) and candidate not in candidate_video_refs:
+            candidate_video_refs.append(candidate)
 
     metrics = collect_metric_values(page, rules.get("metric_map", {}))
+    for key, value in (structured_payload.get("metrics") or {}).items():
+        if value:
+            metrics[key] = value
     metrics = fill_metric_fallbacks(platform, metrics, description, visible_text, title)
     engagement = build_engagement(metrics)
 
+    comments_login_required = bool(login_prompt_seen and not comment_objects)
     summary_parts = []
     if description:
         summary_parts.append(description)
     elif visible_preview:
         summary_parts.append(truncate(visible_preview, 180))
     else:
-        summary_parts.append("已通过 Playwright 抓取页面可见内容。")
+        summary_parts.append("Visible social page content captured via Playwright.")
     metric_text = ", ".join(f"{key}: {value}" for key, value in metrics.items() if value)
     if metric_text:
-        summary_parts.append("互动数据: " + metric_text)
-    if comments:
-        summary_parts.append(f"可见评论抓取 {len(comments)} 条。")
-    elif login_prompt_seen:
-        summary_parts.append("评论区需要登录态才能稳定抓取。")
-    summary_parts.append(f"采集方式: Playwright / {platform}。")
+        summary_parts.append("Metrics: " + metric_text)
+    if comment_objects:
+        summary_parts.append(f"Visible comments captured: {len(comment_objects)}.")
+    elif comments_login_required:
+        summary_parts.append("Comments may require login.")
+    summary_parts.append(f"Captured with Playwright from {platform}.")
 
+    comments_capture_status = "login_required" if comments_login_required else ("captured" if comment_objects else "none")
     metadata: dict[str, Any] = {
         "capture_level": "standard" if visible_preview else "light",
         "transcript_status": "missing",
@@ -525,15 +766,23 @@ def extract_social_payload(page, source_url: str, platform: str, timeout_ms: int
         "image_count": len(image_urls),
         "candidate_video_ref_count": len(candidate_video_refs),
         "text_length": len(visible_preview),
-        "comment_count_visible": len(comments),
-        "comments_capture_status": "login_required" if login_prompt_seen and not comments else ("captured" if comments else "none"),
+        "comment_count_visible": len(comment_objects),
+        "platform_comment_count": first_non_empty(structured_payload.get("comments_total", ""), metrics.get("comment_count", "")),
+        "comments_capture_status": comments_capture_status,
+        "comments_login_required": comments_login_required,
+        "metrics_source": "douyin_api" if structured_payload.get("metrics") else "dom",
+        "comments_source": "douyin_api" if api_comments else ("dom" if comment_objects else "none"),
+        "detail_api_status": structured_payload.get("detail_status", 0),
+        "comments_api_status": structured_payload.get("comments_status", 0),
     }
     metadata.update(metrics)
-    if comments:
-        metadata["comments_preview"] = comments
+    if top_comments:
+        metadata["comments_preview"] = top_comments
+    if structured_payload.get("cover_url"):
+        metadata["cover_url"] = structured_payload["cover_url"]
 
     return {
-        "capture_version": "phase2-social-v1",
+        "capture_version": "phase3-social-v2",
         "capture_id": capture_id,
         "capture_key": capture_key,
         "source_url": source_url,
@@ -553,12 +802,16 @@ def extract_social_payload(page, source_url: str, platform: str, timeout_ms: int
         "images": image_urls,
         "videos": candidate_video_refs,
         "candidate_video_refs": candidate_video_refs,
-        "cover_url": first_non_empty(og_image if should_keep_image_ref(og_image, platform) else "", image_urls[0] if image_urls else ""),
-        "top_comments": comments,
+        "cover_url": first_non_empty(
+            structured_payload.get("cover_url", ""),
+            og_image if should_keep_image_ref(og_image, platform) else "",
+            image_urls[0] if image_urls else "",
+        ),
+        "top_comments": top_comments,
         "comments": comment_objects,
-        "comments_count": len(comments),
-        "comments_capture_status": "login_required" if login_prompt_seen and not comments else ("captured" if comments else "none"),
-        "comments_login_required": bool(login_prompt_seen and not comments),
+        "comments_count": len(comment_objects),
+        "comments_capture_status": comments_capture_status,
+        "comments_login_required": comments_login_required,
         "engagement": engagement,
         "metrics_like": first_non_empty(engagement.get("like")),
         "metrics_comment": first_non_empty(engagement.get("comment")),
@@ -575,15 +828,15 @@ def extract_social_payload(page, source_url: str, platform: str, timeout_ms: int
 
 
 def capture(url: str, platform: str, timeout_ms: int) -> dict[str, Any]:
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
         page = browser.new_page(viewport={"width": 1440, "height": 2200})
         try:
             page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
             page.wait_for_timeout(1200)
             wait_for_platform(page, platform, timeout_ms)
             page.mouse.wheel(0, 1800)
-            page.wait_for_timeout(1000)
+            page.wait_for_timeout(1200)
             return extract_social_payload(page, url, platform, timeout_ms=min(timeout_ms, 5000))
         finally:
             browser.close()
@@ -600,8 +853,8 @@ def main() -> int:
     result = capture(args.url, args.platform, args.timeout_ms)
     payload = json.dumps(result, ensure_ascii=False)
     if args.output_json:
-        with open(args.output_json, "w", encoding="utf-8") as f:
-            f.write(payload)
+        with open(args.output_json, "w", encoding="utf-8") as handle:
+            handle.write(payload)
     else:
         print(payload)
     return 0

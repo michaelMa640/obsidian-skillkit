@@ -1,4 +1,4 @@
-param(
+﻿param(
     [Parameter(Mandatory = $true)]
     [string]$SourceUrl,
     [string]$VaultPath,
@@ -502,7 +502,7 @@ function ConvertTo-YamlScalar {
 
 function Get-MarkdownDisplayTitle {
     param([string]$Title)
-    if (-not (Test-HasValue $Title)) { return '未命名剪藏' }
+    if (-not (Test-HasValue $Title)) { return 'Untitled Clip' }
     if ($Title.StartsWith('#')) { return ('\' + $Title) }
     $Title
 }
@@ -510,22 +510,13 @@ function Get-MarkdownDisplayTitle {
 function Test-LooksLikeLoginPrompt {
     param([string]$Text)
     if (-not (Test-HasValue $Text)) { return $false }
-    foreach ($pattern in @('立即登录','登录查看更多评论','登录查看全部评论','登录查看评论','登录后查看更多评论','请先登录')) {
-        if ($Text.Contains($pattern)) { return $true }
-    }
-    $false
-}
-
-function Get-FirstRegexGroupValue {
-    param([string]$Text,[string]$Pattern)
-    if (-not (Test-HasValue $Text) -or -not (Test-HasValue $Pattern)) { return '' }
-    $match = [regex]::Match($Text, $Pattern)
-    if ($match.Success -and $match.Groups.Count -gt 1) { return [string]$match.Groups[1].Value }
-    ''
+    $lower = $Text.ToLowerInvariant()
+    return ($lower.Contains('login'))
 }
 
 function Build-ClippingNote {
     param($Config,$Detection,$Capture,[string]$SourceUrl,[string]$CategoryHint)
+
     $captured = Get-Date -Format 'yyyy-MM-dd'
     $folder = if (Test-HasValue $CategoryHint) { $CategoryHint } elseif (Test-HasValue $Config.clipper.default_folder) { [string]$Config.clipper.default_folder } else { 'Clippings' }
     $title = [string]$Capture.title
@@ -534,21 +525,20 @@ function Build-ClippingNote {
     $fileName = Get-SafeFileName "$prefixDate$title.md"
     $tags = @($Capture.tags | Where-Object { Test-HasValue $_ } | Select-Object -Unique)
     if ($tags.Count -eq 0) { $tags = @('clipped') }
+
     $imagesText = if (@($Capture.images).Count -gt 0) { (@($Capture.images) | ForEach-Object { "- $_" }) -join "`n" } else { '- none' }
     $videosText = if (@($Capture.videos).Count -gt 0) { (@($Capture.videos) | ForEach-Object { "- $_" }) -join "`n" } else { '- none' }
     $summaryText = if (Test-HasValue $Capture.summary) { [string]$Capture.summary } else { '(none)' }
-    $summaryText = $summaryText -replace 'Visible comments captured: ([0-9]+)\.', '可见评论抓取 $1 条。'
-    $summaryText = $summaryText -replace 'Captured with Playwright from ([^.]+)\.', '采集方式: Playwright / $1。'
-    $summaryText = $summaryText -replace 'Metrics:\s*', '互动数据: '
-    $summaryText = $summaryText -replace 'Visible social page content captured via Playwright\.', '已通过 Playwright 抓取页面可见内容。'
     $rawText = if (Test-HasValue $Capture.raw_text) { [string]$Capture.raw_text } else { '(none)' }
     $transcript = if (Test-HasValue $Capture.transcript) { [string]$Capture.transcript } else { '(none)' }
     $metadata = Get-DataValue -Data $Capture -Name 'metadata'
+
     $captureLevel = if ($null -ne $metadata) { Get-StringValue -Data $metadata -Name 'capture_level' -DefaultValue 'light' } else { 'light' }
     $transcriptStatus = if ($null -ne $metadata) { Get-StringValue -Data $metadata -Name 'transcript_status' -DefaultValue 'missing' } else { 'missing' }
     $analysisReadyValue = Get-DataValue -Data $Capture -Name 'analysis_ready'
     if ($null -eq $analysisReadyValue -and $null -ne $metadata) { $analysisReadyValue = Get-DataValue -Data $metadata -Name 'analysis_ready' }
     $analysisReady = if ($null -eq $analysisReadyValue) { $true } else { [bool]$analysisReadyValue }
+
     $captureId = Get-StringValue -Data $Capture -Name 'capture_id' -DefaultValue ''
     if (-not (Test-HasValue $captureId) -and $null -ne $metadata) { $captureId = Get-StringValue -Data $metadata -Name 'capture_id' -DefaultValue '' }
     $captureKey = Get-StringValue -Data $Capture -Name 'capture_key' -DefaultValue ''
@@ -557,6 +547,7 @@ function Build-ClippingNote {
     if (-not (Test-HasValue $normalizedUrl) -and $null -ne $metadata) { $normalizedUrl = Get-StringValue -Data $metadata -Name 'normalized_url' -DefaultValue '' }
     $sourceItemId = Get-StringValue -Data $Capture -Name 'source_item_id' -DefaultValue ''
     if (-not (Test-HasValue $sourceItemId) -and $null -ne $metadata) { $sourceItemId = Get-StringValue -Data $metadata -Name 'source_item_id' -DefaultValue '' }
+
     $downloadStatus = Get-StringValue -Data $Capture -Name 'download_status' -DefaultValue ''
     if (-not (Test-HasValue $downloadStatus) -and $null -ne $metadata) { $downloadStatus = Get-StringValue -Data $metadata -Name 'download_status' -DefaultValue '' }
     $downloadMethod = Get-StringValue -Data $Capture -Name 'download_method' -DefaultValue ''
@@ -571,13 +562,33 @@ function Build-ClippingNote {
     if (-not (Test-HasValue $commentsPath) -and $null -ne $metadata) { $commentsPath = Get-StringValue -Data $metadata -Name 'comments_path' -DefaultValue '' }
     $metadataPath = Get-StringValue -Data $Capture -Name 'metadata_path' -DefaultValue ''
     if (-not (Test-HasValue $metadataPath) -and $null -ne $metadata) { $metadataPath = Get-StringValue -Data $metadata -Name 'metadata_path' -DefaultValue '' }
+
     $mediaDownloadedValue = Get-DataValue -Data $Capture -Name 'media_downloaded'
     if ($null -eq $mediaDownloadedValue -and $null -ne $metadata) { $mediaDownloadedValue = Get-DataValue -Data $metadata -Name 'media_downloaded' }
     $mediaDownloaded = if ($null -ne $mediaDownloadedValue) { [bool]$mediaDownloadedValue } else { $false }
     if (-not $mediaDownloaded -and (Test-HasValue $videoPath)) { $mediaDownloaded = $true }
+
     $rawTopComments = Get-StringArrayValue -Data $Capture -Name 'top_comments'
+    if (@($rawTopComments).Count -eq 0) {
+        $commentObjects = @(Get-DataValue -Data $Capture -Name 'comments')
+        $rawTopComments = @(
+            $commentObjects |
+            ForEach-Object {
+                $display = Get-StringValue -Data $_ -Name 'display_text' -DefaultValue ''
+                if (-not (Test-HasValue $display)) {
+                    $author = Get-StringValue -Data $_ -Name 'author' -DefaultValue ''
+                    $text = Get-StringValue -Data $_ -Name 'text' -DefaultValue ''
+                    if (Test-HasValue $author -and Test-HasValue $text) { $display = "${author}: $text" }
+                    elseif (Test-HasValue $text) { $display = $text }
+                }
+                if (Test-HasValue $display) { $display }
+            } |
+            Where-Object { Test-HasValue $_ }
+        )
+    }
     $topComments = @($rawTopComments | Where-Object { -not (Test-LooksLikeLoginPrompt -Text ([string]$_)) })
     $topCommentsLoginPrompts = @($rawTopComments | Where-Object { Test-LooksLikeLoginPrompt -Text ([string]$_) })
+
     $commentsCountValue = Get-DataValue -Data $Capture -Name 'comments_count'
     if ($null -eq $commentsCountValue -and $null -ne $metadata) { $commentsCountValue = Get-DataValue -Data $metadata -Name 'comment_count_visible' }
     $commentsCountText = if ($null -ne $commentsCountValue -and (Test-HasValue ([string]$commentsCountValue))) { [string]$commentsCountValue } elseif (@($topComments).Count -gt 0) { [string]@($topComments).Count } else { '0' }
@@ -593,13 +604,7 @@ function Build-ClippingNote {
         $commentsCaptureStatus = 'login_required'
         $commentsCountText = '0'
     }
-    if ($commentsLoginRequired) {
-        $summaryText = [regex]::Replace($summaryText, '可见评论抓取\s*[0-9]+\s*条。', '评论区需要登录态才能稳定抓取。')
-        $rawText = [regex]::Replace($rawText, '(?ms)\n*Top Comments:\n- .*$', '')
-    } else {
-        $rawText = $rawText -replace 'Top Comments:', '可见评论:'
-    }
-    $rawText = $rawText.Trim()
+
     $metricsLike = Get-StringValue -Data $Capture -Name 'metrics_like' -DefaultValue ''
     if (-not (Test-HasValue $metricsLike) -and $null -ne $metadata) { $metricsLike = Get-StringValue -Data $metadata -Name 'like_count' -DefaultValue '' }
     $metricsComment = Get-StringValue -Data $Capture -Name 'metrics_comment' -DefaultValue ''
@@ -608,14 +613,7 @@ function Build-ClippingNote {
     if (-not (Test-HasValue $metricsShare) -and $null -ne $metadata) { $metricsShare = Get-StringValue -Data $metadata -Name 'share_count' -DefaultValue '' }
     $metricsCollect = Get-StringValue -Data $Capture -Name 'metrics_collect' -DefaultValue ''
     if (-not (Test-HasValue $metricsCollect) -and $null -ne $metadata) { $metricsCollect = Get-StringValue -Data $metadata -Name 'collect_count' -DefaultValue '' }
-    if (-not (Test-HasValue $metricsLike)) {
-        foreach ($candidateText in @($summaryText, $rawText)) {
-            $metricsLike = Get-FirstRegexGroupValue -Text $candidateText -Pattern '已经收获了\s*([0-9A-Za-z\.万wW]+)\s*个喜欢'
-            if (-not (Test-HasValue $metricsLike)) { $metricsLike = Get-FirstRegexGroupValue -Text $candidateText -Pattern '获赞\s*([0-9A-Za-z\.万wW]+)' }
-            if (-not (Test-HasValue $metricsLike)) { $metricsLike = Get-FirstRegexGroupValue -Text $candidateText -Pattern '点赞\s*([0-9A-Za-z\.万wW]+)' }
-            if (Test-HasValue $metricsLike) { break }
-        }
-    }
+
     $analyzerStatus = Get-StringValue -Data $Capture -Name 'analyzer_status' -DefaultValue 'pending'
     $bitableSyncStatus = Get-StringValue -Data $Capture -Name 'bitable_sync_status' -DefaultValue 'pending'
     $isSocialShortVideo = ($Detection.route -eq 'social' -and $Detection.content_type -eq 'short_video')
@@ -623,53 +621,47 @@ function Build-ClippingNote {
     $topCommentsText = if (@($topComments).Count -gt 0) {
         (@($topComments) | ForEach-Object { "- $_" }) -join "`n"
     } elseif ($commentsLoginRequired) {
-        '- 当前页面评论区触发登录提示，未抓到可展示评论。'
+        '- Comments may require login.'
     } else {
-        '- 未抓取到可展示评论。'
-    }
-
-    switch ($commentsCaptureStatus) {
-        'login_required' { $commentsCaptureStatusText = '需要登录态' }
-        'captured' { $commentsCaptureStatusText = '已抓取' }
-        default { $commentsCaptureStatusText = '未获取' }
+        '- No visible comments captured.'
     }
 
     $engagementLines = @(
-        "- 点赞数: $(if (Test-HasValue $metricsLike) { $metricsLike } else { '未获取' })",
-        "- 平台评论数: $(if (Test-HasValue $metricsComment) { $metricsComment } else { '未获取' })",
-        "- 已抓取评论条数: $commentsCountText",
-        "- 分享数: $(if (Test-HasValue $metricsShare) { $metricsShare } else { '未获取' })",
-        "- 收藏数: $(if (Test-HasValue $metricsCollect) { $metricsCollect } else { '未获取' })",
-        "- 评论抓取状态: $commentsCaptureStatusText"
+        "- Likes: $(if (Test-HasValue $metricsLike) { $metricsLike } else { 'missing' })",
+        "- Platform Comments: $(if (Test-HasValue $metricsComment) { $metricsComment } else { 'missing' })",
+        "- Captured Comments: $commentsCountText",
+        "- Shares: $(if (Test-HasValue $metricsShare) { $metricsShare } else { 'missing' })",
+        "- Collects: $(if (Test-HasValue $metricsCollect) { $metricsCollect } else { 'missing' })",
+        "- Comment Capture: $commentsCaptureStatus"
     )
 
     $videoSectionLines = New-Object System.Collections.Generic.List[string]
     if (Test-HasValue $videoPath) {
         $videoSectionLines.Add("![[${videoPath}]]")
         $videoSectionLines.Add('')
-        $videoSectionLines.Add("- 本地视频: $videoPath")
-        $videoSectionLines.Add("- 下载状态: $(if (Test-HasValue $downloadStatus) { $downloadStatus } else { 'unknown' })")
-        $videoSectionLines.Add("- 下载方式: $(if (Test-HasValue $downloadMethod) { $downloadMethod } else { 'unknown' })")
+        $videoSectionLines.Add("- Local Video: $videoPath")
+        $videoSectionLines.Add("- Download Status: $(if (Test-HasValue $downloadStatus) { $downloadStatus } else { 'unknown' })")
+        $videoSectionLines.Add("- Download Method: $(if (Test-HasValue $downloadMethod) { $downloadMethod } else { 'unknown' })")
     } else {
-        $videoSectionLines.Add('- 当前未落到本地 mp4 文件。')
+        $videoSectionLines.Add('- No local mp4 file stored yet.')
     }
 
     $attachmentLines = New-Object System.Collections.Generic.List[string]
-    if (Test-HasValue $videoPath) { $attachmentLines.Add("- 本地视频: $videoPath") }
-    if (Test-HasValue $coverPath) { $attachmentLines.Add("- 封面图: $coverPath") }
+    if (Test-HasValue $videoPath) { $attachmentLines.Add("- Local Video: $videoPath") }
+    if (Test-HasValue $coverPath) { $attachmentLines.Add("- Cover Image: $coverPath") }
     if (Test-HasValue $sidecarPath) { $attachmentLines.Add("- Capture JSON: $sidecarPath") }
     if (Test-HasValue $commentsPath) { $attachmentLines.Add("- Comments JSON: $commentsPath") }
     if (Test-HasValue $metadataPath) { $attachmentLines.Add("- Metadata JSON: $metadataPath") }
     if ($attachmentLines.Count -eq 0) { $attachmentLines.Add('- none') }
 
     $statusLines = @(
-        "- 下载状态: $(if (Test-HasValue $downloadStatus) { $downloadStatus } else { 'unknown' })",
-        "- 下载方式: $(if (Test-HasValue $downloadMethod) { $downloadMethod } else { 'unknown' })",
-        "- 视频已落盘: $(if ($mediaDownloaded) { '是' } else { '否' })",
-        "- 转录状态: $transcriptStatus",
-        "- Analyzer 状态: $(if (Test-HasValue $analyzerStatus) { $analyzerStatus } else { 'pending' })",
-        "- 多维表格同步: $(if (Test-HasValue $bitableSyncStatus) { $bitableSyncStatus } else { 'pending' })",
-        "- 分析就绪: $(if ($analysisReady) { '是' } else { '否' })"
+        "- Download Status: $(if (Test-HasValue $downloadStatus) { $downloadStatus } else { 'unknown' })",
+        "- Download Method: $(if (Test-HasValue $downloadMethod) { $downloadMethod } else { 'unknown' })",
+        "- Media Stored: $(if ($mediaDownloaded) { 'yes' } else { 'no' })",
+        "- Transcript Status: $transcriptStatus",
+        "- Analyzer Status: $(if (Test-HasValue $analyzerStatus) { $analyzerStatus } else { 'pending' })",
+        "- Bitable Sync: $(if (Test-HasValue $bitableSyncStatus) { $bitableSyncStatus } else { 'pending' })",
+        "- Analysis Ready: $(if ($analysisReady) { 'yes' } else { 'no' })"
     )
 
     $lines = New-Object System.Collections.Generic.List[string]
@@ -703,53 +695,53 @@ function Build-ClippingNote {
     $lines.Add('')
     $lines.Add("# $displayTitle")
     $lines.Add('')
-    $lines.Add('## 来源信息')
-    $lines.Add("- 链接: $SourceUrl")
-    $lines.Add("- 规范化链接: $(if (Test-HasValue $normalizedUrl) { $normalizedUrl } else { 'n/a' })")
-    $lines.Add("- 平台: $($Detection.platform)")
-    $lines.Add("- 内容类型: $($Detection.content_type)")
-    $lines.Add("- 路由: $($Detection.route)")
+    $lines.Add('## Source')
+    $lines.Add("- Link: $SourceUrl")
+    $lines.Add("- Normalized URL: $(if (Test-HasValue $normalizedUrl) { $normalizedUrl } else { 'n/a' })")
+    $lines.Add("- Platform: $($Detection.platform)")
+    $lines.Add("- Content Type: $($Detection.content_type)")
+    $lines.Add("- Route: $($Detection.route)")
     $lines.Add("- Capture ID: $(if (Test-HasValue $captureId) { $captureId } else { 'n/a' })")
     $lines.Add("- Source Item ID: $(if (Test-HasValue $sourceItemId) { $sourceItemId } else { 'n/a' })")
     $lines.Add('')
     if ($isSocialShortVideo) {
-        $lines.Add('## 视频内容')
+        $lines.Add('## Video')
         foreach ($line in $videoSectionLines) { $lines.Add($line) }
         $lines.Add('')
     }
-    $lines.Add('## 内容摘要')
+    $lines.Add('## Summary')
     $lines.Add($summaryText)
     $lines.Add('')
-    $lines.Add('## 原始文案')
+    $lines.Add('## Raw Text')
     $lines.Add($rawText)
     $lines.Add('')
     if (Test-HasValue $transcript) {
-        $lines.Add('## 转录文本')
+        $lines.Add('## Transcript')
         $lines.Add($transcript)
         $lines.Add('')
     }
-    $lines.Add('## 互动数据')
+    $lines.Add('## Metrics')
     foreach ($line in $engagementLines) { $lines.Add($line) }
     $lines.Add('')
-    $lines.Add('## 可见评论')
+    $lines.Add('## Comments')
     foreach ($line in ($topCommentsText -split "`n")) { $lines.Add($line) }
     $lines.Add('')
-    $lines.Add('## 附件索引')
+    $lines.Add('## Attachments')
     foreach ($line in $attachmentLines) { $lines.Add($line) }
     if (-not $isSocialShortVideo) {
         $lines.Add('')
-        $lines.Add('## 图片链接')
+        $lines.Add('## Image URLs')
         foreach ($line in ($imagesText -split "`n")) { $lines.Add($line) }
         $lines.Add('')
-        $lines.Add('## 视频链接')
+        $lines.Add('## Video URLs')
         foreach ($line in ($videosText -split "`n")) { $lines.Add($line) }
     }
     $lines.Add('')
-    $lines.Add('## 采集状态')
+    $lines.Add('## Status')
     foreach ($line in $statusLines) { $lines.Add($line) }
 
     $body = $lines -join "`n"
-    [pscustomobject]@{ title=$title; folder=$folder; file_name=$fileName; tags=$tags; note_body=$body }
+    [pscustomobject]@{ title = $title; folder = $folder; file_name = $fileName; tags = $tags; note_body = $body }
 }
 
 function Write-NoteToVault {
