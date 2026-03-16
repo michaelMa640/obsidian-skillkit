@@ -33,6 +33,20 @@ function Get-Config {
     Read-Utf8Text -Path $Path | ConvertFrom-Json
 }
 
+function ConvertFrom-JsonCompat {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Json,
+        [int]$Depth = 64
+    )
+    $convertParams = @{}
+    $depthParam = (Get-Command ConvertFrom-Json).Parameters['Depth']
+    if ($null -ne $depthParam) {
+        $convertParams.Depth = $Depth
+    }
+    $Json | ConvertFrom-Json @convertParams
+}
+
 function Get-SafeFileName {
     param([string]$Value)
     $invalidChars = [System.IO.Path]::GetInvalidFileNameChars()
@@ -285,12 +299,15 @@ function Invoke-SocialCapture {
     $scriptPath = Get-RouteConfigValue -Config $Config -RouteName 'social' -PropertyName 'script' -DefaultValue ''
     if (-not (Test-HasValue $scriptPath) -or $scriptPath -like '*REPLACE/WITH/YOUR*' -or $scriptPath -like '*REPLACE\WITH\YOUR*' -or -not (Test-Path $scriptPath)) { $scriptPath = Join-Path $PSScriptRoot 'capture_social_playwright.py' }
     $timeoutMs = Get-RouteConfigValue -Config $Config -RouteName 'social' -PropertyName 'timeout_ms' -DefaultValue '25000'
+    $tempDir = New-LocalTempDirectory
     try {
-        $json = & $pythonCommand $scriptPath '--url' $Url '--platform' $Platform '--timeout-ms' $timeoutMs 2>&1
-        if ($LASTEXITCODE -ne 0) { throw "Playwright social capture failed with exit code $LASTEXITCODE. Output: $json" }
-        $payload = ($json | Out-String).Trim()
+        $outputJsonPath = Join-Path $tempDir 'social-capture.json'
+        & $pythonCommand $scriptPath '--url' $Url '--platform' $Platform '--timeout-ms' $timeoutMs '--output-json' $outputJsonPath 2>&1 | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "Playwright social capture failed with exit code $LASTEXITCODE." }
+        if (-not (Test-Path $outputJsonPath)) { throw 'Playwright social capture did not write its JSON output file.' }
+        $payload = Read-Utf8Text -Path $outputJsonPath
         if (-not (Test-HasValue $payload)) { throw 'Playwright social capture returned no output.' }
-        $obj = $payload | ConvertFrom-Json -Depth 50
+        $obj = ConvertFrom-JsonCompat -Json $payload -Depth 50
         $title = if (Test-HasValue $TitleHint) { $TitleHint } else { [string]$obj.title }
         if (-not (Test-HasValue $title)) { $title = "Social Clip - $Platform" }
         $tags = @($obj.tags | ForEach-Object { [string]$_ })
@@ -299,9 +316,10 @@ function Invoke-SocialCapture {
         return (New-CaptureObject -Title $title -Author ([string]$obj.author) -PublishedAt ([string]$obj.published_at) -Summary ([string]$obj.summary) -RawText ([string]$obj.raw_text) -Transcript ([string]$obj.transcript) -Tags $tags -Images $images -Videos $videos -Metadata $obj.metadata)
     } catch {
         return (New-SocialFallbackCapture -Url $Url -TitleHint $TitleHint -Platform $Platform -ErrorText $_.Exception.Message)
+    } finally {
+        Remove-LocalTempDirectory -Path $tempDir
     }
 }
-
 function Invoke-VideoMetadataCapture {
     param($Config,[string]$Url,[string]$TitleHint,[string]$Platform,[switch]$DryRun)
     if ($DryRun) {
@@ -318,7 +336,7 @@ function Invoke-VideoMetadataCapture {
             $metadataJson = & $ytDlpCommand '--dump-single-json' '--skip-download' '--no-warnings' '--no-playlist' $Url 2>&1
             if ($LASTEXITCODE -ne 0) { throw "yt-dlp metadata extraction failed with exit code $LASTEXITCODE. Output: $metadataJson" }
             $metadataText = ($metadataJson | Out-String).Trim(); if (-not (Test-HasValue $metadataText)) { throw 'yt-dlp returned no metadata output.' }
-            $info = $metadataText | ConvertFrom-Json -Depth 100
+            $info = ConvertFrom-JsonCompat -Json $metadataText -Depth 100
             $baseTemplate = Join-Path $tempDir 'subtitle'
             $subtitleOutput = & $ytDlpCommand '--skip-download' '--write-subs' '--write-auto-subs' '--sub-langs' $subtitleLanguages '--sub-format' $subtitleFormat '--no-playlist' '--no-warnings' '-o' "$baseTemplate.%(ext)s" $Url 2>&1
             $subtitleExitCode = $LASTEXITCODE

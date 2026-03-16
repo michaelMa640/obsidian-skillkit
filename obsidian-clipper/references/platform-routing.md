@@ -9,10 +9,11 @@
 
 ## Principles
 
-- Prefer the lightest useful capture path
+- Prefer the lightest useful capture path for the source type
 - Preserve source metadata for later analysis
-- Do not download media files by default
-- Prefer transcript/subtitles for long media sources
+- Short social video is asset-first in Phase 1: clip and download in `obsidian-clipper`
+- Long media remains metadata-first unless the workflow explicitly requires binary download
+- Do not block note creation when media download fails; write a partial record instead
 
 ## Route Notes
 
@@ -21,8 +22,9 @@
 - Current status: built-in page fetch + main-text extraction with fallback clipping
 
 ### `social`
-- Intended capture: visible caption, cover/media references, tags, engagement
-- Current status: built-in Playwright page capture with Xiaohongshu / Douyin selectors, wait strategy, and fallback clipping
+- Intended capture: visible caption, top comments, engagement, media references, downloaded video, and analyzer-ready metadata
+- Current implementation: built-in Playwright page capture with Xiaohongshu / Douyin selectors, wait strategy, and fallback clipping
+- Phase 1 target: `obsidian-clipper` owns video download, attachment placement, and sidecar record creation before analyzer handoff
 
 ### `video_metadata`
 - Tooling: `yt-dlp`

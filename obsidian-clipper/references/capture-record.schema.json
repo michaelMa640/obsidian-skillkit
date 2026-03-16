@@ -1,0 +1,133 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/obsidian-clipper/capture-record.schema.json",
+  "title": "Short Video Capture Record",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "capture_id",
+    "capture_key",
+    "source_url",
+    "normalized_url",
+    "platform",
+    "content_type",
+    "captured_at",
+    "status",
+    "download_status",
+    "download_method",
+    "media_downloaded",
+    "analyzer_status",
+    "bitable_sync_status"
+  ],
+  "properties": {
+    "capture_version": { "type": "string" },
+    "capture_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+_[a-f0-9]{16}$"
+    },
+    "capture_key": { "type": "string", "minLength": 1 },
+    "source_url": { "type": "string", "format": "uri" },
+    "normalized_url": { "type": "string", "format": "uri" },
+    "platform": {
+      "type": "string",
+      "enum": ["douyin", "xiaohongshu", "youtube", "bilibili", "podcast", "article", "unknown"]
+    },
+    "content_type": {
+      "type": "string",
+      "enum": ["short_video", "video", "article", "podcast", "unknown"]
+    },
+    "source_item_id": { "type": "string" },
+    "title": { "type": "string" },
+    "author": { "type": "string" },
+    "published_at": { "type": "string" },
+    "captured_at": { "type": "string" },
+    "route": { "type": "string" },
+    "status": {
+      "type": "string",
+      "enum": ["clipped", "clip_failed_partial"]
+    },
+    "download_status": {
+      "type": "string",
+      "enum": ["success", "failed", "partial", "skipped"]
+    },
+    "download_method": {
+      "type": "string",
+      "enum": ["yt-dlp", "playwright", "none", "unknown"]
+    },
+    "media_downloaded": { "type": "boolean" },
+    "video_path": { "type": "string" },
+    "video_storage_url": { "type": "string" },
+    "cover_path": { "type": "string" },
+    "video_duration_seconds": { "type": "number", "minimum": 0 },
+    "video_width": { "type": "integer", "minimum": 0 },
+    "video_height": { "type": "integer", "minimum": 0 },
+    "video_size_bytes": { "type": "integer", "minimum": 0 },
+    "video_sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{0,64}$"
+    },
+    "summary": { "type": "string" },
+    "description": { "type": "string" },
+    "raw_text": { "type": "string" },
+    "transcript": { "type": "string" },
+    "top_comments": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "comments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "author": { "type": "string" },
+          "text": { "type": "string" },
+          "like_count": { "type": ["string", "integer"] },
+          "published_at": { "type": "string" }
+        }
+      }
+    },
+    "comments_count": { "type": "integer", "minimum": 0 },
+    "engagement": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "like": { "type": ["string", "integer"] },
+        "comment": { "type": ["string", "integer"] },
+        "share": { "type": ["string", "integer"] },
+        "collect": { "type": ["string", "integer"] }
+      }
+    },
+    "metrics_like": { "type": "string" },
+    "metrics_comment": { "type": "string" },
+    "metrics_share": { "type": "string" },
+    "images": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "videos": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "errors": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "fallbacks": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "analyzer_status": {
+      "type": "string",
+      "enum": ["pending", "running", "done", "failed", "skipped"]
+    },
+    "bitable_sync_status": {
+      "type": "string",
+      "enum": ["pending", "done", "failed", "skipped"]
+    },
+    "tags": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  }
+}
