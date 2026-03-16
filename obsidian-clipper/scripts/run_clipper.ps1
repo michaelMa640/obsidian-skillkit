@@ -373,7 +373,9 @@ function Invoke-SocialCapture {
                 $downloadCommand = Get-RouteConfigValue -Config $Config -RouteName 'social' -PropertyName 'download_command' -DefaultValue 'yt-dlp'
                 $attachmentsRoot = if ($null -ne $Config.clipper -and (Test-HasValue $Config.clipper.attachments_root)) { [string]$Config.clipper.attachments_root } else { 'Attachments/ShortVideos' }
                 $downloadOutputPath = Join-Path $tempDir 'social-download.json'
-                & $downloadScriptPath -PayloadJsonPath $outputJsonPath -VaultPath $ResolvedVaultPath -Platform $Platform -SourceUrl $Url -AttachmentsRoot $attachmentsRoot -YtDlpCommand $downloadCommand -OutputJsonPath $downloadOutputPath 2>&1 | Out-Null
+                $downloadRunner = Get-Command powershell -ErrorAction SilentlyContinue
+                if ($null -eq $downloadRunner) { throw 'powershell was not found on PATH for social downloader invocation.' }
+                & $downloadRunner.Source '-ExecutionPolicy' 'Bypass' '-File' $downloadScriptPath '-PayloadJsonPath' $outputJsonPath '-VaultPath' $ResolvedVaultPath '-Platform' $Platform '-SourceUrl' $Url '-AttachmentsRoot' $attachmentsRoot '-YtDlpCommand' $downloadCommand '-OutputJsonPath' $downloadOutputPath 2>&1 | Out-Null
                 if ($LASTEXITCODE -eq 0 -and (Test-Path $downloadOutputPath)) {
                     $downloadPayload = Read-Utf8Text -Path $downloadOutputPath
                     if (Test-HasValue $downloadPayload) {
