@@ -31,7 +31,8 @@ This first implementation already supports:
 - clipping note generation
 - filesystem write into an Obsidian vault
 - `video_metadata` via real `yt-dlp` metadata/subtitle capture with fallback clipping
-- `social` via built-in Playwright page capture with fallback clipping`r`n- `podcast` via built-in page metadata capture, RSS hint extraction, transcript-link discovery, and show-notes-style text extraction with fallback clipping
+- `social` via built-in Playwright page capture with fallback clipping
+- `podcast` via built-in page metadata capture, RSS hint extraction, transcript-link discovery, and show-notes-style text extraction with fallback clipping
 
 It does not yet execute the full external capture stack for every route.
 Treat current route handlers as a minimal executable skeleton that the next implementation steps will deepen.
@@ -55,7 +56,7 @@ Treat current route handlers as a minimal executable skeleton that the next impl
 
 Use the route that matches the source:
 - article pages: built-in page fetch plus main-text extraction, with fallback clipping on fetch failure
-- Xiaohongshu and Douyin: built-in Playwright page capture with fallback clipping
+- Xiaohongshu and Douyin: built-in Playwright page capture with platform-specific selectors and fallback clipping
 - Bilibili and YouTube: metadata plus subtitles first, currently implemented through `yt-dlp`, with fallback clipping when extraction fails
 - Xiaoyuzhou and podcasts: page metadata, RSS hints, transcript hints, and show-notes-style text first, with fallback clipping when the source page cannot be reached
 

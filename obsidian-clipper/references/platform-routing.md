@@ -22,7 +22,7 @@
 
 ### `social`
 - Intended capture: visible caption, cover/media references, tags, engagement
-- Current status: built-in Playwright page capture with fallback clipping
+- Current status: built-in Playwright page capture with Xiaohongshu / Douyin selectors, wait strategy, and fallback clipping
 
 ### `video_metadata`
 - Tooling: `yt-dlp`

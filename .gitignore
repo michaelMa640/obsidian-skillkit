@@ -20,3 +20,7 @@ obsidian-analyzer/references/local-config.json
 
 # Optional local helper outputs
 *.log
+
+# Python cache
+__pycache__/
+*.pyc
