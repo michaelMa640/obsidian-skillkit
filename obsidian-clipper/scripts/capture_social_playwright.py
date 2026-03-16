@@ -116,6 +116,19 @@ TRACKING_QUERY_KEYS = {
     "xsec_token",
     "xsec_source",
 }
+LOGIN_PROMPT_PATTERNS = (
+    "立即登录",
+    "登录查看更多评论",
+    "登录查看全部评论",
+    "登录查看评论",
+    "登录后查看更多评论",
+    "请先登录",
+)
+LIKELY_STATIC_IMAGE_MARKERS = (
+    "douyinstatic.com/obj/douyin-pc-web",
+    "byteimg.com/tos-cn-i-9r5gewecjs/emblem",
+    "aweme-avatar",
+)
 
 
 def first_non_empty(*values: Any) -> str:
@@ -154,6 +167,13 @@ def truncate(text: str, length: int) -> str:
     if len(text) <= length:
         return text
     return text[:length] + "..."
+
+
+def looks_like_login_prompt(text: str) -> bool:
+    normalized = normalize_ws(text)
+    if not normalized:
+        return False
+    return any(pattern in normalized for pattern in LOGIN_PROMPT_PATTERNS)
 
 
 def normalize_identity_url(url: str) -> str:
@@ -289,8 +309,9 @@ def collect_metric_values(page, metric_map: dict[str, list[str]]) -> dict[str, s
     return metrics
 
 
-def collect_visible_comments(page, selectors: list[str], limit: int = 8) -> list[str]:
+def collect_visible_comments(page, selectors: list[str], limit: int = 8) -> tuple[list[str], bool]:
     comments: list[str] = []
+    login_prompt_seen = False
     for selector in selectors:
         try:
             values = page.locator(selector).evaluate_all(
@@ -302,14 +323,17 @@ def collect_visible_comments(page, selectors: list[str], limit: int = 8) -> list
             cleaned = normalize_ws(value)
             if not cleaned:
                 continue
+            if looks_like_login_prompt(cleaned):
+                login_prompt_seen = True
+                continue
             if len(cleaned) < 2:
                 continue
             if cleaned in comments:
                 continue
             comments.append(cleaned)
             if len(comments) >= limit:
-                return comments
-    return comments
+                return comments, login_prompt_seen
+    return comments, login_prompt_seen
 
 
 def should_keep_video_ref(src: str) -> bool:
@@ -319,14 +343,27 @@ def should_keep_video_ref(src: str) -> bool:
     return src.startswith("http") or src.startswith("blob:")
 
 
-def build_social_raw_text(description: str, visible_text: str, comments: list[str]) -> str:
+def should_keep_image_ref(src: str, platform: str) -> bool:
+    src = (src or "").strip()
+    if not src or src.startswith("data:"):
+        return False
+    lowered = src.lower()
+    if any(marker in lowered for marker in LIKELY_STATIC_IMAGE_MARKERS):
+        return False
+    if platform == "douyin":
+        if "douyinpic.com" not in lowered and "douyinstatic.com" not in lowered:
+            return False
+        if "avatar" in lowered:
+            return False
+    return src.startswith("http")
+
+
+def build_social_raw_text(description: str, visible_text: str) -> str:
     parts: list[str] = []
     if description:
         parts.append(description)
     if visible_text and visible_text != description:
         parts.append(visible_text)
-    if comments:
-        parts.append("Top Comments:\n" + "\n".join(f"- {comment}" for comment in comments))
     return "\n\n".join(part for part in parts if part).strip()
 
 
@@ -341,6 +378,33 @@ def build_engagement(metrics: dict[str, str]) -> dict[str, str]:
         "share": first_non_empty(metrics.get("share_count")),
         "collect": first_non_empty(metrics.get("collect_count")),
     }
+
+
+def fill_metric_fallbacks(platform: str, metrics: dict[str, str], *texts: str) -> dict[str, str]:
+    combined = "\n".join(normalize_ws(text) for text in texts if text).strip()
+    if not combined:
+        return metrics
+    if platform == "douyin":
+        if not metrics.get("like_count"):
+            for pattern in (
+                r"已经收获了\s*([0-9A-Za-z\.\u4e07wW]+)\s*个喜欢",
+                r"获赞\s*([0-9A-Za-z\.\u4e07wW]+)",
+                r"点赞\s*([0-9A-Za-z\.\u4e07wW]+)",
+            ):
+                match = re.search(pattern, combined)
+                if match:
+                    metrics["like_count"] = match.group(1)
+                    break
+        if not metrics.get("comment_count"):
+            for pattern in (
+                r"评论\s*([0-9A-Za-z\.\u4e07wW]+)",
+                r"([0-9A-Za-z\.\u4e07wW]+)\s*条评论",
+            ):
+                match = re.search(pattern, combined)
+                if match:
+                    metrics["comment_count"] = match.group(1)
+                    break
+    return metrics
 
 
 def extract_social_payload(page, source_url: str, platform: str, timeout_ms: int) -> dict[str, Any]:
@@ -389,9 +453,9 @@ def extract_social_payload(page, source_url: str, platform: str, timeout_ms: int
         )
     visible_text = normalize_ws(visible_text)
 
-    comments = collect_visible_comments(page, rules.get("comment_selectors", []), limit=8)
+    comments, login_prompt_seen = collect_visible_comments(page, rules.get("comment_selectors", []), limit=8)
     comment_objects = build_comment_objects(comments)
-    raw_text = build_social_raw_text(description, visible_text, comments)
+    raw_text = build_social_raw_text(description, visible_text)
     visible_preview = truncate(raw_text, 8000)
 
     image_urls: list[str] = []
@@ -404,7 +468,11 @@ def extract_social_payload(page, source_url: str, platform: str, timeout_ms: int
     )
     for candidate in [og_image, *collected_images]:
         normalized_candidate = first_non_empty(candidate)
-        if normalized_candidate and normalized_candidate not in image_urls:
+        if (
+            normalized_candidate
+            and normalized_candidate not in image_urls
+            and should_keep_image_ref(normalized_candidate, platform)
+        ):
             image_urls.append(normalized_candidate)
 
     candidate_video_refs: list[str] = []
@@ -418,6 +486,7 @@ def extract_social_payload(page, source_url: str, platform: str, timeout_ms: int
             candidate_video_refs.append(src)
 
     metrics = collect_metric_values(page, rules.get("metric_map", {}))
+    metrics = fill_metric_fallbacks(platform, metrics, description, visible_text, title)
     engagement = build_engagement(metrics)
 
     summary_parts = []
@@ -426,13 +495,15 @@ def extract_social_payload(page, source_url: str, platform: str, timeout_ms: int
     elif visible_preview:
         summary_parts.append(truncate(visible_preview, 180))
     else:
-        summary_parts.append("Visible social page content captured via Playwright.")
+        summary_parts.append("已通过 Playwright 抓取页面可见内容。")
     metric_text = ", ".join(f"{key}: {value}" for key, value in metrics.items() if value)
     if metric_text:
-        summary_parts.append("Metrics: " + metric_text)
+        summary_parts.append("互动数据: " + metric_text)
     if comments:
-        summary_parts.append(f"Visible comments captured: {len(comments)}.")
-    summary_parts.append(f"Captured with Playwright from {platform}.")
+        summary_parts.append(f"可见评论抓取 {len(comments)} 条。")
+    elif login_prompt_seen:
+        summary_parts.append("评论区需要登录态才能稳定抓取。")
+    summary_parts.append(f"采集方式: Playwright / {platform}。")
 
     metadata: dict[str, Any] = {
         "capture_level": "standard" if visible_preview else "light",
@@ -455,6 +526,7 @@ def extract_social_payload(page, source_url: str, platform: str, timeout_ms: int
         "candidate_video_ref_count": len(candidate_video_refs),
         "text_length": len(visible_preview),
         "comment_count_visible": len(comments),
+        "comments_capture_status": "login_required" if login_prompt_seen and not comments else ("captured" if comments else "none"),
     }
     metadata.update(metrics)
     if comments:
@@ -481,10 +553,12 @@ def extract_social_payload(page, source_url: str, platform: str, timeout_ms: int
         "images": image_urls,
         "videos": candidate_video_refs,
         "candidate_video_refs": candidate_video_refs,
-        "cover_url": first_non_empty(og_image, image_urls[0] if image_urls else ""),
+        "cover_url": first_non_empty(og_image if should_keep_image_ref(og_image, platform) else "", image_urls[0] if image_urls else ""),
         "top_comments": comments,
         "comments": comment_objects,
         "comments_count": len(comments),
+        "comments_capture_status": "login_required" if login_prompt_seen and not comments else ("captured" if comments else "none"),
+        "comments_login_required": bool(login_prompt_seen and not comments),
         "engagement": engagement,
         "metrics_like": first_non_empty(engagement.get("like")),
         "metrics_comment": first_non_empty(engagement.get("comment")),

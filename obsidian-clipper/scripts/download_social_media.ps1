@@ -188,6 +188,16 @@ if (-not (Test-HasValue $captureId)) { throw 'Payload is missing capture_id.' }
 $attachmentRootPath = Join-Path $VaultPath $AttachmentsRoot
 $attachmentDir = Join-Path (Join-Path $attachmentRootPath $Platform) $captureId
 New-Item -ItemType Directory -Path $attachmentDir -Force | Out-Null
+$existingVideoFile = Get-VideoFile -Directory $attachmentDir
+$existingCaptureRecord = $null
+$existingCaptureSidecarPath = Join-Path $attachmentDir 'capture.json'
+if (Test-Path $existingCaptureSidecarPath) {
+    try {
+        $existingCaptureRecord = ConvertFrom-JsonCompat -Json (Read-Utf8Text -Path $existingCaptureSidecarPath) -Depth 100
+    } catch {
+        $existingCaptureRecord = $null
+    }
+}
 
 $errors = New-Object System.Collections.Generic.List[string]
 $fallbacks = New-Object System.Collections.Generic.List[string]
@@ -246,6 +256,15 @@ if ($null -eq $videoFile) {
             $errors.Add("Playwright fallback failed for candidate ref: $candidate")
         }
     }
+}
+
+if ($null -eq $videoFile -and $null -ne $existingVideoFile -and $existingVideoFile.Length -gt 0) {
+    $videoFile = $existingVideoFile
+    $existingDownloadMethod = if ($null -ne $existingCaptureRecord) { Get-StringValue -Data $existingCaptureRecord -Name 'download_method' -DefaultValue '' } else { '' }
+    if (-not (Test-HasValue $existingDownloadMethod) -or $existingDownloadMethod -eq 'none') { $existingDownloadMethod = 'existing' }
+    $downloadStatus = 'success'
+    $downloadMethod = $existingDownloadMethod
+    $fallbacks.Add('existing_video_reused')
 }
 
 if ($null -eq $videoFile) {
@@ -332,6 +351,7 @@ foreach ($pair in @(
     @{ Name = 'capture_id'; Value = $captureId },
     @{ Name = 'download_status'; Value = $downloadStatus },
     @{ Name = 'download_method'; Value = $downloadMethod },
+    @{ Name = 'media_downloaded'; Value = ([bool]($null -ne $videoFile)) },
     @{ Name = 'video_path'; Value = $videoPathRelative },
     @{ Name = 'cover_path'; Value = $coverPathRelative },
     @{ Name = 'sidecar_path'; Value = $sidecarCaptureRelative },
