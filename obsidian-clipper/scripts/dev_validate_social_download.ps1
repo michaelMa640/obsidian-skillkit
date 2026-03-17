@@ -70,6 +70,17 @@ function Resolve-SocialScriptPath {
     Join-Path $PSScriptRoot 'capture_social_playwright.py'
 }
 
+function Get-ConfiguredPathValue {
+    param($Object, [string]$PropertyName)
+    if ($null -eq $Object) { return '' }
+    $property = $Object.PSObject.Properties[$PropertyName]
+    if ($null -eq $property) { return '' }
+    $value = [string]$property.Value
+    if (-not (Test-HasValue $value)) { return '' }
+    if ($value -like '*REPLACE/WITH/YOUR*' -or $value -like '*REPLACE\WITH\YOUR*') { return '' }
+    $value
+}
+
 function Invoke-LoggedCommand {
     param(
         [Parameter(Mandatory = $true)]
@@ -170,6 +181,13 @@ function Write-MarkdownReport {
     $lines.Add("- Validation Vault: $($Report.validation_vault)")
     $lines.Add("- Full Clipper Run: $($Report.full_clipper_run)")
     $lines.Add('')
+    $lines.Add('## Auth')
+    $lines.Add("- Configured: $($Report.auth.configured)")
+    $lines.Add("- Storage State: $($Report.auth.storage_state_path)")
+    $lines.Add("- Storage State Exists: $($Report.auth.storage_state_exists)")
+    $lines.Add("- Cookies File: $($Report.auth.cookies_file)")
+    $lines.Add("- Cookies File Exists: $($Report.auth.cookies_file_exists)")
+    $lines.Add('')
     $lines.Add('## Detection')
     $lines.Add("- Success: $($Report.detection.success)")
     $lines.Add("- Route: $($Report.detection.route)")
@@ -183,6 +201,11 @@ function Write-MarkdownReport {
     $lines.Add("- Capture ID: $($Report.capture.capture_id)")
     $lines.Add("- Comments Count: $($Report.capture.comments_count)")
     $lines.Add("- Candidate Video Ref Count: $($Report.capture.candidate_video_ref_count)")
+    $lines.Add("- Comments Capture Status: $($Report.capture.comments_capture_status)")
+    $lines.Add("- Comments Login Required: $($Report.capture.comments_login_required)")
+    $lines.Add("- Auth Applied: $($Report.capture.auth_applied)")
+    $lines.Add("- Auth Mode: $($Report.capture.auth_mode)")
+    $lines.Add("- Auth Cookie Count: $($Report.capture.auth_cookie_count)")
     $lines.Add("- JSON: $($Report.capture.json_path)")
     $lines.Add("- Log: $($Report.capture.log_path)")
     $lines.Add('')
@@ -192,6 +215,9 @@ function Write-MarkdownReport {
     $lines.Add("- Download Method: $($Report.download.download_method)")
     $lines.Add("- Video Path: $($Report.download.video_path)")
     $lines.Add("- Sidecar Path: $($Report.download.sidecar_path)")
+    $lines.Add("- yt-dlp Auth Mode: $($Report.download.yt_dlp_auth_mode)")
+    $lines.Add("- yt-dlp Cookies File: $($Report.download.yt_dlp_cookies_file_used)")
+    $lines.Add("- yt-dlp Generated Cookie File: $($Report.download.yt_dlp_cookie_file_generated)")
     $lines.Add("- JSON: $($Report.download.json_path)")
     $lines.Add("- Log: $($Report.download.log_path)")
     if ($null -ne $Report.download.errors -and @($Report.download.errors).Count -gt 0) {
@@ -235,6 +261,11 @@ $socialScriptPath = Resolve-SocialScriptPath -Config $config
 $timeoutMs = if ($null -ne $config.routes -and $null -ne $config.routes.social -and (Test-HasValue $config.routes.social.timeout_ms)) { [string]$config.routes.social.timeout_ms } else { '25000' }
 $downloadCommand = if ($null -ne $config.routes -and $null -ne $config.routes.social -and (Test-HasValue $config.routes.social.download_command)) { [string]$config.routes.social.download_command } else { 'yt-dlp' }
 $attachmentsRoot = if ($null -ne $config.clipper -and (Test-HasValue $config.clipper.attachments_root)) { [string]$config.clipper.attachments_root } else { 'Attachments/ShortVideos' }
+$authConfig = if ($null -ne $config.routes -and $null -ne $config.routes.social) { $config.routes.social.auth } else { $null }
+$storageStatePath = Get-ConfiguredPathValue -Object $authConfig -PropertyName 'storage_state_path'
+$cookiesFile = Get-ConfiguredPathValue -Object $authConfig -PropertyName 'cookies_file'
+$storageStateExists = (Test-HasValue $storageStatePath) -and (Test-Path $storageStatePath)
+$cookiesFileExists = (Test-HasValue $cookiesFile) -and (Test-Path $cookiesFile)
 
 $tooling = @(
     Get-ToolVersionRecord -Name 'python' -Command $pythonCommand -Arguments @('--version') -RunDirectory $runDirectory
@@ -259,7 +290,10 @@ if ($null -eq $detection -or [string]$detection.route -ne 'social') {
 
 $captureJsonPath = Join-Path $runDirectory 'capture-social.json'
 $captureLogPath = Join-Path $runDirectory 'capture-social.log'
-$captureCommand = Invoke-LoggedCommand -Command $pythonCommand -Arguments @($socialScriptPath, '--url', $SourceUrl, '--platform', [string]$detection.platform, '--timeout-ms', $timeoutMs, '--output-json', $captureJsonPath) -LogPath $captureLogPath
+$captureArguments = @($socialScriptPath, '--url', $SourceUrl, '--platform', [string]$detection.platform, '--timeout-ms', $timeoutMs, '--output-json', $captureJsonPath)
+if (Test-HasValue $storageStatePath) { $captureArguments += @('--storage-state', $storageStatePath) }
+if (Test-HasValue $cookiesFile) { $captureArguments += @('--cookies-file', $cookiesFile) }
+$captureCommand = Invoke-LoggedCommand -Command $pythonCommand -Arguments $captureArguments -LogPath $captureLogPath
 $capturePayload = $null
 if (Test-Path $captureJsonPath) {
     $capturePayload = ConvertFrom-JsonCompat -Json (Read-Utf8Text -Path $captureJsonPath) -Depth 100
@@ -270,7 +304,10 @@ $downloadLogPath = Join-Path $runDirectory 'download-social.log'
 $downloadScriptPath = Join-Path $PSScriptRoot 'download_social_media.ps1'
 $downloadPayload = $null
 if ($null -ne $capturePayload) {
-    $null = Invoke-LoggedCommand -Command 'powershell' -Arguments @('-ExecutionPolicy', 'Bypass', '-File', $downloadScriptPath, '-PayloadJsonPath', $captureJsonPath, '-VaultPath', $validationVault, '-Platform', [string]$detection.platform, '-SourceUrl', $SourceUrl, '-AttachmentsRoot', $attachmentsRoot, '-YtDlpCommand', $downloadCommand, '-OutputJsonPath', $downloadJsonPath) -LogPath $downloadLogPath
+    $downloadArguments = @('-ExecutionPolicy', 'Bypass', '-File', $downloadScriptPath, '-PayloadJsonPath', $captureJsonPath, '-VaultPath', $validationVault, '-Platform', [string]$detection.platform, '-SourceUrl', $SourceUrl, '-AttachmentsRoot', $attachmentsRoot, '-YtDlpCommand', $downloadCommand, '-OutputJsonPath', $downloadJsonPath)
+    if (Test-HasValue $cookiesFile) { $downloadArguments += @('-CookiesFile', $cookiesFile) }
+    if (Test-HasValue $storageStatePath) { $downloadArguments += @('-StorageStatePath', $storageStatePath) }
+    $null = Invoke-LoggedCommand -Command 'powershell' -Arguments $downloadArguments -LogPath $downloadLogPath
     if (Test-Path $downloadJsonPath) {
         $downloadPayload = ConvertFrom-JsonCompat -Json (Read-Utf8Text -Path $downloadJsonPath) -Depth 100
     }
@@ -304,6 +341,13 @@ $report = [ordered]@{
     config_path = $resolvedConfigPath
     full_clipper_run = (-not $SkipFullClipper)
     tooling = $tooling
+    auth = [ordered]@{
+        configured = [bool]((Test-HasValue $storageStatePath) -or (Test-HasValue $cookiesFile))
+        storage_state_path = $storageStatePath
+        storage_state_exists = [bool]$storageStateExists
+        cookies_file = $cookiesFile
+        cookies_file_exists = [bool]$cookiesFileExists
+    }
     detection = [ordered]@{
         success = [bool]($null -ne $detection)
         route = if ($null -ne $detection) { [string]$detection.route } else { '' }
@@ -317,6 +361,11 @@ $report = [ordered]@{
         capture_id = if ($null -ne $capturePayload) { [string]$capturePayload.capture_id } else { '' }
         comments_count = if ($null -ne $capturePayload -and $null -ne $capturePayload.comments_count) { [int]$capturePayload.comments_count } else { 0 }
         candidate_video_ref_count = if ($null -ne $capturePayload -and $null -ne $capturePayload.candidate_video_refs) { @($capturePayload.candidate_video_refs).Count } else { 0 }
+        comments_capture_status = if ($null -ne $capturePayload) { [string]$capturePayload.comments_capture_status } else { '' }
+        comments_login_required = if ($null -ne $capturePayload) { [bool]$capturePayload.comments_login_required } else { $false }
+        auth_applied = if ($null -ne $capturePayload) { [bool]$capturePayload.auth_applied } else { $false }
+        auth_mode = if ($null -ne $capturePayload) { [string]$capturePayload.auth_mode } else { '' }
+        auth_cookie_count = if ($null -ne $capturePayload -and $null -ne $capturePayload.auth_cookie_count) { [int]$capturePayload.auth_cookie_count } else { 0 }
         json_path = if (Test-Path $captureJsonPath) { Get-RelativePath -BasePath $runDirectory -TargetPath $captureJsonPath } else { '' }
         log_path = Get-RelativePath -BasePath $runDirectory -TargetPath $captureLogPath
     }
@@ -326,6 +375,9 @@ $report = [ordered]@{
         download_method = if ($null -ne $downloadPayload) { [string]$downloadPayload.download_method } else { '' }
         video_path = if ($null -ne $downloadPayload) { [string]$downloadPayload.video_path } else { '' }
         sidecar_path = if ($null -ne $downloadPayload) { [string]$downloadPayload.sidecar_path } else { '' }
+        yt_dlp_auth_mode = if ($null -ne $downloadPayload) { [string]$downloadPayload.yt_dlp_auth_mode } else { '' }
+        yt_dlp_cookies_file_used = if ($null -ne $downloadPayload) { [string]$downloadPayload.yt_dlp_cookies_file_used } else { '' }
+        yt_dlp_cookie_file_generated = if ($null -ne $downloadPayload) { [bool]$downloadPayload.yt_dlp_cookie_file_generated } else { $false }
         json_path = if (Test-Path $downloadJsonPath) { Get-RelativePath -BasePath $runDirectory -TargetPath $downloadJsonPath } else { '' }
         log_path = Get-RelativePath -BasePath $runDirectory -TargetPath $downloadLogPath
         errors = if ($null -ne $downloadPayload) { @($downloadPayload.errors) } else { @() }

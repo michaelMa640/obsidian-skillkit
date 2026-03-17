@@ -16,6 +16,7 @@ obsidian-archiver/references/local-config.json
 
 # New skill local machine-specific configs
 obsidian-clipper/references/local-config.json
+obsidian-clipper/.local-auth/
 obsidian-analyzer/references/local-config.json
 
 # Optional local helper outputs

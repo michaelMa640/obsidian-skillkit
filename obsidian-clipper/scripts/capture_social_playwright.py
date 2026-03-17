@@ -1,7 +1,8 @@
-﻿import argparse
+import argparse
 from datetime import datetime
 import hashlib
 import json
+from pathlib import Path
 import re
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -138,6 +139,7 @@ LIKELY_STATIC_IMAGE_MARKERS = (
     "byteimg.com/tos-cn-i-9r5gewecjs/emblem",
     "aweme-avatar",
 )
+HTTPONLY_COOKIE_PREFIX = "#HttpOnly_"
 
 
 def first_non_empty(*values: Any) -> str:
@@ -450,6 +452,88 @@ def build_comment_objects_from_text(comments: list[str]) -> list[dict[str, str]]
     return objects
 
 
+def load_json_file(path: str) -> Any:
+    return json.loads(Path(path).read_text(encoding="utf-8-sig"))
+
+
+def load_playwright_cookies(cookies_file: str) -> list[dict[str, Any]]:
+    raw_text = Path(cookies_file).read_text(encoding="utf-8-sig")
+    stripped = raw_text.lstrip()
+    if not stripped:
+        return []
+
+    if stripped.startswith("{") or stripped.startswith("["):
+        data = load_json_file(cookies_file)
+        cookie_items = data.get("cookies") if isinstance(data, dict) else data
+        cookies: list[dict[str, Any]] = []
+        for item in cookie_items or []:
+            if not isinstance(item, dict):
+                continue
+            name = first_non_empty(item.get("name"))
+            value = first_non_empty(item.get("value"))
+            domain = first_non_empty(item.get("domain"))
+            if not (name and value and domain):
+                continue
+            cookie: dict[str, Any] = {
+                "name": name,
+                "value": value,
+                "domain": domain,
+                "path": first_non_empty(item.get("path"), "/"),
+                "secure": bool(item.get("secure")),
+            }
+            if item.get("httpOnly") is not None:
+                cookie["httpOnly"] = bool(item.get("httpOnly"))
+            expires = item.get("expires", item.get("expirationDate"))
+            try:
+                expires_value = float(expires)
+            except (TypeError, ValueError):
+                expires_value = 0
+            if expires_value > 0:
+                cookie["expires"] = expires_value
+            same_site = first_non_empty(item.get("sameSite"))
+            if same_site in {"Lax", "None", "Strict"}:
+                cookie["sameSite"] = same_site
+            cookies.append(cookie)
+        return cookies
+
+    cookies: list[dict[str, Any]] = []
+    for raw_line in raw_text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.startswith("#") and not line.startswith(HTTPONLY_COOKIE_PREFIX):
+            continue
+        fields = raw_line.split("\t")
+        if len(fields) < 7:
+            continue
+        domain = fields[0].strip()
+        http_only = False
+        if domain.startswith(HTTPONLY_COOKIE_PREFIX):
+            http_only = True
+            domain = domain[len(HTTPONLY_COOKIE_PREFIX):]
+        name = fields[5].strip()
+        value = fields[6].strip()
+        if not (domain and name):
+            continue
+        cookie: dict[str, Any] = {
+            "name": name,
+            "value": value,
+            "domain": domain,
+            "path": fields[2].strip() or "/",
+            "secure": fields[3].strip().upper() == "TRUE",
+        }
+        if http_only:
+            cookie["httpOnly"] = True
+        try:
+            expires_value = float(fields[4].strip())
+        except (TypeError, ValueError):
+            expires_value = 0
+        if expires_value > 0:
+            cookie["expires"] = expires_value
+        cookies.append(cookie)
+    return cookies
+
+
 def fetch_json_via_page(page, path: str, timeout_ms: int = 4000) -> dict[str, Any]:
     try:
         result = page.evaluate(
@@ -618,7 +702,7 @@ def fill_metric_fallbacks(platform: str, metrics: dict[str, str], *texts: str) -
     return metrics
 
 
-def extract_social_payload(page, source_url: str, platform: str, timeout_ms: int) -> dict[str, Any]:
+def extract_social_payload(page, source_url: str, platform: str, timeout_ms: int, auth_debug: dict[str, Any] | None = None) -> dict[str, Any]:
     rules = PLATFORM_RULES.get(platform, {})
     final_url = normalize_identity_url(page.url)
     source_item_id = first_non_empty(
@@ -746,6 +830,7 @@ def extract_social_payload(page, source_url: str, platform: str, timeout_ms: int
     summary_parts.append(f"Captured with Playwright from {platform}.")
 
     comments_capture_status = "login_required" if comments_login_required else ("captured" if comment_objects else "none")
+    auth_debug = auth_debug or {}
     metadata: dict[str, Any] = {
         "capture_level": "standard" if visible_preview else "light",
         "transcript_status": "missing",
@@ -774,7 +859,14 @@ def extract_social_payload(page, source_url: str, platform: str, timeout_ms: int
         "comments_source": "douyin_api" if api_comments else ("dom" if comment_objects else "none"),
         "detail_api_status": structured_payload.get("detail_status", 0),
         "comments_api_status": structured_payload.get("comments_status", 0),
+        "auth_applied": bool(auth_debug.get("auth_applied")),
+        "auth_mode": first_non_empty(auth_debug.get("auth_mode"), "none"),
+        "auth_cookie_count": int(auth_debug.get("auth_cookie_count", 0)),
+        "auth_storage_state_configured": bool(auth_debug.get("auth_storage_state_configured")),
+        "auth_cookies_file_configured": bool(auth_debug.get("auth_cookies_file_configured")),
     }
+    if auth_debug.get("auth_error"):
+        metadata["auth_error"] = first_non_empty(auth_debug.get("auth_error"))
     metadata.update(metrics)
     if top_comments:
         metadata["comments_preview"] = top_comments
@@ -812,6 +904,9 @@ def extract_social_payload(page, source_url: str, platform: str, timeout_ms: int
         "comments_count": len(comment_objects),
         "comments_capture_status": comments_capture_status,
         "comments_login_required": comments_login_required,
+        "auth_applied": bool(auth_debug.get("auth_applied")),
+        "auth_mode": first_non_empty(auth_debug.get("auth_mode"), "none"),
+        "auth_cookie_count": int(auth_debug.get("auth_cookie_count", 0)),
         "engagement": engagement,
         "metrics_like": first_non_empty(engagement.get("like")),
         "metrics_comment": first_non_empty(engagement.get("comment")),
@@ -827,18 +922,51 @@ def extract_social_payload(page, source_url: str, platform: str, timeout_ms: int
     }
 
 
-def capture(url: str, platform: str, timeout_ms: int) -> dict[str, Any]:
+def capture(url: str, platform: str, timeout_ms: int, storage_state: str = "", cookies_file: str = "") -> dict[str, Any]:
+    auth_debug: dict[str, Any] = {
+        "auth_applied": False,
+        "auth_mode": "none",
+        "auth_cookie_count": 0,
+        "auth_storage_state_configured": bool(storage_state),
+        "auth_cookies_file_configured": bool(cookies_file),
+    }
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=True)
-        page = browser.new_page(viewport={"width": 1440, "height": 2200})
+        context_kwargs: dict[str, Any] = {"viewport": {"width": 1440, "height": 2200}}
+        storage_state_path = storage_state.strip()
+        cookies_file_path = cookies_file.strip()
+
+        if storage_state_path:
+            if Path(storage_state_path).exists():
+                context_kwargs["storage_state"] = storage_state_path
+                auth_debug["auth_applied"] = True
+                auth_debug["auth_mode"] = "storage_state"
+            else:
+                auth_debug["auth_error"] = f"storage_state_missing: {storage_state_path}"
+
+        context = browser.new_context(**context_kwargs)
         try:
+            if cookies_file_path and Path(cookies_file_path).exists():
+                cookies = load_playwright_cookies(cookies_file_path)
+                if cookies:
+                    context.add_cookies(cookies)
+                    auth_debug["auth_applied"] = True
+                    auth_debug["auth_cookie_count"] = len(cookies)
+                    auth_debug["auth_mode"] = (
+                        "storage_state+cookies_file" if auth_debug.get("auth_mode") == "storage_state" else "cookies_file"
+                    )
+            elif cookies_file_path and "auth_error" not in auth_debug:
+                auth_debug["auth_error"] = f"cookies_file_missing: {cookies_file_path}"
+
+            page = context.new_page()
             page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
             page.wait_for_timeout(1200)
             wait_for_platform(page, platform, timeout_ms)
             page.mouse.wheel(0, 1800)
             page.wait_for_timeout(1200)
-            return extract_social_payload(page, url, platform, timeout_ms=min(timeout_ms, 5000))
+            return extract_social_payload(page, url, platform, timeout_ms=min(timeout_ms, 5000), auth_debug=auth_debug)
         finally:
+            context.close()
             browser.close()
 
 
@@ -847,10 +975,12 @@ def main() -> int:
     parser.add_argument("--url", required=True)
     parser.add_argument("--platform", required=True)
     parser.add_argument("--timeout-ms", type=int, default=25000)
+    parser.add_argument("--storage-state", default="")
+    parser.add_argument("--cookies-file", default="")
     parser.add_argument("--output-json")
     args = parser.parse_args()
 
-    result = capture(args.url, args.platform, args.timeout_ms)
+    result = capture(args.url, args.platform, args.timeout_ms, storage_state=args.storage_state, cookies_file=args.cookies_file)
     payload = json.dumps(result, ensure_ascii=False)
     if args.output_json:
         with open(args.output_json, "w", encoding="utf-8") as handle:

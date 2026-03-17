@@ -26,6 +26,7 @@ Current runnable scripts:
 - `scripts/detect_platform.ps1`
 - `scripts/capture_social_playwright.py`
 - `scripts/download_social_media.ps1`
+- `scripts/bootstrap_social_auth.py`
 
 This implementation already supports:
 - URL input
@@ -37,7 +38,7 @@ This implementation already supports:
 - `podcast` via built-in page metadata capture, RSS hint extraction, transcript-link discovery, and show-notes-style text extraction with fallback clipping
 
 It still does not execute the full ideal external stack for every route.
-Treat the current route handlers as a runnable baseline whose short-social path is now downloader-aware, while auth reuse, Bitable sync, and object-storage sync are still pending.
+Treat the current route handlers as a runnable baseline whose short-social path is now downloader-aware and supports local auth reuse through Playwright storage state plus yt-dlp cookies, while Bitable sync and object-storage sync are still pending.
 
 ## Responsibilities
 
@@ -65,7 +66,7 @@ For short social video sources such as Xiaohongshu and Douyin, the architectural
 
 Use the route that matches the source:
 - article pages: built-in page fetch plus main-text extraction, with fallback clipping on fetch failure
-- Xiaohongshu and Douyin: built-in Playwright page capture with platform-specific selectors, structured social metadata, downloader handoff, local attachment landing, and fallback clipping
+- Xiaohongshu and Douyin: built-in Playwright page capture with platform-specific selectors, optional login-state reuse through storage state / cookies.txt, structured social metadata, downloader handoff, local attachment landing, and fallback clipping
 - Bilibili and YouTube: metadata plus subtitles first, currently implemented through `yt-dlp`, with fallback clipping when extraction fails
 - Xiaoyuzhou and podcasts: page metadata, RSS hints, transcript hints, and show-notes-style text first, with fallback clipping when the source page cannot be reached
 

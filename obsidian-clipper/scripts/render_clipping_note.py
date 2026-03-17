@@ -1,0 +1,369 @@
+﻿import argparse
+import json
+import re
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+
+
+LOGIN_PROMPT_PATTERNS = (
+    "立即登录",
+    "登录查看更多评论",
+    "登录查看全部评论",
+    "登录查看评论",
+    "请先登录",
+    "绔嬪嵆鐧诲綍",
+    "鐧诲綍鏌ョ湅鏇村璇勮",
+    "鐧诲綍鏌ョ湅鍏ㄩ儴璇勮",
+    "鐧诲綍鏌ョ湅璇勮",
+    "璇峰厛鐧诲綍",
+)
+
+
+def load_json(path: str) -> dict[str, Any]:
+    return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
+def has_value(value: Any) -> bool:
+    return value is not None and str(value).strip() != ""
+
+
+def string_value(*values: Any, default: str = "") -> str:
+    for value in values:
+        if has_value(value):
+            return str(value).strip()
+    return default
+
+
+def bool_value(value: Any, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    text = str(value).strip().lower()
+    if text in {"true", "1", "yes"}:
+        return True
+    if text in {"false", "0", "no"}:
+        return False
+    return default
+
+
+def yaml_scalar(value: Any) -> str:
+    if value is None:
+        return "''"
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def markdown_title(title: str) -> str:
+    if not has_value(title):
+        return "未命名剪藏"
+    return "\\" + title if title.startswith("#") else title
+
+
+def safe_file_name(value: str) -> str:
+    invalid = set('<>:"/\\|?*')
+    sanitized = "".join("_" if ch in invalid else ch for ch in value)
+    return sanitized.strip() or "untitled.md"
+
+
+def nested_value(data: Any, *keys: str) -> Any:
+    current = data
+    for key in keys:
+        if not isinstance(current, dict):
+            return None
+        current = current.get(key)
+    return current
+
+
+def looks_like_login_prompt(text: str) -> bool:
+    normalized = string_value(text)
+    return any(pattern in normalized for pattern in LOGIN_PROMPT_PATTERNS)
+
+
+def is_social_short_video(detection: dict[str, Any]) -> bool:
+    return detection.get("route") == "social" and detection.get("content_type") == "short_video"
+
+
+def collect_top_comments(capture: dict[str, Any]) -> list[str]:
+    top_comments = [string_value(item) for item in capture.get("top_comments") or [] if has_value(item)]
+    if not top_comments:
+        for item in capture.get("comments") or []:
+            if not isinstance(item, dict):
+                continue
+            display = string_value(item.get("display_text"))
+            if not has_value(display):
+                author = string_value(item.get("author"))
+                text = string_value(item.get("text"))
+                if has_value(author) and has_value(text):
+                    display = f"{author}: {text}"
+                else:
+                    display = string_value(text, author)
+            if has_value(display):
+                top_comments.append(display)
+    return [item for item in top_comments if not looks_like_login_prompt(item)]
+
+
+def build_summary(capture: dict[str, Any], detection: dict[str, Any], top_comments: list[str]) -> str:
+    parts: list[str] = []
+    description = string_value(capture.get("description"), capture.get("title"))
+    if has_value(description):
+        parts.append(description)
+    else:
+        fallback_summary = string_value(capture.get("summary"))
+        if has_value(fallback_summary):
+            parts.append(fallback_summary)
+
+    metrics_like = string_value(capture.get("metrics_like"), nested_value(capture, "metadata", "like_count"))
+    metrics_comment = string_value(capture.get("metrics_comment"), nested_value(capture, "metadata", "comment_count"))
+    metrics_collect = string_value(capture.get("metrics_collect"), nested_value(capture, "metadata", "collect_count"))
+    metrics_share = string_value(capture.get("metrics_share"), nested_value(capture, "metadata", "share_count"))
+
+    metric_parts = []
+    if has_value(metrics_like):
+        metric_parts.append(f"点赞 {metrics_like}")
+    if has_value(metrics_comment):
+        metric_parts.append(f"评论 {metrics_comment}")
+    if has_value(metrics_collect):
+        metric_parts.append(f"收藏 {metrics_collect}")
+    if has_value(metrics_share):
+        metric_parts.append(f"分享 {metrics_share}")
+    if metric_parts:
+        parts.append("互动数据: " + "，".join(metric_parts) + "。")
+
+    comments_login_required = bool_value(capture.get("comments_login_required"), bool_value(nested_value(capture, "metadata", "comments_login_required")))
+    if top_comments:
+        parts.append(f"可见评论抓取 {len(top_comments)} 条。")
+    elif comments_login_required:
+        parts.append("评论区可能需要登录态。")
+
+    extractor = string_value(nested_value(capture, "metadata", "extractor"))
+    if has_value(extractor):
+        parts.append(f"采集方式: {extractor} / {detection.get('platform', '')}。")
+
+    return " ".join(part for part in parts if has_value(part)) or "(none)"
+
+
+def attachment_lines(capture: dict[str, Any]) -> list[str]:
+    mapping = (
+        ("video_path", "本地视频"),
+        ("cover_path", "封面图"),
+        ("sidecar_path", "Capture JSON"),
+        ("comments_path", "Comments JSON"),
+        ("metadata_path", "Metadata JSON"),
+    )
+    lines = []
+    for key, label in mapping:
+        value = string_value(capture.get(key), nested_value(capture, "metadata", key))
+        if has_value(value):
+            lines.append(f"- {label}: {value}")
+    return lines or ["- none"]
+
+
+def status_lines(capture: dict[str, Any]) -> list[str]:
+    metadata = capture.get("metadata") or {}
+    download_status = string_value(capture.get("download_status"), metadata.get("download_status"), default="unknown")
+    download_method = string_value(capture.get("download_method"), metadata.get("download_method"), default="unknown")
+    media_downloaded = bool_value(capture.get("media_downloaded"), bool_value(metadata.get("media_downloaded")))
+    transcript_status = string_value(metadata.get("transcript_status"), default="missing")
+    analyzer_status = string_value(capture.get("analyzer_status"), default="pending")
+    bitable_sync_status = string_value(capture.get("bitable_sync_status"), default="pending")
+    analysis_ready = bool_value(capture.get("analysis_ready"), bool_value(metadata.get("analysis_ready"), True))
+    return [
+        f"- 下载状态: {download_status}",
+        f"- 下载方式: {download_method}",
+        f"- 视频已落盘: {'是' if media_downloaded else '否'}",
+        f"- 转录状态: {transcript_status}",
+        f"- Analyzer 状态: {analyzer_status}",
+        f"- 多维表格同步: {bitable_sync_status}",
+        f"- 分析就绪: {'是' if analysis_ready else '否'}",
+    ]
+
+
+def engagement_lines(capture: dict[str, Any], top_comments: list[str]) -> list[str]:
+    metadata = capture.get("metadata") or {}
+    metrics_like = string_value(capture.get("metrics_like"), metadata.get("like_count"), default="未获取")
+    metrics_comment = string_value(capture.get("metrics_comment"), metadata.get("comment_count"), default="未获取")
+    metrics_collect = string_value(capture.get("metrics_collect"), metadata.get("collect_count"), default="未获取")
+    metrics_share = string_value(capture.get("metrics_share"), metadata.get("share_count"), default="未获取")
+    comments_count = string_value(capture.get("comments_count"), metadata.get("comment_count_visible"), default=str(len(top_comments)))
+    comments_capture_status = string_value(capture.get("comments_capture_status"), metadata.get("comments_capture_status"), default="none")
+    return [
+        f"- 点赞数: {metrics_like}",
+        f"- 平台评论总数: {metrics_comment}",
+        f"- 已抓取评论条数: {comments_count}",
+        f"- 分享数: {metrics_share}",
+        f"- 收藏数: {metrics_collect}",
+        f"- 评论抓取状态: {comments_capture_status}",
+    ]
+
+
+def images_text(capture: dict[str, Any]) -> list[str]:
+    images = [string_value(item) for item in capture.get("images") or [] if has_value(item)]
+    return [f"- {item}" for item in images] if images else ["- none"]
+
+
+def videos_text(capture: dict[str, Any]) -> list[str]:
+    videos = [string_value(item) for item in capture.get("videos") or [] if has_value(item)]
+    return [f"- {item}" for item in videos] if videos else ["- none"]
+
+
+def join_vault_path(vault_path: str, folder: str) -> Path:
+    parts = [part for part in re.split(r"[\\/]+", folder) if part]
+    return Path(vault_path).joinpath(*parts)
+
+
+def render_note(config: dict[str, Any], detection: dict[str, Any], capture: dict[str, Any], source_url: str, category_hint: str | None) -> dict[str, Any]:
+    clipper_config = config.get("clipper") or {}
+    captured_at = datetime.now().strftime("%Y-%m-%d")
+    folder = string_value(category_hint, clipper_config.get("default_folder"), default="Clippings")
+    title = string_value(capture.get("title"), default="未命名剪藏")
+    file_prefix = f"{captured_at} " if bool_value(clipper_config.get("prefix_date"), True) else ""
+    file_name = safe_file_name(f"{file_prefix}{title}.md")
+    display_title = markdown_title(title)
+    tags = [string_value(tag) for tag in capture.get("tags") or [] if has_value(tag)] or ["clipped"]
+
+    normalized_url = string_value(capture.get("normalized_url"), nested_value(capture, "metadata", "normalized_url"))
+    capture_id = string_value(capture.get("capture_id"), nested_value(capture, "metadata", "capture_id"))
+    capture_key = string_value(capture.get("capture_key"), nested_value(capture, "metadata", "capture_key"))
+    source_item_id = string_value(capture.get("source_item_id"), nested_value(capture, "metadata", "source_item_id"))
+    capture_level = string_value(nested_value(capture, "metadata", "capture_level"), default="light")
+    transcript_status = string_value(nested_value(capture, "metadata", "transcript_status"), default="missing")
+    media_downloaded = bool_value(capture.get("media_downloaded"), bool_value(nested_value(capture, "metadata", "media_downloaded")))
+    analysis_ready = bool_value(capture.get("analysis_ready"), bool_value(nested_value(capture, "metadata", "analysis_ready"), True))
+    download_status = string_value(capture.get("download_status"), nested_value(capture, "metadata", "download_status"))
+    download_method = string_value(capture.get("download_method"), nested_value(capture, "metadata", "download_method"))
+    video_path = string_value(capture.get("video_path"), nested_value(capture, "metadata", "video_path"))
+    sidecar_path = string_value(capture.get("sidecar_path"), nested_value(capture, "metadata", "sidecar_path"))
+    author = string_value(capture.get("author"), default="unknown")
+    published_at = string_value(capture.get("published_at"), default="unknown")
+    raw_text = string_value(capture.get("raw_text"), default="(none)")
+    transcript = string_value(capture.get("transcript"), default="(none)")
+
+    top_comments = collect_top_comments(capture)
+    lines = [
+        "---",
+        f"title: {yaml_scalar(title)}",
+        f"source_url: {yaml_scalar(source_url)}",
+        f"normalized_url: {yaml_scalar(normalized_url)}",
+        f"platform: {yaml_scalar(detection.get('platform', ''))}",
+        f"content_type: {yaml_scalar(detection.get('content_type', ''))}",
+        f"author: {yaml_scalar(author)}",
+        f"published_at: {yaml_scalar(published_at)}",
+        f"captured_at: {yaml_scalar(captured_at)}",
+        f"route: {yaml_scalar(detection.get('route', ''))}",
+        f"capture_id: {yaml_scalar(capture_id)}",
+        f"capture_key: {yaml_scalar(capture_key)}",
+        f"source_item_id: {yaml_scalar(source_item_id)}",
+        f"capture_level: {yaml_scalar(capture_level)}",
+        f"transcript_status: {yaml_scalar(transcript_status)}",
+        f"media_downloaded: {str(media_downloaded).lower()}",
+        f"analysis_ready: {str(analysis_ready).lower()}",
+        f"download_status: {yaml_scalar(download_status)}",
+        f"download_method: {yaml_scalar(download_method)}",
+        f"video_path: {yaml_scalar(video_path)}",
+        f"sidecar_path: {yaml_scalar(sidecar_path)}",
+        "tags:",
+    ]
+    lines.extend([f"  - {yaml_scalar(tag)}" for tag in tags])
+    lines.extend([
+        "status: clipped",
+        "---",
+        "",
+        f"# {display_title}",
+        "",
+        "## 来源信息",
+        f"- 链接: {source_url}",
+        f"- 规范化链接: {normalized_url if has_value(normalized_url) else 'n/a'}",
+        f"- 平台: {detection.get('platform', '')}",
+        f"- 内容类型: {detection.get('content_type', '')}",
+        f"- 路由: {detection.get('route', '')}",
+        f"- Capture ID: {capture_id if has_value(capture_id) else 'n/a'}",
+        f"- Source Item ID: {source_item_id if has_value(source_item_id) else 'n/a'}",
+        "",
+    ])
+
+    if is_social_short_video(detection):
+        lines.extend(["## 视频内容", f"![[{video_path}]]" if has_value(video_path) else "- 当前未落到本地 mp4 文件。"])
+        if has_value(video_path):
+            lines.extend([
+                "",
+                f"- 本地视频: {video_path}",
+                f"- 下载状态: {download_status if has_value(download_status) else 'unknown'}",
+                f"- 下载方式: {download_method if has_value(download_method) else 'unknown'}",
+            ])
+        lines.append("")
+
+    lines.extend([
+        "## 内容摘要",
+        build_summary(capture, detection, top_comments),
+        "",
+        "## 原始文案",
+        raw_text,
+        "",
+        "## 转录文本",
+        transcript,
+        "",
+        "## 互动数据",
+        *engagement_lines(capture, top_comments),
+        "",
+        "## 可见评论",
+    ])
+    lines.extend([f"- {item}" for item in top_comments] if top_comments else ["- 未抓取到可展示评论。"])
+    lines.extend(["", "## 附件索引", *attachment_lines(capture)])
+
+    if not is_social_short_video(detection):
+        lines.extend(["", "## 图片链接", *images_text(capture), "", "## 视频链接", *videos_text(capture)])
+
+    lines.extend(["", "## 采集状态", *status_lines(capture)])
+    return {
+        "title": title,
+        "folder": folder,
+        "file_name": file_name,
+        "tags": tags,
+        "note_body": "\n".join(lines),
+    }
+
+
+def write_note(vault_path: str, note: dict[str, Any]) -> str:
+    target_folder = join_vault_path(vault_path, note["folder"])
+    target_folder.mkdir(parents=True, exist_ok=True)
+    target_path = target_folder / note["file_name"]
+    target_path.write_text(note["note_body"], encoding="utf-8")
+    return str(target_path)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config-json", required=True)
+    parser.add_argument("--detection-json", required=True)
+    parser.add_argument("--capture-json", required=True)
+    parser.add_argument("--source-url", required=True)
+    parser.add_argument("--vault-path")
+    parser.add_argument("--category-hint")
+    parser.add_argument("--write-note", action="store_true")
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--output-json")
+    args = parser.parse_args()
+
+    note = render_note(
+        load_json(args.config_json),
+        load_json(args.detection_json),
+        load_json(args.capture_json),
+        args.source_url,
+        args.category_hint,
+    )
+    if args.write_note and not args.dry_run:
+        if not has_value(args.vault_path):
+            raise SystemExit("vault path required when --write-note is set")
+        note["note_path"] = write_note(args.vault_path, note)
+
+    payload = json.dumps(note, ensure_ascii=False)
+    if args.output_json:
+        Path(args.output_json).write_text(payload, encoding="utf-8")
+    else:
+        print(payload)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

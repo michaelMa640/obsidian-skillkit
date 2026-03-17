@@ -9,6 +9,8 @@ param(
     [string]$SourceUrl,
     [string]$AttachmentsRoot = 'Attachments/ShortVideos',
     [string]$YtDlpCommand = 'yt-dlp',
+    [string]$CookiesFile,
+    [string]$StorageStatePath,
     [string]$OutputJsonPath
 )
 
@@ -136,9 +138,14 @@ function Get-CoverFile {
 }
 
 function Get-YtDlpMetadata {
-    param([string]$Command, [string]$Url)
+    param([string]$Command, [string]$Url, [string[]]$ExtraArgs = @())
     try {
-        $output = & $Command '--dump-single-json' '--skip-download' '--no-warnings' '--no-playlist' $Url 2>&1
+        $arguments = @('--dump-single-json', '--skip-download', '--no-warnings', '--no-playlist')
+        if ($null -ne $ExtraArgs -and @($ExtraArgs).Count -gt 0) {
+            $arguments += $ExtraArgs
+        }
+        $arguments += $Url
+        $output = & $Command @arguments 2>&1
         if ($LASTEXITCODE -ne 0) { return $null }
         $text = ($output | Out-String).Trim()
         if (-not (Test-HasValue $text)) { return $null }
@@ -146,6 +153,47 @@ function Get-YtDlpMetadata {
     } catch {
         return $null
     }
+}
+
+function Export-StorageStateCookiesFile {
+    param(
+        [string]$StorageStatePath,
+        [string]$OutputPath
+    )
+    if (-not (Test-HasValue $StorageStatePath) -or -not (Test-Path $StorageStatePath)) { return '' }
+    $storageState = ConvertFrom-JsonCompat -Json (Read-Utf8Text -Path $StorageStatePath) -Depth 100
+    $lines = New-Object System.Collections.Generic.List[string]
+    $lines.Add('# Netscape HTTP Cookie File')
+    foreach ($cookie in @($storageState.cookies)) {
+        if ($null -eq $cookie) { continue }
+        $domain = [string]$cookie.domain
+        $name = [string]$cookie.name
+        $value = [string]$cookie.value
+        if (-not (Test-HasValue $domain) -or -not (Test-HasValue $name)) { continue }
+        $includeSubdomains = if ($domain.StartsWith('.')) { 'TRUE' } else { 'FALSE' }
+        $pathValue = if (Test-HasValue ([string]$cookie.path)) { [string]$cookie.path } else { '/' }
+        $isSecure = if ($cookie.secure -eq $true) { 'TRUE' } else { 'FALSE' }
+        $expires = 0
+        if ($null -ne $cookie.expires) {
+            try {
+                $expiresNumeric = [double]$cookie.expires
+                if ($expiresNumeric -gt 0) { $expires = [int64][Math]::Floor($expiresNumeric) }
+            } catch {
+            }
+        }
+        $domainValue = if ($cookie.httpOnly -eq $true) { '#HttpOnly_' + $domain } else { $domain }
+        $lines.Add("$domainValue`t$includeSubdomains`t$pathValue`t$isSecure`t$expires`t$name`t$value")
+    }
+    Write-Utf8Text -Path $OutputPath -Content ($lines -join "`r`n")
+    $OutputPath
+}
+
+function Get-YtDlpAuthArguments {
+    param([string]$EffectiveCookiesFile)
+    if (Test-HasValue $EffectiveCookiesFile) {
+        return @('--cookies', $EffectiveCookiesFile)
+    }
+    @()
 }
 
 function Get-VideoTechnicalMetadata {
@@ -205,12 +253,39 @@ $downloadOutput = ''
 $videoFile = $null
 $downloadMethod = 'none'
 $downloadStatus = 'failed'
+$generatedCookiesFile = ''
+$effectiveCookiesFile = ''
+$ytDlpAuthMode = 'none'
 
-$ytMetadata = Get-YtDlpMetadata -Command $YtDlpCommand -Url $SourceUrl
+$storageStateAvailable = Test-HasValue $StorageStatePath -and (Test-Path $StorageStatePath)
+$cookiesFileAvailable = Test-HasValue $CookiesFile -and (Test-Path $CookiesFile)
+if ($cookiesFileAvailable) {
+    $effectiveCookiesFile = $CookiesFile
+    $ytDlpAuthMode = if ($storageStateAvailable) { 'storage_state+cookies_file' } else { 'cookies_file' }
+} elseif ($storageStateAvailable) {
+    $generatedCookiesFile = Join-Path ([System.IO.Path]::GetTempPath()) ("obsidian-clipper-" + $captureId + "-cookies.txt")
+    $effectiveCookiesFile = Export-StorageStateCookiesFile -StorageStatePath $StorageStatePath -OutputPath $generatedCookiesFile
+    if (Test-HasValue $effectiveCookiesFile -and (Test-Path $effectiveCookiesFile)) {
+        $ytDlpAuthMode = 'storage_state'
+    }
+}
+if ((Test-HasValue $CookiesFile) -and -not $cookiesFileAvailable) {
+    $errors.Add("Configured cookies file was not found: $CookiesFile")
+}
+if ((Test-HasValue $StorageStatePath) -and -not $storageStateAvailable) {
+    $errors.Add("Configured storage state file was not found: $StorageStatePath")
+}
+$ytDlpAuthArgs = Get-YtDlpAuthArguments -EffectiveCookiesFile $effectiveCookiesFile
+$ytMetadata = Get-YtDlpMetadata -Command $YtDlpCommand -Url $SourceUrl -ExtraArgs $ytDlpAuthArgs
 
 try {
     $videoTemplate = Join-Path $attachmentDir 'video.%(ext)s'
-    $downloadOutput = (& $YtDlpCommand '--no-playlist' '--no-warnings' '-o' $videoTemplate $SourceUrl 2>&1 | Out-String)
+    $downloadArguments = @('--no-playlist', '--no-warnings')
+    if ($null -ne $ytDlpAuthArgs -and @($ytDlpAuthArgs).Count -gt 0) {
+        $downloadArguments += $ytDlpAuthArgs
+    }
+    $downloadArguments += @('-o', $videoTemplate, $SourceUrl)
+    $downloadOutput = (& $YtDlpCommand @downloadArguments 2>&1 | Out-String)
     if ($LASTEXITCODE -eq 0) {
         $videoFile = Get-VideoFile -Directory $attachmentDir
         if ($null -ne $videoFile) {
@@ -333,6 +408,9 @@ Set-DataValue -Data $record -Name 'video_duration_seconds' -Value $videoTechnica
 Set-DataValue -Data $record -Name 'video_width' -Value $videoTechnical.video_width
 Set-DataValue -Data $record -Name 'video_height' -Value $videoTechnical.video_height
 Set-DataValue -Data $record -Name 'status' -Value 'clipped'
+Set-DataValue -Data $record -Name 'yt_dlp_auth_mode' -Value $ytDlpAuthMode
+Set-DataValue -Data $record -Name 'yt_dlp_cookies_file_used' -Value $effectiveCookiesFile
+Set-DataValue -Data $record -Name 'yt_dlp_cookie_file_generated' -Value ([bool](Test-HasValue $generatedCookiesFile))
 if (-not (Test-HasValue (Get-StringValue -Data $record -Name 'analyzer_status'))) {
     Set-DataValue -Data $record -Name 'analyzer_status' -Value 'pending'
 }
@@ -361,7 +439,10 @@ foreach ($pair in @(
     @{ Name = 'video_sha256'; Value = $videoSha256 },
     @{ Name = 'video_duration_seconds'; Value = $videoTechnical.video_duration_seconds },
     @{ Name = 'video_width'; Value = $videoTechnical.video_width },
-    @{ Name = 'video_height'; Value = $videoTechnical.video_height }
+    @{ Name = 'video_height'; Value = $videoTechnical.video_height },
+    @{ Name = 'yt_dlp_auth_mode'; Value = $ytDlpAuthMode },
+    @{ Name = 'yt_dlp_cookies_file_used'; Value = $effectiveCookiesFile },
+    @{ Name = 'yt_dlp_cookie_file_generated'; Value = ([bool](Test-HasValue $generatedCookiesFile)) }
 )) {
     Set-DataValue -Data $metadataObject -Name $pair.Name -Value $pair.Value
 }
@@ -380,6 +461,9 @@ $metadataPayload = [ordered]@{
     video_duration_seconds = $videoTechnical.video_duration_seconds
     video_width = $videoTechnical.video_width
     video_height = $videoTechnical.video_height
+    yt_dlp_auth_mode = $ytDlpAuthMode
+    yt_dlp_cookies_file_used = $effectiveCookiesFile
+    yt_dlp_cookie_file_generated = ([bool](Test-HasValue $generatedCookiesFile))
     yt_dlp_output = $downloadOutput.Trim()
     errors = @($errors)
     fallbacks = @($fallbacks)
@@ -388,6 +472,9 @@ $metadataPayload = [ordered]@{
 Write-Utf8Text -Path $sidecarCapturePath -Content ($record | ConvertTo-Json -Depth 100)
 Write-Utf8Text -Path $sidecarCommentsPath -Content ((Get-DataValue -Data $record -Name 'comments') | ConvertTo-Json -Depth 50)
 Write-Utf8Text -Path $sidecarMetadataPath -Content ($metadataPayload | ConvertTo-Json -Depth 50)
+if (Test-HasValue $generatedCookiesFile -and (Test-Path $generatedCookiesFile)) {
+    Remove-Item -LiteralPath $generatedCookiesFile -Force -ErrorAction SilentlyContinue
+}
 
 $output = $record | ConvertTo-Json -Depth 100
 if (Test-HasValue $OutputJsonPath) {

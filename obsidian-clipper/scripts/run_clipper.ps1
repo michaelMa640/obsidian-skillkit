@@ -1,4 +1,4 @@
-﻿param(
+param(
     [Parameter(Mandatory = $true)]
     [string]$SourceUrl,
     [string]$VaultPath,
@@ -162,6 +162,15 @@ function Get-RouteConfigValue {
     $value = [string]$property.Value
     if (Test-HasValue $value) { return $value }
     $DefaultValue
+}
+
+function Get-ConfiguredPathValue {
+    param($Object, [string]$PropertyName)
+    if ($null -eq $Object) { return '' }
+    $value = Get-StringValue -Data $Object -Name $PropertyName -DefaultValue ''
+    if (-not (Test-HasValue $value)) { return '' }
+    if ($value -like '*REPLACE/WITH/YOUR*' -or $value -like '*REPLACE\WITH\YOUR*') { return '' }
+    $value
 }
 
 function Get-MetaContent {
@@ -358,10 +367,19 @@ function Invoke-SocialCapture {
     $scriptPath = Get-RouteConfigValue -Config $Config -RouteName 'social' -PropertyName 'script' -DefaultValue ''
     if (-not (Test-HasValue $scriptPath) -or $scriptPath -like '*REPLACE/WITH/YOUR*' -or $scriptPath -like '*REPLACE\WITH\YOUR*' -or -not (Test-Path $scriptPath)) { $scriptPath = Join-Path $PSScriptRoot 'capture_social_playwright.py' }
     $timeoutMs = Get-RouteConfigValue -Config $Config -RouteName 'social' -PropertyName 'timeout_ms' -DefaultValue '25000'
+    $authConfig = $null
+    if ($null -ne $Config.routes -and $null -ne $Config.routes.social) {
+        $authConfig = Get-DataValue -Data $Config.routes.social -Name 'auth'
+    }
+    $storageStatePath = Get-ConfiguredPathValue -Object $authConfig -PropertyName 'storage_state_path'
+    $cookiesFile = Get-ConfiguredPathValue -Object $authConfig -PropertyName 'cookies_file'
     $tempDir = New-LocalTempDirectory
     try {
         $outputJsonPath = Join-Path $tempDir 'social-capture.json'
-        & $pythonCommand $scriptPath '--url' $Url '--platform' $Platform '--timeout-ms' $timeoutMs '--output-json' $outputJsonPath 2>&1 | Out-Null
+        $captureArguments = @($scriptPath, '--url', $Url, '--platform', $Platform, '--timeout-ms', $timeoutMs, '--output-json', $outputJsonPath)
+        if (Test-HasValue $storageStatePath) { $captureArguments += @('--storage-state', $storageStatePath) }
+        if (Test-HasValue $cookiesFile) { $captureArguments += @('--cookies-file', $cookiesFile) }
+        & $pythonCommand @captureArguments 2>&1 | Out-Null
         if ($LASTEXITCODE -ne 0) { throw "Playwright social capture failed with exit code $LASTEXITCODE." }
         if (-not (Test-Path $outputJsonPath)) { throw 'Playwright social capture did not write its JSON output file.' }
         $payload = Read-Utf8Text -Path $outputJsonPath
@@ -373,8 +391,19 @@ function Invoke-SocialCapture {
                 $downloadCommand = Get-RouteConfigValue -Config $Config -RouteName 'social' -PropertyName 'download_command' -DefaultValue 'yt-dlp'
                 $attachmentsRoot = if ($null -ne $Config.clipper -and (Test-HasValue $Config.clipper.attachments_root)) { [string]$Config.clipper.attachments_root } else { 'Attachments/ShortVideos' }
                 $downloadOutputPath = Join-Path $tempDir 'social-download.json'
+                $downloadParameters = @{
+                    PayloadJsonPath = $outputJsonPath
+                    VaultPath = $ResolvedVaultPath
+                    Platform = $Platform
+                    SourceUrl = $Url
+                    AttachmentsRoot = $attachmentsRoot
+                    YtDlpCommand = $downloadCommand
+                    OutputJsonPath = $downloadOutputPath
+                }
+                if (Test-HasValue $cookiesFile) { $downloadParameters.CookiesFile = $cookiesFile }
+                if (Test-HasValue $storageStatePath) { $downloadParameters.StorageStatePath = $storageStatePath }
                 try {
-                    & $downloadScriptPath -PayloadJsonPath $outputJsonPath -VaultPath $ResolvedVaultPath -Platform $Platform -SourceUrl $Url -AttachmentsRoot $attachmentsRoot -YtDlpCommand $downloadCommand -OutputJsonPath $downloadOutputPath | Out-Null
+                    & $downloadScriptPath @downloadParameters | Out-Null
                 } catch {
                 }
                 if (Test-Path $downloadOutputPath) {
@@ -498,6 +527,47 @@ function ConvertTo-YamlScalar {
     $text = [string]$Value
     $text = $text -replace "'", "''"
     return "'$text'"
+}
+
+function Invoke-NoteRenderer {
+    param($Config,$Detection,$Capture,[string]$SourceUrl,[string]$CategoryHint,[string]$ResolvedVaultPath,[switch]$DryRun)
+
+    $pythonCommand = 'python'
+    $rendererScript = Join-Path $PSScriptRoot 'render_clipping_note.py'
+    if (-not (Test-Path $rendererScript)) { throw "Note renderer not found: $rendererScript" }
+
+    $tempDir = New-LocalTempDirectory
+    try {
+        $configJsonPath = Join-Path $tempDir 'renderer-config.json'
+        $detectionJsonPath = Join-Path $tempDir 'renderer-detection.json'
+        $captureJsonPath = Join-Path $tempDir 'renderer-capture.json'
+        $outputJsonPath = Join-Path $tempDir 'renderer-output.json'
+
+        Write-Utf8Text -Path $configJsonPath -Content ($Config | ConvertTo-Json -Depth 20)
+        Write-Utf8Text -Path $detectionJsonPath -Content ($Detection | ConvertTo-Json -Depth 20)
+        Write-Utf8Text -Path $captureJsonPath -Content ($Capture | ConvertTo-Json -Depth 40)
+
+        $arguments = @(
+            $rendererScript,
+            '--config-json', $configJsonPath,
+            '--detection-json', $detectionJsonPath,
+            '--capture-json', $captureJsonPath,
+            '--source-url', $SourceUrl,
+            '--output-json', $outputJsonPath
+        )
+        if (Test-HasValue $CategoryHint) { $arguments += @('--category-hint', $CategoryHint) }
+        if (Test-HasValue $ResolvedVaultPath) { $arguments += @('--vault-path', $ResolvedVaultPath) }
+        if (-not $DryRun -and $null -ne $Config.obsidian -and $Config.obsidian.mode -eq 'filesystem') { $arguments += '--write-note' }
+        if ($DryRun) { $arguments += '--dry-run' }
+
+        $commandOutput = (& $pythonCommand @arguments 2>&1 | Out-String)
+        if ($LASTEXITCODE -ne 0) {
+            throw "Note renderer failed: $commandOutput"
+        }
+        return (ConvertFrom-JsonCompat -Json (Read-Utf8Text -Path $outputJsonPath) -Depth 64)
+    } finally {
+        Remove-LocalTempDirectory -Path $tempDir
+    }
 }
 
 function Get-MarkdownDisplayTitle {
@@ -763,7 +833,7 @@ $resolvedVaultPath = Get-ResolvedVaultPath -Config $config -VaultPath $VaultPath
 if (-not $DryRun -and -not (Test-HasValue $resolvedVaultPath)) { throw 'No vault path provided. Supply -VaultPath or set obsidian.vault_path in config.' }
 $detection = Get-Detection -Url $SourceUrl
 $capture = Invoke-CaptureRoute -Config $config -Detection $detection -Url $SourceUrl -TitleHint $TitleHint -ResolvedVaultPath $resolvedVaultPath -DryRun:$DryRun
-$note = Build-ClippingNote -Config $config -Detection $detection -Capture $capture -SourceUrl $SourceUrl -CategoryHint $CategoryHint
+$note = Invoke-NoteRenderer -Config $config -Detection $detection -Capture $capture -SourceUrl $SourceUrl -CategoryHint $CategoryHint -ResolvedVaultPath $resolvedVaultPath -DryRun:$DryRun
 $captureMetadata = Get-DataValue -Data $capture -Name 'metadata'
 $captureIdForResult = Get-StringValue -Data $capture -Name 'capture_id' -DefaultValue ''
 if (-not (Test-HasValue $captureIdForResult) -and $null -ne $captureMetadata) { $captureIdForResult = Get-StringValue -Data $captureMetadata -Name 'capture_id' -DefaultValue '' }
@@ -776,7 +846,8 @@ if (-not (Test-HasValue $videoPathForResult) -and $null -ne $captureMetadata) { 
 $sidecarPathForResult = Get-StringValue -Data $capture -Name 'sidecar_path' -DefaultValue ''
 if (-not (Test-HasValue $sidecarPathForResult) -and $null -ne $captureMetadata) { $sidecarPathForResult = Get-StringValue -Data $captureMetadata -Name 'sidecar_path' -DefaultValue '' }
 $result = [ordered]@{ success=$true; dry_run=[bool]$DryRun; title=$note.title; folder=$note.folder; file_name=$note.file_name; route=$detection.route; platform=$detection.platform; content_type=$detection.content_type; capture_id=$captureIdForResult; download_status=$downloadStatusForResult; download_method=$downloadMethodForResult; video_path=$videoPathForResult; sidecar_path=$sidecarPathForResult; tags=$note.tags; note_preview=$note.note_body; vault_path = $resolvedVaultPath }
-if (-not $DryRun -and $config.obsidian.mode -eq 'filesystem') { $result.note_path = Write-NoteToVault -Config $config -Note $note -VaultPath $resolvedVaultPath }
+$notePathFromRenderer = Get-StringValue -Data $note -Name 'note_path' -DefaultValue ''
+if (Test-HasValue $notePathFromRenderer) { $result.note_path = $notePathFromRenderer }
 $json = $result | ConvertTo-Json -Depth 20
 if (Test-HasValue $OutputJsonPath) { Write-Utf8Text -Path $OutputJsonPath -Content $json }
 $json

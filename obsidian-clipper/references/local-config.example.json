@@ -5,7 +5,8 @@
     "must_update": [
       "obsidian.vault_path unless your workflow always passes a vault path at runtime",
       "routes.article.command if you wire a custom extractor instead of the built-in web article route",
-      "clipper.default_folder if your vault does not use Clippings"
+      "clipper.default_folder if your vault does not use Clippings",
+      "routes.social.auth.storage_state_path and routes.social.auth.cookies_file if you want Douyin/Xiaohongshu login-state reuse"
     ],
     "notes": [
       "article uses the built-in web article route inside run_clipper.ps1 by default",
@@ -32,7 +33,11 @@
       "command": "python",
       "script": "E:/REPLACE/WITH/YOUR/obsidian-clipper/scripts/capture_social_playwright.py",
       "timeout_ms": 25000,
-      "download_command": "yt-dlp"
+      "download_command": "yt-dlp",
+      "auth": {
+        "storage_state_path": "E:/REPLACE/WITH/YOUR/obsidian-clipper/.local-auth/douyin-storage-state.json",
+        "cookies_file": "E:/REPLACE/WITH/YOUR/obsidian-clipper/.local-auth/douyin-cookies.txt"
+      }
     },
     "video_metadata": {
       "command": "yt-dlp",
