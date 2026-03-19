@@ -14,6 +14,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'source_input_helpers.ps1')
 
 function Read-Utf8Text {
     param([string]$Path)
@@ -1016,6 +1017,9 @@ function Write-RunSummary {
 if (-not (Test-HasValue $ConfigPath)) {
     if (Test-Path (Join-Path $PSScriptRoot '..\references\local-config.json')) { $ConfigPath = Join-Path $PSScriptRoot '..\references\local-config.json' } else { $ConfigPath = Join-Path $PSScriptRoot '..\references\local-config.example.json' }
 }
+$resolvedSourceInput = Resolve-SourceInput -InputText $SourceUrl
+$rawSourceInput = $SourceUrl
+$SourceUrl = $resolvedSourceInput.source_url
 $config = Get-Config -Path $ConfigPath
 $resolvedVaultPath = Get-ResolvedVaultPath -Config $config -VaultPath $VaultPath
 if (-not $DryRun -and -not (Test-HasValue $resolvedVaultPath)) { throw 'No vault path provided. Supply -VaultPath or set obsidian.vault_path in config.' }
@@ -1043,7 +1047,7 @@ $videoPathForResult = Get-StringValue -Data $capture -Name 'video_path' -Default
 if (-not (Test-HasValue $videoPathForResult) -and $null -ne $captureMetadata) { $videoPathForResult = Get-StringValue -Data $captureMetadata -Name 'video_path' -DefaultValue '' }
 $sidecarPathForResult = Get-StringValue -Data $capture -Name 'sidecar_path' -DefaultValue ''
 if (-not (Test-HasValue $sidecarPathForResult) -and $null -ne $captureMetadata) { $sidecarPathForResult = Get-StringValue -Data $captureMetadata -Name 'sidecar_path' -DefaultValue '' }
-$result = [ordered]@{ success=$true; dry_run=[bool]$DryRun; title=$note.title; folder=$note.folder; file_name=$note.file_name; route=$detection.route; platform=$detection.platform; content_type=$detection.content_type; capture_id=$captureIdForResult; download_status=$downloadStatusForResult; download_method=$downloadMethodForResult; video_path=$videoPathForResult; sidecar_path=$sidecarPathForResult; tags=$note.tags; note_preview=$note.note_body; vault_path = $resolvedVaultPath }
+$result = [ordered]@{ success=$true; dry_run=[bool]$DryRun; title=$note.title; folder=$note.folder; file_name=$note.file_name; route=$detection.route; platform=$detection.platform; content_type=$detection.content_type; capture_id=$captureIdForResult; download_status=$downloadStatusForResult; download_method=$downloadMethodForResult; video_path=$videoPathForResult; sidecar_path=$sidecarPathForResult; tags=$note.tags; note_preview=$note.note_body; vault_path = $resolvedVaultPath; source_url = $SourceUrl; source_input_kind = $resolvedSourceInput.input_kind; source_url_extracted = [bool]$resolvedSourceInput.extraction_applied }
 $captureErrors = Get-DataValue -Data $capture -Name 'errors'
 if ($null -ne $captureErrors -and @($captureErrors).Count -gt 0) { $result.errors = @($captureErrors) }
 $notePathFromRenderer = Get-StringValue -Data $note -Name 'note_path' -DefaultValue ''

@@ -1,0 +1,103 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openclaw.local/obsidian-analyzer/analyze-output.schema.json",
+  "title": "Analyze Output Contract",
+  "type": "object",
+  "required": [
+    "title",
+    "analysis_mode",
+    "source_note_path",
+    "source_url",
+    "platform",
+    "content_type",
+    "capture_id",
+    "analyzed_at",
+    "model",
+    "analysis_status",
+    "core_conclusion",
+    "hook_breakdown",
+    "structure_breakdown",
+    "emotion_trust_signals",
+    "comment_feedback",
+    "reusable_formula",
+    "risk_flags",
+    "source_highlights"
+  ],
+  "properties": {
+    "title": { "type": "string" },
+    "analysis_mode": { "type": "string", "const": "analyze" },
+    "source_note_path": { "type": "string" },
+    "capture_json_path": { "type": "string" },
+    "source_url": { "type": "string" },
+    "normalized_url": { "type": "string" },
+    "platform": { "type": "string" },
+    "content_type": { "type": "string" },
+    "capture_id": { "type": "string" },
+    "analyzed_at": { "type": "string" },
+    "model": { "type": "string" },
+    "analysis_status": { "type": "string" },
+    "prompt_template": { "type": "string" },
+    "output_contract_version": { "type": "string" },
+    "core_conclusion": { "type": "string" },
+    "hook_breakdown": { "type": "string" },
+    "structure_breakdown": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "emotion_trust_signals": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "comment_feedback": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "engagement_insights": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "reusable_formula": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          { "type": "string" },
+          {
+            "type": "object",
+            "properties": {
+              "name": { "type": "string" },
+              "detail": { "type": "string" }
+            },
+            "required": ["name"]
+          }
+        ]
+      }
+    },
+    "risk_flags": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "source_highlights": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          { "type": "string" },
+          {
+            "type": "object",
+            "properties": {
+              "quote": { "type": "string" },
+              "reason": { "type": "string" }
+            },
+            "required": ["quote"]
+          }
+        ]
+      }
+    },
+    "metrics_like": { "type": "string" },
+    "metrics_comment": { "type": "string" },
+    "metrics_share": { "type": "string" },
+    "metrics_collect": { "type": "string" },
+    "comments_count": { "type": ["integer", "string"] },
+    "video_path": { "type": "string" }
+  },
+  "additionalProperties": true
+}

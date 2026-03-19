@@ -14,10 +14,19 @@
   },
   "analyzer": {
     "default_learn_folder": "Insights",
-    "default_analyze_folder": "Breakdowns"
+    "default_analyze_folder": "爆款拆解",
+    "output_language": "zh-CN"
   },
   "llm": {
-    "provider": "REPLACE_WITH_YOUR_PROVIDER",
-    "model": "REPLACE_WITH_YOUR_MODEL"
+    "provider": "dashscope_openai_compatible",
+    "model": "qwen3.5-flash",
+    "api_key_env": "DASHSCOPE_API_KEY",
+    "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "timeout_seconds": 120,
+    "temperature": 0.2,
+    "enable_thinking": false,
+    "include_video": true,
+    "max_inline_video_mb": 7,
+    "video_fps": 2
   }
 }

@@ -5,6 +5,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'source_input_helpers.ps1')
 
 function Get-PlatformDetection {
     param([string]$Url)
@@ -59,4 +60,9 @@ function Get-PlatformDetection {
     }
 }
 
-(Get-PlatformDetection -Url $SourceUrl) | ConvertTo-Json -Depth 5
+$resolvedSourceInput = Resolve-SourceInput -InputText $SourceUrl
+$detection = Get-PlatformDetection -Url $resolvedSourceInput.source_url
+$detection | Add-Member -NotePropertyName 'source_url' -NotePropertyValue $resolvedSourceInput.source_url
+$detection | Add-Member -NotePropertyName 'source_input_kind' -NotePropertyValue $resolvedSourceInput.input_kind
+$detection | Add-Member -NotePropertyName 'source_url_extracted' -NotePropertyValue ([bool]$resolvedSourceInput.extraction_applied)
+$detection | ConvertTo-Json -Depth 5

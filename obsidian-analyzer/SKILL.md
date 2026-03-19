@@ -16,7 +16,8 @@ Typical chain:
 - user asks OpenClaw to analyze an existing clipping
 - `obsidian-analyzer` reads the clipping note
 - the skill chooses `learn` or `analyze`
-- the skill calls the configured LLM path
+- the skill builds a stable analyzer payload
+- the current runnable phase may return a deterministic mock result before a real LLM adapter is connected
 - the result is written into a formal knowledge folder
 
 ## Responsibilities
@@ -71,3 +72,24 @@ Suggested targets:
 - `Breakdowns/` for `analyze`
 
 Keep the output structured and source-linked.
+
+## Current Runnable Phase
+
+The current repository includes:
+
+- `scripts/run_analyzer.ps1`
+- `scripts/render_breakdown_note.py`
+- Phase 1 input/output contracts in `references/`
+
+This means the analyzer can already:
+
+- read a clipping note and/or capture JSON
+- choose `analyze` or `learn`
+- normalize clipping note plus sidecar files into a structured payload
+- use a fixed `analyze` prompt contract from `references/prompts/analyze.md`
+- target a fixed `analyze` output schema from `references/analyze-output.schema.json`
+- call DashScope OpenAI-compatible models through `scripts/invoke_analyzer_llm.py`
+- emit `analyzer-payload.json` into the debug directory
+- fall back to deterministic mock output when the real provider is not configured
+
+The real LLM adapter is a later phase.

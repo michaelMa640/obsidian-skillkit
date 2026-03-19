@@ -14,10 +14,54 @@ It reads an existing clipping note from Obsidian and turns it into formal knowle
 - prepares structured model input
 - writes a finished knowledge note into the vault
 
+### Current Runnable Phase
+
+The current runnable phase now includes the Phase 4 `analyze` contract:
+
+- `scripts/run_analyzer.ps1` exists as the main entrypoint
+- `scripts/build_analyzer_payload.py` normalizes the clipping note plus sidecars into one payload
+- `scripts/invoke_analyzer_llm.py` calls the configured LLM provider
+- `scripts/render_breakdown_note.py` renders a structured breakdown note
+- the current implementation writes `analyzer-payload.json` into the debug directory
+- `references/prompts/analyze.md` defines the short-video analysis prompt
+- `references/analyze-output.schema.json` defines the expected `analyze` result shape
+- the current implementation can call DashScope OpenAI-compatible models such as `qwen3.5-flash`
+- when the provider is not configured or the API key is missing, the pipeline falls back to deterministic mock output
+
 ### Supported Modes
 
 - `learn`: articles, educational videos, podcasts, Xiaoyuzhou, experience-sharing content
 - `analyze`: Xiaohongshu and Douyin style short content only
+
+### Qwen3.5-Flash Setup
+
+The default local config template is now aligned to DashScope OpenAI-compatible access for `qwen3.5-flash`.
+
+Minimum setup:
+
+1. Copy `references/local-config.example.json` to `references/local-config.json`
+2. Set the environment variable `DASHSCOPE_API_KEY`
+3. Run `scripts/run_analyzer.ps1`
+
+If the provider or API key is missing, `run_analyzer.ps1` falls back to mock output instead of failing the entire pipeline.
+
+Why use an environment variable for the API key:
+
+- avoids storing secrets in the repository
+- avoids leaking keys through shared config files or support bundles
+- lets each machine keep its own secret while sharing the same non-secret `local-config.json`
+
+Typical machine setup:
+
+- non-secret settings go into `references/local-config.json`
+- the API key goes into a user or system environment variable such as `DASHSCOPE_API_KEY`
+- for a temporary PowerShell session you can use `$env:DASHSCOPE_API_KEY="..."`
+- for a persistent Windows user environment you can use `setx DASHSCOPE_API_KEY "..."` and reopen the shell
+
+Relevant local settings:
+
+- `analyzer.default_analyze_folder`: defaults to `爆款拆解`
+- `analyzer.output_language`: defaults to `zh-CN`
 
 ### Not In Scope
 
@@ -31,6 +75,14 @@ It reads an existing clipping note from Obsidian and turns it into formal knowle
 - `agents/openai.yaml`: UI metadata
 - `references/local-config.example.json`: local config template
 - `references/prompts/`: prompt placeholders for analysis modes
+- `references/analyzer-data-model.md`: Phase 1 analyzer payload contract
+- `references/analyzer-record.schema.json`: analyzer payload schema
+- `references/analyze-output.schema.json`: analyze result schema
+- `references/output-note-contract.md`: output note contract
+- `scripts/run_analyzer.ps1`: runnable analyzer entrypoint
+- `scripts/build_analyzer_payload.py`: clipping note plus sidecar parser
+- `scripts/invoke_analyzer_llm.py`: provider adapter for real model calls
+- `scripts/render_breakdown_note.py`: breakdown note renderer
 
 ### Thanks
 

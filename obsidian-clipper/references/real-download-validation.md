@@ -40,6 +40,13 @@ powershell -ExecutionPolicy Bypass -File ".\obsidian-clipper\scripts\dev_validat
   -SourceUrl "https://www.douyin.com/video/REPLACE_ME"
 ```
 
+The same command also accepts full copied share text, for example:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File ".\obsidian-clipper\scripts\dev_validate_social_download.ps1" `
+  -SourceUrl "5.38 复制打开抖音，看看【示例账号的作品】示例说明文案 https://v.douyin.com/REPLACE_ME/ 10/10 Duf:/ q@E.uf"
+```
+
 Optional real-vault run:
 
 ```powershell

@@ -9,6 +9,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'source_input_helpers.ps1')
 
 function Read-Utf8Text {
     param([string]$Path)
@@ -524,6 +525,9 @@ function Write-ValidationSummary {
     Write-Host ''
     Write-Host '=== Validation Summary ===' -ForegroundColor Cyan
     Write-Host "source   : $($Report.source_url)"
+    if ($null -ne $Report.PSObject.Properties['source_input_kind']) {
+        Write-Host "input    : $($Report.source_input_kind) extracted=$($Report.source_url_extracted)"
+    }
     Write-Host "auth     : configured=$($Report.auth.configured) session=$($Report.auth.session_state) likely_valid=$($Report.auth.session_likely_valid)"
     Write-Host "capture  : success=$($Report.capture.success) capture_id=$($Report.capture.capture_id) comments=$($Report.capture.comments_count) refs=$($Report.capture.candidate_video_ref_count)"
     Write-Host "download : success=$($Report.download.success) status=$($Report.download.download_status) method=$($Report.download.download_method)"
@@ -658,6 +662,8 @@ function Write-MarkdownReport {
 
 $resolvedConfigPath = Resolve-ConfigPath -RequestedPath $ConfigPath
 $config = ConvertFrom-JsonCompat -Json (Read-Utf8Text -Path $resolvedConfigPath) -Depth 100
+$resolvedSourceInput = Resolve-SourceInput -InputText $SourceUrl
+$SourceUrl = $resolvedSourceInput.source_url
 
 $validationRoot = if (Test-HasValue $OutputRoot) {
     $OutputRoot
@@ -802,6 +808,8 @@ $captureCandidateRefCount = if ($null -ne $capturePayload) { @((Get-DataValue -D
 
 $report = [ordered]@{
     source_url = $SourceUrl
+    source_input_kind = $resolvedSourceInput.input_kind
+    source_url_extracted = [bool]$resolvedSourceInput.extraction_applied
     generated_at = (Get-Date).ToString('o')
     run_directory = $runDirectory
     support_bundle_path = (Join-Path $runDirectory 'support-bundle')

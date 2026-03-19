@@ -1,0 +1,146 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openclaw.local/obsidian-analyzer/analyzer-record.schema.json",
+  "title": "Analyzer Runtime Payload",
+  "type": "object",
+  "required": [
+    "analysis_mode",
+    "source_url",
+    "title",
+    "platform",
+    "content_type"
+  ],
+  "properties": {
+    "analysis_mode": {
+      "type": "string",
+      "enum": ["analyze", "learn"]
+    },
+    "source_note_path": {
+      "type": "string"
+    },
+    "capture_json_path": {
+      "type": "string"
+    },
+    "source_url": {
+      "type": "string"
+    },
+    "normalized_url": {
+      "type": "string"
+    },
+    "title": {
+      "type": "string"
+    },
+    "platform": {
+      "type": "string"
+    },
+    "content_type": {
+      "type": "string"
+    },
+    "route": {
+      "type": "string"
+    },
+    "capture_id": {
+      "type": "string"
+    },
+    "capture_key": {
+      "type": "string"
+    },
+    "source_item_id": {
+      "type": "string"
+    },
+    "author": {
+      "type": "string"
+    },
+    "published_at": {
+      "type": "string"
+    },
+    "summary": {
+      "type": "string"
+    },
+    "description": {
+      "type": "string"
+    },
+    "raw_text": {
+      "type": "string"
+    },
+    "transcript": {
+      "type": "string"
+    },
+    "note_body": {
+      "type": "string"
+    },
+    "note_sections": {
+      "type": "object"
+    },
+    "tags": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "top_comments": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "comments": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "comments_count": {
+      "type": ["integer", "string"]
+    },
+    "comments_capture_status": {
+      "type": "string"
+    },
+    "comments_source": {
+      "type": "string"
+    },
+    "metrics_like": {
+      "type": "string"
+    },
+    "metrics_comment": {
+      "type": "string"
+    },
+    "metrics_share": {
+      "type": "string"
+    },
+    "metrics_collect": {
+      "type": "string"
+    },
+    "metrics_source": {
+      "type": "string"
+    },
+    "engagement": {
+      "type": "object"
+    },
+    "video_path": {
+      "type": "string"
+    },
+    "cover_path": {
+      "type": "string"
+    },
+    "sidecar_path": {
+      "type": "string"
+    },
+    "comments_path": {
+      "type": "string"
+    },
+    "metadata_path": {
+      "type": "string"
+    },
+    "source_files": {
+      "type": "object"
+    },
+    "payload_warnings": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "additionalProperties": true
+}

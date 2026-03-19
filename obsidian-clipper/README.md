@@ -39,6 +39,7 @@ The current implementation includes real entrypoints:
 
 This version already supports:
 - URL input
+- full share-text input that contains an embedded URL, such as raw Douyin share text copied from the app
 - platform detection
 - route selection
 - standardized clipping note generation
@@ -101,6 +102,10 @@ Recommended local layout:
 Primary command:
 - `scripts/dev_validate_social_download.ps1`
 - direct clipper runs can also use `scripts/run_clipper.ps1 -DebugDirectory <dir>` to keep raw local artifacts plus a shareable `support-bundle/`
+
+Input handling:
+- you can pass either a direct URL or a pasted share text block
+- for Douyin share text, the clipper extracts the first embedded `https://...` link before platform detection and capture
 
 What the validator does:
 - prints step-by-step terminal status for `detect`, `capture`, `download`, and `clipper`
