@@ -13,6 +13,64 @@ function Get-TrimmedUrlCandidate {
     $trimmed
 }
 
+function Get-CanonicalShareUrl {
+    param([string]$Url)
+    if (-not (Test-SourceInputHasValue $Url)) { return '' }
+
+    $candidate = Get-TrimmedUrlCandidate -Value $Url
+    $nestedMatch = [regex]::Match($candidate, 'https?://[^\s"''<>]+', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+    if ($nestedMatch.Success) {
+        $candidate = Get-TrimmedUrlCandidate -Value $nestedMatch.Value
+    }
+
+    try {
+        $uri = [System.Uri]$candidate
+    } catch {
+        return $candidate
+    }
+
+    $hostName = $uri.Host.ToLowerInvariant()
+    $path = $uri.AbsolutePath
+
+    $queryValues = @{}
+    foreach ($part in (($uri.Query.TrimStart('?')) -split '&')) {
+        if (-not (Test-SourceInputHasValue $part)) { continue }
+        $segments = $part -split '=', 2
+        if ($segments.Count -lt 1) { continue }
+        $key = [System.Uri]::UnescapeDataString($segments[0])
+        $value = if ($segments.Count -gt 1) { [System.Uri]::UnescapeDataString($segments[1]) } else { '' }
+        if (-not $queryValues.ContainsKey($key)) {
+            $queryValues[$key] = $value
+        }
+    }
+
+    if ($hostName -in @('www.douyin.com', 'douyin.com')) {
+        $videoId = ''
+        if (Test-SourceInputHasValue $queryValues['vid']) { $videoId = [string]$queryValues['vid'] }
+        elseif (Test-SourceInputHasValue $queryValues['modal_id']) { $videoId = [string]$queryValues['modal_id'] }
+        elseif ($path -match '/video/([0-9]+)') { $videoId = $Matches[1] }
+        if (Test-SourceInputHasValue $videoId) {
+            return "https://www.douyin.com/video/$videoId"
+        }
+    }
+
+    if ($hostName -eq 'v.douyin.com' -and $path -match '^/([A-Za-z0-9_-]+)/?') {
+        return "https://v.douyin.com/$($Matches[1])/"
+    }
+
+    if ($hostName -eq 'xhslink.com' -and $path -match '^/([A-Za-z0-9_-]+)/?') {
+        return "https://xhslink.com/$($Matches[1])"
+    }
+
+    $builder = [System.UriBuilder]::new($uri)
+    $builder.Fragment = ''
+    $sanitized = $builder.Uri.AbsoluteUri
+    if ($sanitized.EndsWith('/')) {
+        return $sanitized.TrimEnd('/')
+    }
+    return $sanitized
+}
+
 function Get-FirstUrlFromSourceInput {
     param([string]$InputText)
     if (-not (Test-SourceInputHasValue $InputText)) { return '' }
@@ -27,12 +85,12 @@ function Get-FirstUrlFromSourceInput {
     }
 
     if (Test-SourceInputHasValue $candidate) {
-        return (Get-TrimmedUrlCandidate -Value $candidate)
+        return (Get-CanonicalShareUrl -Url $candidate)
     }
 
-    $match = [regex]::Match($InputText, "https?://[^\s""'<>]+", [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+    $match = [regex]::Match($InputText, 'https?://[^\s"''<>]+', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
     if (-not $match.Success) { return '' }
-    Get-TrimmedUrlCandidate -Value $match.Value
+    Get-CanonicalShareUrl -Url $match.Value
 }
 
 function Resolve-SourceInput {

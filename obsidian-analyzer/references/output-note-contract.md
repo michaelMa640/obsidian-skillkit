@@ -2,13 +2,18 @@
 
 ## Purpose
 
-This document defines the output note contract for `obsidian-analyzer`.
+This document defines the note contract emitted by `obsidian-analyzer`.
 
-Phase 4 fixes the `analyze` note shape before a real LLM adapter is connected.
+Phase 6 stabilizes the final renderer so the output note is:
+
+- readable in Obsidian
+- source-linked
+- language-aware
+- consistent across `DryRun` and real model execution
 
 ## Target Folders
 
-- `Breakdowns/` for `analyze`
+- `爆款拆解/` for `analyze`
 - `Insights/` for `learn`
 
 ## Required Frontmatter
@@ -17,21 +22,27 @@ Phase 4 fixes the `analyze` note shape before a real LLM adapter is connected.
 - `source_url`
 - `normalized_url`
 - `source_note_path`
+- `capture_json_path`
+- `video_path`
 - `analysis_mode`
 - `platform`
 - `content_type`
 - `capture_id`
 - `analyzed_at`
+- `provider`
+- `provider_reported_model`
 - `model`
 - `analysis_status`
 - `prompt_template`
 - `output_contract_version`
+- `output_language`
 
 ## Analyze Note Sections
 
 Required section order:
 
 - `# 标题`
+- `## 分析元数据`
 - `## 爆点结论`
 - `## 开头钩子`
 - `## 结构拆解`
@@ -43,9 +54,16 @@ Required section order:
 - `## 原文证据`
 - `## 来源`
 
+## Renderer Requirements
+
+- Source note, capture JSON, and local video should render as Obsidian links when the files are inside the vault.
+- If the local video is inside the vault, the renderer should include an Obsidian embed in the `来源` section.
+- The renderer should preserve the model output title, but the output file name is derived from `analyzed_at + title`.
+- The renderer must support `output_language` with `zh-CN` as the default.
+
 ## Analyze Result Contract
 
-The renderer expects these semantic fields from the model result:
+The renderer expects these semantic fields from the analysis result:
 
 - `core_conclusion`
 - `hook_breakdown`
@@ -62,7 +80,7 @@ Object form is preferred:
 
 ```json
 {
-  "name": "问题开场 + 场景解释 + 产品可信度",
+  "name": "问题开场 + 场景解释 + 证明收口",
   "detail": "先抛用户问题，再解释使用场景，最后用专业身份或技术细节收口。"
 }
 ```
@@ -75,8 +93,3 @@ Object form is preferred:
   "reason": "直接使用问题句式做开头，有助于匹配搜索意图。"
 }
 ```
-
-## Current Constraint
-
-The current runnable implementation may still emit deterministic mock analysis content,
-but the output structure should already match the final `analyze` contract.

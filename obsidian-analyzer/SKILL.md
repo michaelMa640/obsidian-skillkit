@@ -1,95 +1,61 @@
 ---
 name: obsidian-analyzer
-description: Turn an existing clipping note in Obsidian into structured knowledge. Use when OpenClaw should read a clipping and produce a learn-style summary or a short-content breakdown.
+description: Read an existing clipping note from Obsidian and turn it into a structured analysis note. Use after clipping is already complete.
 ---
 
 # Obsidian Analyzer
 
-## Overview
+## Use this skill when
 
-Use this skill for the second stage of the workflow.
+- the source has already been clipped into Obsidian
+- the task is to analyze, summarize, or structurally break down that stored content
+- the output should be written back into the vault as a reusable note
 
-This skill assumes the source has already been clipped into Obsidian.
-It reads that stored content and transforms it into a more valuable knowledge note.
+## Do not use this skill when
 
-Typical chain:
-- user asks OpenClaw to analyze an existing clipping
-- `obsidian-analyzer` reads the clipping note
-- the skill chooses `learn` or `analyze`
-- the skill builds a stable analyzer payload
-- the current runnable phase may return a deterministic mock result before a real LLM adapter is connected
-- the result is written into a formal knowledge folder
+- the user needs web capture or media download
+- the source URL has not been clipped yet
+- the task belongs to `obsidian-clipper`
+
+## Current priority
+
+Current runnable priority is `analyze` mode for short-video content, especially Douyin and Xiaohongshu.
 
 ## Responsibilities
 
-`obsidian-analyzer` is responsible for:
-- reading an existing clipping note
-- choosing the correct analysis mode
-- structuring the content for the model
-- generating a knowledge note
-- saving the result into the vault
+- read a clipping note
+- resolve sidecars such as `capture.json`
+- build a normalized analyzer payload
+- invoke a configured LLM provider or fall back to mock output
+- render the final note into the Obsidian vault
+- produce debug artifacts and a shareable `support-bundle`
 
-It is not responsible for:
-- initial web capture
-- replacing the clipper
-- running viral breakdown on long-form video or podcast content
-
-## Analysis modes
-
-### `learn`
-
-Use for:
-- articles
-- educational videos
-- podcast and Xiaoyuzhou episodes
-- experience-sharing content
-
-Goal:
-- extract ideas
-- capture methods and frameworks
-- generate reusable study notes
-
-### `analyze`
-
-Use for:
-- Xiaohongshu posts
-- Douyin short videos
-- other short-form content where expression and packaging matter
-
-Goal:
-- explain why the content works
-- break down hook, structure, emotion, and trust signals
-
-Do not use for:
-- Bilibili long videos
-- YouTube long videos
-- Xiaoyuzhou and podcast long audio
-
-## Obsidian output
-
-Suggested targets:
-- `Insights/` for `learn`
-- `Breakdowns/` for `analyze`
-
-Keep the output structured and source-linked.
-
-## Current Runnable Phase
-
-The current repository includes:
+## Entry point
 
 - `scripts/run_analyzer.ps1`
+
+## Key implementation files
+
+- `scripts/build_analyzer_payload.py`
+- `scripts/invoke_analyzer_llm.py`
 - `scripts/render_breakdown_note.py`
-- Phase 1 input/output contracts in `references/`
+- `references/prompts/analyze.md`
+- `references/analyze-output.schema.json`
+- `references/local-config.example.json`
 
-This means the analyzer can already:
+## Debug expectations
 
-- read a clipping note and/or capture JSON
-- choose `analyze` or `learn`
-- normalize clipping note plus sidecar files into a structured payload
-- use a fixed `analyze` prompt contract from `references/prompts/analyze.md`
-- target a fixed `analyze` output schema from `references/analyze-output.schema.json`
-- call DashScope OpenAI-compatible models through `scripts/invoke_analyzer_llm.py`
-- emit `analyzer-payload.json` into the debug directory
-- fall back to deterministic mock output when the real provider is not configured
+Every run should produce a timestamped debug directory containing at least:
 
-The real LLM adapter is a later phase.
+- `analyzer-payload.json`
+- `analysis-input.json`
+- `run-analyzer.json`
+- `run-analyzer-summary.txt`
+- `support-bundle/`
+
+When a real provider is used, the run may also include:
+
+- `llm-request.json`
+- `llm-response.json`
+
+When helping users debug, prefer asking for `support-bundle/` first.

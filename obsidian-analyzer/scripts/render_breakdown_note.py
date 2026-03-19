@@ -1,5 +1,6 @@
 import argparse
 import json
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -7,6 +8,16 @@ from typing import Any
 
 def load_json(path: str) -> dict[str, Any]:
     return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
+def configure_console_output() -> None:
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        if stream is None:
+            continue
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            reconfigure(encoding="utf-8", errors="backslashreplace")
 
 
 def has_value(value: Any) -> bool:
@@ -32,10 +43,9 @@ def safe_file_name(value: str) -> str:
     return sanitized.strip() or "untitled.md"
 
 
-def markdown_title(title: str) -> str:
-    if not has_value(title):
-        return "未命名拆解"
-    return "\\" + title if title.startswith("#") else title
+def markdown_title(title: str, fallback: str) -> str:
+    value = string_value(title, default=fallback)
+    return "\\" + value if value.startswith("#") else value
 
 
 def normalize_list(values: Any) -> list[str]:
@@ -49,8 +59,8 @@ def normalize_list(values: Any) -> list[str]:
 
 
 def lines_from_list(values: Any, empty_text: str) -> list[str]:
-    cleaned = normalize_list(values)
-    return [f"- {item}" for item in cleaned] if cleaned else [empty_text]
+    items = normalize_list(values)
+    return [f"- {item}" for item in items] if items else [empty_text]
 
 
 def lines_from_formula_items(values: Any, empty_text: str, fallback_name: str) -> list[str]:
@@ -88,8 +98,7 @@ def lines_from_source_quotes(values: Any, empty_text: str, reason_label: str) ->
 
 
 def metric_line(label: str, value: Any) -> str:
-    text = string_value(value, default="0")
-    return f"- {label}: {text}"
+    return f"- {label}: {string_value(value, default='0')}"
 
 
 def language_pack(language: str) -> dict[str, str]:
@@ -100,6 +109,7 @@ def language_pack(language: str) -> dict[str, str]:
             "none_bullet": "- None",
             "unnamed_formula": "Unnamed Formula",
             "reason_label": "Reason",
+            "sections.meta": "Analysis Metadata",
             "sections.core": "Core Conclusion",
             "sections.hook": "Hook Breakdown",
             "sections.structure": "Structure Breakdown",
@@ -115,15 +125,23 @@ def language_pack(language: str) -> dict[str, str]:
             "metrics.share": "Shares",
             "metrics.collect": "Collects",
             "metrics.visible_comments": "Visible Comments",
+            "meta.platform": "Platform",
+            "meta.mode": "Mode",
+            "meta.model": "Model",
+            "meta.provider": "Provider",
+            "meta.status": "Status",
+            "meta.capture_id": "Capture ID",
             "sources.clipping": "Clipping Note",
             "sources.capture": "Capture JSON",
             "sources.video": "Local Video",
+            "sources.video_embed": "Embedded Video",
         }
     return {
         "untitled": "未命名拆解",
         "none_bullet": "- 无",
         "unnamed_formula": "未命名公式",
         "reason_label": "理由",
+        "sections.meta": "分析元数据",
         "sections.core": "爆点结论",
         "sections.hook": "开头钩子",
         "sections.structure": "结构拆解",
@@ -139,20 +157,71 @@ def language_pack(language: str) -> dict[str, str]:
         "metrics.share": "分享",
         "metrics.collect": "收藏",
         "metrics.visible_comments": "可见评论",
-        "sources.clipping": "Clipping Note",
+        "meta.platform": "平台",
+        "meta.mode": "模式",
+        "meta.model": "模型",
+        "meta.provider": "提供方",
+        "meta.status": "状态",
+        "meta.capture_id": "Capture ID",
+        "sources.clipping": "来源笔记",
         "sources.capture": "Capture JSON",
-        "sources.video": "Local Video",
+        "sources.video": "本地视频",
+        "sources.video_embed": "视频嵌入",
     }
 
 
-def build_note(analysis: dict[str, Any], folder: str) -> dict[str, Any]:
+def relative_vault_path(path_value: str, vault_path: str) -> str:
+    if not has_value(path_value) or not has_value(vault_path):
+        return ""
+    try:
+        candidate = Path(path_value).resolve()
+        root = Path(vault_path).resolve()
+    except OSError:
+        return ""
+    try:
+        return candidate.relative_to(root).as_posix()
+    except ValueError:
+        return ""
+
+
+def obsidian_link(path_value: str, vault_path: str, embed: bool = False) -> str:
+    relative = relative_vault_path(path_value, vault_path)
+    if not has_value(relative):
+        return string_value(path_value, default="n/a")
+    if embed:
+        return f"![[{relative}]]"
+    label = Path(relative).name
+    return f"[{label}](<{relative}>)"
+
+
+def build_source_lines(analysis: dict[str, Any], labels: dict[str, str], vault_path: str) -> list[str]:
+    source_note_path = string_value(analysis.get("source_note_path"))
+    capture_json_path = string_value(analysis.get("capture_json_path"))
+    video_path = string_value(analysis.get("video_path"))
+
+    lines = [
+        f"- {labels['sources.clipping']}: {obsidian_link(source_note_path, vault_path)}",
+        f"- {labels['sources.capture']}: {obsidian_link(capture_json_path, vault_path)}",
+        f"- {labels['sources.video']}: {obsidian_link(video_path, vault_path)}",
+    ]
+    if has_value(relative_vault_path(video_path, vault_path)):
+        lines.extend(["", f"### {labels['sources.video_embed']}", obsidian_link(video_path, vault_path, embed=True)])
+    return lines
+
+
+def build_note(analysis: dict[str, Any], folder: str, vault_path: str) -> dict[str, Any]:
     analyzed_at = string_value(analysis.get("analyzed_at"), default=datetime.now().strftime("%Y-%m-%d"))
     output_language = string_value(analysis.get("output_language"), default="zh-CN")
     labels = language_pack(output_language)
     title = string_value(analysis.get("title"), default=labels["untitled"])
     mode = string_value(analysis.get("analysis_mode"), default="analyze")
     model = string_value(analysis.get("model"), default="mock-analyzer")
+    provider = string_value(analysis.get("provider"), default="mock")
+    provider_reported_model = string_value(analysis.get("provider_reported_model"))
     analysis_status = string_value(analysis.get("analysis_status"), default="mock_generated")
+    capture_json_path = string_value(analysis.get("capture_json_path"))
+    video_path = string_value(analysis.get("video_path"))
+    source_note_path = string_value(analysis.get("source_note_path"))
     file_name = safe_file_name(f"{analyzed_at} {title}.md")
 
     lines = [
@@ -160,12 +229,16 @@ def build_note(analysis: dict[str, Any], folder: str) -> dict[str, Any]:
         f"title: {yaml_scalar(title)}",
         f"source_url: {yaml_scalar(string_value(analysis.get('source_url')))}",
         f"normalized_url: {yaml_scalar(string_value(analysis.get('normalized_url')))}",
-        f"source_note_path: {yaml_scalar(string_value(analysis.get('source_note_path')))}",
+        f"source_note_path: {yaml_scalar(source_note_path)}",
+        f"capture_json_path: {yaml_scalar(capture_json_path)}",
+        f"video_path: {yaml_scalar(video_path)}",
         f"analysis_mode: {yaml_scalar(mode)}",
         f"platform: {yaml_scalar(string_value(analysis.get('platform')))}",
         f"content_type: {yaml_scalar(string_value(analysis.get('content_type')))}",
         f"capture_id: {yaml_scalar(string_value(analysis.get('capture_id')))}",
         f"analyzed_at: {yaml_scalar(analyzed_at)}",
+        f"provider: {yaml_scalar(provider)}",
+        f"provider_reported_model: {yaml_scalar(provider_reported_model)}",
         f"model: {yaml_scalar(model)}",
         f"analysis_status: {yaml_scalar(analysis_status)}",
         f"prompt_template: {yaml_scalar(string_value(analysis.get('prompt_template')))}",
@@ -173,13 +246,21 @@ def build_note(analysis: dict[str, Any], folder: str) -> dict[str, Any]:
         f"output_language: {yaml_scalar(output_language)}",
         "---",
         "",
-        f"# {markdown_title(title)}",
+        f"# {markdown_title(title, labels['untitled'])}",
+        "",
+        f"## {labels['sections.meta']}",
+        f"- {labels['meta.platform']}: {string_value(analysis.get('platform'), default='n/a')}",
+        f"- {labels['meta.mode']}: {mode}",
+        f"- {labels['meta.provider']}: {provider}",
+        f"- {labels['meta.model']}: {model}",
+        f"- {labels['meta.status']}: {analysis_status}",
+        f"- {labels['meta.capture_id']}: {string_value(analysis.get('capture_id'), default='n/a')}",
         "",
         f"## {labels['sections.core']}",
-        string_value(analysis.get("core_conclusion"), default="(none)"),
+        string_value(analysis.get("core_conclusion"), default=labels["none_bullet"][2:]),
         "",
         f"## {labels['sections.hook']}",
-        string_value(analysis.get("hook_breakdown"), default="(none)"),
+        string_value(analysis.get("hook_breakdown"), default=labels["none_bullet"][2:]),
         "",
         f"## {labels['sections.structure']}",
         *lines_from_list(analysis.get("structure_breakdown"), empty_text=labels["none_bullet"]),
@@ -216,9 +297,7 @@ def build_note(analysis: dict[str, Any], folder: str) -> dict[str, Any]:
         ),
         "",
         f"## {labels['sections.source']}",
-        f"- {labels['sources.clipping']}: {string_value(analysis.get('source_note_path'), default='n/a')}",
-        f"- {labels['sources.capture']}: {string_value(analysis.get('capture_json_path'), default='n/a')}",
-        f"- {labels['sources.video']}: {string_value(analysis.get('video_path'), default='n/a')}",
+        *build_source_lines(analysis, labels, vault_path),
     ]
     return {
         "title": title,
@@ -229,6 +308,7 @@ def build_note(analysis: dict[str, Any], folder: str) -> dict[str, Any]:
 
 
 def main() -> int:
+    configure_console_output()
     parser = argparse.ArgumentParser()
     parser.add_argument("--analysis-json", required=True)
     parser.add_argument("--vault-path")
@@ -238,12 +318,15 @@ def main() -> int:
     args = parser.parse_args()
 
     analysis = load_json(args.analysis_json)
-    note = build_note(analysis, args.folder)
+    vault_path = string_value(args.vault_path)
+    note = build_note(analysis, args.folder, vault_path)
     result = {
         **note,
         "analysis_mode": string_value(analysis.get("analysis_mode"), default="analyze"),
         "analysis_status": string_value(analysis.get("analysis_status"), default="mock_generated"),
         "model": string_value(analysis.get("model"), default="mock-analyzer"),
+        "provider": string_value(analysis.get("provider"), default="mock"),
+        "provider_reported_model": string_value(analysis.get("provider_reported_model")),
         "source_url": string_value(analysis.get("source_url")),
         "normalized_url": string_value(analysis.get("normalized_url")),
         "prompt_template": string_value(analysis.get("prompt_template")),
@@ -251,8 +334,8 @@ def main() -> int:
         "output_language": string_value(analysis.get("output_language"), default="zh-CN"),
     }
 
-    if not args.dry_run and has_value(args.vault_path):
-        target_dir = Path(args.vault_path).joinpath(*[part for part in args.folder.replace("\\", "/").split("/") if part])
+    if not args.dry_run and has_value(vault_path):
+        target_dir = Path(vault_path).joinpath(*[part for part in args.folder.replace("\\", "/").split("/") if part])
         target_dir.mkdir(parents=True, exist_ok=True)
         target_path = target_dir / note["file_name"]
         target_path.write_text(note["note_body"], encoding="utf-8")

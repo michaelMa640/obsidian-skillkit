@@ -12,33 +12,17 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-function Read-Utf8Text {
-    param([string]$Path)
-    [System.IO.File]::ReadAllText($Path, [System.Text.UTF8Encoding]::new($false))
-}
-
-function Write-Utf8Text {
-    param([string]$Path, [string]$Content)
-    [System.IO.File]::WriteAllText($Path, $Content, [System.Text.UTF8Encoding]::new($false))
-}
-
-function Test-HasValue {
-    param($Value)
-    $null -ne $Value -and -not [string]::IsNullOrWhiteSpace([string]$Value)
-}
+function Read-Utf8Text { param([string]$Path) [System.IO.File]::ReadAllText($Path, [System.Text.UTF8Encoding]::new($false)) }
+function Write-Utf8Text { param([string]$Path, [string]$Content) [System.IO.File]::WriteAllText($Path, $Content, [System.Text.UTF8Encoding]::new($false)) }
+function Test-HasValue { param($Value) $null -ne $Value -and -not [string]::IsNullOrWhiteSpace([string]$Value) }
+function Zh { param([string]$Escaped) [regex]::Unescape($Escaped) }
+function Test-ExistingPath { param([string]$Path) if (-not (Test-HasValue $Path)) { return $false }; Test-Path $Path }
 
 function ConvertFrom-JsonCompat {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$Json,
-        [int]$Depth = 64
-    )
-    $convertParams = @{}
-    $depthParam = (Get-Command ConvertFrom-Json).Parameters['Depth']
-    if ($null -ne $depthParam) {
-        $convertParams.Depth = $Depth
-    }
-    $Json | ConvertFrom-Json @convertParams
+    param([Parameter(Mandatory = $true)][string]$Json, [int]$Depth = 64)
+    $params = @{}
+    if ((Get-Command ConvertFrom-Json).Parameters.ContainsKey('Depth')) { $params.Depth = $Depth }
+    $Json | ConvertFrom-Json @params
 }
 
 function Get-DataValue {
@@ -62,6 +46,16 @@ function Get-StringValue {
     $DefaultValue
 }
 
+function Set-ObjectField {
+    param($Object, [string]$Name, $Value)
+    if ($Object -is [System.Collections.IDictionary]) {
+        $Object[$Name] = $Value
+        return $Object
+    }
+    $Object | Add-Member -NotePropertyName $Name -NotePropertyValue $Value -Force
+    $Object
+}
+
 function New-Directory {
     param([string]$Path)
     if (-not (Test-HasValue $Path)) { return '' }
@@ -82,13 +76,28 @@ function Get-Config {
     ConvertFrom-JsonCompat -Json (Read-Utf8Text -Path $Path) -Depth 100
 }
 
+function Resolve-ConfigDirectoryPath {
+    param([string]$ConfiguredPath, [string]$BasePath)
+    if (-not (Test-HasValue $ConfiguredPath)) { return '' }
+    if ([System.IO.Path]::IsPathRooted($ConfiguredPath)) { return $ConfiguredPath }
+    Join-Path $BasePath $ConfiguredPath
+}
+
 function Get-ResolvedVaultPath {
     param($Config, [string]$RequestedVaultPath)
     if (Test-HasValue $RequestedVaultPath) { return $RequestedVaultPath }
-    if ($null -ne $Config.obsidian -and (Test-HasValue $Config.obsidian.vault_path)) {
-        return [string]$Config.obsidian.vault_path
-    }
+    if ($null -ne $Config.obsidian -and (Test-HasValue $Config.obsidian.vault_path)) { return [string]$Config.obsidian.vault_path }
     ''
+}
+
+function Get-DefaultDebugDirectory {
+    param($Config, [string]$RequestedDebugDirectory)
+    if (Test-HasValue $RequestedDebugDirectory) { return $RequestedDebugDirectory }
+    $configured = ''
+    if ($null -ne $Config.analyzer -and (Test-HasValue ([string]$Config.analyzer.default_debug_directory))) { $configured = [string]$Config.analyzer.default_debug_directory }
+    $root = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
+    $base = if (Test-HasValue $configured) { Resolve-ConfigDirectoryPath -ConfiguredPath $configured -BasePath $root } else { Join-Path $root '.tmp\run-analyzer' }
+    Join-Path $base (Get-Date -Format 'yyyyMMdd-HHmmss')
 }
 
 function Get-FrontmatterData {
@@ -96,15 +105,12 @@ function Get-FrontmatterData {
     $result = [ordered]@{}
     if (-not $NoteText.StartsWith('---')) { return [pscustomobject]$result }
     $lines = $NoteText -split "`r?`n"
-    if ($lines.Count -lt 3) { return [pscustomobject]$result }
-    $index = 1
-    while ($index -lt $lines.Count) {
+    for ($index = 1; $index -lt $lines.Count; $index += 1) {
         $line = $lines[$index]
         if ($line -eq '---') { break }
         if ($line -match '^(?<key>[^:]+):\s*(?<value>.*)$') {
             $result[$Matches['key'].Trim()] = $Matches['value'].Trim().Trim("'")
         }
-        $index += 1
     }
     [pscustomobject]$result
 }
@@ -132,242 +138,166 @@ function Get-DefaultMode {
 }
 
 function Build-AnalyzerPayloadWithPython {
-    param(
-        [string]$ResolvedVaultPath,
-        [string]$ResolvedNotePath,
-        [string]$ResolvedCaptureJsonPath,
-        [string]$AnalysisMode,
-        [string]$PayloadJsonPath
-    )
-    $pythonCommand = 'python'
-    $builderScriptPath = Join-Path $PSScriptRoot 'build_analyzer_payload.py'
-    $builderArguments = @($builderScriptPath, '--mode', $AnalysisMode, '--output-json', $PayloadJsonPath)
-    if (Test-HasValue $ResolvedVaultPath) { $builderArguments += @('--vault-path', $ResolvedVaultPath) }
-    if (Test-HasValue $ResolvedNotePath) { $builderArguments += @('--note-path', $ResolvedNotePath) }
-    if (Test-HasValue $ResolvedCaptureJsonPath) { $builderArguments += @('--capture-json-path', $ResolvedCaptureJsonPath) }
-    & $pythonCommand @builderArguments | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "build_analyzer_payload.py failed with exit code $LASTEXITCODE." }
+    param([string]$ResolvedVaultPath, [string]$ResolvedNotePath, [string]$ResolvedCaptureJsonPath, [string]$AnalysisMode, [string]$PayloadJsonPath)
+    $args = @((Join-Path $PSScriptRoot 'build_analyzer_payload.py'), '--mode', $AnalysisMode, '--output-json', $PayloadJsonPath)
+    if (Test-HasValue $ResolvedVaultPath) { $args += @('--vault-path', $ResolvedVaultPath) }
+    if (Test-HasValue $ResolvedNotePath) { $args += @('--note-path', $ResolvedNotePath) }
+    if (Test-HasValue $ResolvedCaptureJsonPath) { $args += @('--capture-json-path', $ResolvedCaptureJsonPath) }
+    $output = & python @args 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        $detail = (($output | Out-String).Trim())
+        throw "build_analyzer_payload.py failed with exit code $LASTEXITCODE. Details: $detail"
+    }
     ConvertFrom-JsonCompat -Json (Read-Utf8Text -Path $PayloadJsonPath) -Depth 100
-}
-
-function Build-MockAnalysisResult {
-    param(
-        $Payload,
-        [string]$OutputLanguage = 'zh-CN'
-    )
-
-    $mode = [string]$Payload.analysis_mode
-    $isEnglish = $OutputLanguage.ToLowerInvariant() -in @('en', 'en-us', 'english')
-    $commentHighlights = @()
-    if ($null -ne $Payload.PSObject.Properties['comments']) {
-        $commentHighlights = @(
-            $Payload.comments |
-            Select-Object -First 3 |
-            ForEach-Object {
-                $displayText = Get-StringValue -Data $_ -Name 'display_text' -DefaultValue ''
-                if (Test-HasValue $displayText) { $displayText }
-            } |
-            Where-Object { Test-HasValue $_ }
-        )
-    }
-    if ($commentHighlights.Count -eq 0 -and $null -ne $Payload.PSObject.Properties['top_comments']) {
-        $commentHighlights = @($Payload.top_comments | Select-Object -First 3 | Where-Object { Test-HasValue $_ })
-    }
-
-    $metricsLike = [string]$Payload.metrics_like
-    $metricsComment = [string]$Payload.metrics_comment
-    $metricsShare = [string]$Payload.metrics_share
-    $metricsCollect = [string]$Payload.metrics_collect
-    $commentsCount = [string]$Payload.comments_count
-
-    $sourceHighlights = @()
-    if (Test-HasValue ([string]$Payload.raw_text)) {
-        $sourceHighlights += [pscustomobject]@{
-            quote = [string]$Payload.raw_text
-            reason = 'Primary source copy from the clipping payload.'
-        }
-    }
-    if (Test-HasValue ([string]$Payload.summary)) {
-        $sourceHighlights += [pscustomobject]@{
-            quote = [string]$Payload.summary
-            reason = 'Capture summary used to anchor the main promise and packaging.'
-        }
-    }
-
-    $analysisTitle = if ($mode -eq 'analyze') {
-        if ($isEnglish) { "$($Payload.title) - Breakdown" } else { "$($Payload.title) - Analyze" }
-    } else {
-        if ($isEnglish) { "$($Payload.title) - Learn Note" } else { "$($Payload.title) - Learn" }
-    }
-    $promptTemplate = if ($mode -eq 'analyze') { 'references/prompts/analyze.md' } else { 'references/prompts/learn.md' }
-    $outputContractVersion = if ($mode -eq 'analyze') { 'analyze-v1' } else { 'learn-v0' }
-    $coreConclusion = if ($mode -eq 'analyze') {
-        'This is deterministic mock output. The current value is validating the final analyze output contract before a real LLM adapter is connected.'
-    } else {
-        'This is deterministic mock output. The current value is validating the final output contract before a real LLM adapter is connected.'
-    }
-    $hookBreakdown = if (Test-HasValue ([string]$Payload.summary)) { [string]$Payload.summary } else { '(none)' }
-    $commentFeedback = if ($commentHighlights.Count -gt 0) {
-        @($commentHighlights)
-    } else {
-        @('Visible comments were unavailable in this payload, so audience feedback is incomplete.')
-    }
-    $reusableFormula = @(
-        [pscustomobject]@{
-            name = 'Problem opening + scenario + proof'
-            detail = 'Start with a user question, explain the use case, and end with a technical or expert proof signal.'
-        },
-        [pscustomobject]@{
-            name = 'Utility-first short video'
-            detail = 'Use direct explanation and practical detail instead of entertainment-heavy performance.'
-        }
-    )
-    $riskFlags = @(
-        'This is mock output and should not be treated as final analysis.'
-        'The current payload may still contain missing or weak interaction metrics.'
-    ) + @($Payload.payload_warnings | Select-Object -First 3)
-    $sourceHighlightItems = if ($sourceHighlights.Count -gt 0) {
-        @($sourceHighlights)
-    } else {
-        @([pscustomobject]@{
-            quote = '(none)'
-            reason = 'No source highlight was available.'
-        })
-    }
-
-    [pscustomobject]@{
-        title = $analysisTitle
-        analysis_mode = $mode
-        source_note_path = [string]$Payload.source_note_path
-        capture_json_path = [string]$Payload.capture_json_path
-        source_url = [string]$Payload.source_url
-        normalized_url = [string]$Payload.normalized_url
-        platform = [string]$Payload.platform
-        content_type = [string]$Payload.content_type
-        capture_id = [string]$Payload.capture_id
-        video_path = [string]$Payload.video_path
-        analyzed_at = (Get-Date).ToString('yyyy-MM-dd')
-        model = "mock:$mode"
-        analysis_status = 'mock_generated'
-        prompt_template = $promptTemplate
-        output_contract_version = $outputContractVersion
-        output_language = $OutputLanguage
-        core_conclusion = $coreConclusion
-        hook_breakdown = $hookBreakdown
-        structure_breakdown = @(
-            'Start from the explicit problem or search-intent phrasing in the title or copy.'
-            'Use a short explanatory segment to anchor what the product or offer actually does.'
-            'Close with concrete details, proof, or a professional signal to support trust.'
-        )
-        emotion_trust_signals = @(
-            'Problem-led phrasing reduces comprehension cost and matches user intent.'
-            'Technical wording and product detail suggest expertise and implementation credibility.'
-            'Short-form packaging is direct and utility-first rather than entertainment-first.'
-        )
-        comment_feedback = $commentFeedback
-        engagement_insights = @(
-            "Likes: $metricsLike"
-            "Comments: $metricsComment"
-            "Shares: $metricsShare"
-            "Collects: $metricsCollect"
-            "Visible comments: $commentsCount"
-        )
-        reusable_formula = $reusableFormula
-        risk_flags = $riskFlags
-        source_highlights = $sourceHighlightItems
-        metrics_like = $metricsLike
-        metrics_comment = $metricsComment
-        metrics_share = $metricsShare
-        metrics_collect = $metricsCollect
-        comments_count = $commentsCount
-    }
 }
 
 function Test-RealLlmConfigured {
     param($Config)
     if ($null -eq $Config -or $null -eq $Config.llm) { return $false }
-    $provider = [string]$Config.llm.provider
-    $model = [string]$Config.llm.model
-    if (-not (Test-HasValue $provider) -or -not (Test-HasValue $model)) { return $false }
-    if ($provider -like 'REPLACE_*' -or $model -like 'REPLACE_*') { return $false }
+    if (Test-HasValue ([string]$Config.llm.api_key)) { return $true }
     $apiKeyEnv = if (Test-HasValue ([string]$Config.llm.api_key_env)) { [string]$Config.llm.api_key_env } else { 'DASHSCOPE_API_KEY' }
-    $apiKey = [Environment]::GetEnvironmentVariable($apiKeyEnv)
-    Test-HasValue $apiKey
+    Test-HasValue ([Environment]::GetEnvironmentVariable($apiKeyEnv))
 }
 
 function Invoke-AnalyzerLlmWithPython {
-    param(
-        [string]$PayloadJsonPath,
-        [string]$ConfigJsonPath,
-        [string]$PromptPath,
-        [string]$SchemaPath,
-        [string]$OutputPath,
-        [string]$RequestJsonPath,
-        [string]$ResponseJsonPath
-    )
-    $pythonCommand = 'python'
-    $adapterScriptPath = Join-Path $PSScriptRoot 'invoke_analyzer_llm.py'
-    $arguments = @(
-        $adapterScriptPath,
-        '--payload-json', $PayloadJsonPath,
-        '--config-json', $ConfigJsonPath,
-        '--prompt-path', $PromptPath,
-        '--schema-path', $SchemaPath,
-        '--output-json', $OutputPath
-    )
-    if (Test-HasValue $RequestJsonPath) { $arguments += @('--request-json', $RequestJsonPath) }
-    if (Test-HasValue $ResponseJsonPath) { $arguments += @('--response-json', $ResponseJsonPath) }
-    & $pythonCommand @arguments | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "invoke_analyzer_llm.py failed with exit code $LASTEXITCODE." }
+    param([string]$PayloadJsonPath, [string]$ConfigJsonPath, [string]$PromptPath, [string]$SchemaPath, [string]$OutputPath, [string]$RequestJsonPath, [string]$ResponseJsonPath)
+    $args = @((Join-Path $PSScriptRoot 'invoke_analyzer_llm.py'), '--payload-json', $PayloadJsonPath, '--config-json', $ConfigJsonPath, '--prompt-path', $PromptPath, '--schema-path', $SchemaPath, '--output-json', $OutputPath)
+    if (Test-HasValue $RequestJsonPath) { $args += @('--request-json', $RequestJsonPath) }
+    if (Test-HasValue $ResponseJsonPath) { $args += @('--response-json', $ResponseJsonPath) }
+    $output = & python @args 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        $detail = (($output | Out-String).Trim())
+        throw "invoke_analyzer_llm.py failed with exit code $LASTEXITCODE. Details: $detail"
+    }
     ConvertFrom-JsonCompat -Json (Read-Utf8Text -Path $OutputPath) -Depth 100
+}
+
+function Build-MockAnalysisResult {
+    param($Payload, [string]$OutputLanguage = 'zh-CN')
+    [pscustomobject]@{
+        title = Get-StringValue -Data $Payload -Name 'title' -DefaultValue 'Untitled'
+        analysis_mode = Get-StringValue -Data $Payload -Name 'analysis_mode' -DefaultValue 'analyze'
+        source_note_path = Get-StringValue -Data $Payload -Name 'source_note_path' -DefaultValue ''
+        capture_json_path = Get-StringValue -Data $Payload -Name 'capture_json_path' -DefaultValue ''
+        source_url = Get-StringValue -Data $Payload -Name 'source_url' -DefaultValue ''
+        normalized_url = Get-StringValue -Data $Payload -Name 'normalized_url' -DefaultValue ''
+        platform = Get-StringValue -Data $Payload -Name 'platform' -DefaultValue ''
+        content_type = Get-StringValue -Data $Payload -Name 'content_type' -DefaultValue ''
+        capture_id = Get-StringValue -Data $Payload -Name 'capture_id' -DefaultValue ''
+        analyzed_at = Get-Date -Format 'yyyy-MM-dd'
+        provider = 'mock'
+        provider_reported_model = ''
+        model = 'mock:analyze'
+        analysis_status = 'mock_generated'
+        prompt_template = 'references/prompts/analyze.md'
+        output_contract_version = 'analyze-v1'
+        output_language = $OutputLanguage
+        core_conclusion = 'This is mock output generated because no real model was invoked.'
+        hook_breakdown = Get-StringValue -Data $Payload -Name 'summary' -DefaultValue ''
+        structure_breakdown = @()
+        emotion_trust_signals = @()
+        comment_feedback = @()
+        engagement_insights = @()
+        reusable_formula = @()
+        risk_flags = @('Mock output only.')
+        source_highlights = @()
+        metrics_like = Get-StringValue -Data $Payload -Name 'metrics_like' -DefaultValue '0'
+        metrics_comment = Get-StringValue -Data $Payload -Name 'metrics_comment' -DefaultValue '0'
+        metrics_share = Get-StringValue -Data $Payload -Name 'metrics_share' -DefaultValue '0'
+        metrics_collect = Get-StringValue -Data $Payload -Name 'metrics_collect' -DefaultValue '0'
+        comments_count = Get-StringValue -Data $Payload -Name 'comments_count' -DefaultValue '0'
+        video_path = Get-StringValue -Data $Payload -Name 'video_path' -DefaultValue ''
+    }
+}
+
+function Add-AnalyzerFinalStatusFields {
+    param($Result)
+    $status = Get-StringValue -Data $Result -Name 'analysis_status' -DefaultValue ''
+    $failedStep = Get-StringValue -Data $Result -Name 'failed_step' -DefaultValue ''
+    if (-not [bool]$Result.success) {
+        Set-ObjectField -Object $Result -Name 'final_run_status' -Value 'FAILED' | Out-Null
+        Set-ObjectField -Object $Result -Name 'final_run_status_zh' -Value (Zh '\u5931\u8d25') | Out-Null
+        Set-ObjectField -Object $Result -Name 'final_message_en' -Value (Get-StringValue -Data $Result -Name 'error_message' -DefaultValue 'The analyzer run failed.') | Out-Null
+        Set-ObjectField -Object $Result -Name 'final_message_zh' -Value (Get-StringValue -Data $Result -Name 'error_message_zh' -DefaultValue (Zh '\u672c\u6b21 Analyzer \u8fd0\u884c\u5931\u8d25\u3002')) | Out-Null
+        if (-not (Test-HasValue $failedStep)) { Set-ObjectField -Object $Result -Name 'failed_step' -Value 'unknown' | Out-Null }
+        return $Result
+    }
+    if ([bool]$Result.dry_run -or $status -eq 'success' -or $status -eq 'partial') {
+        if ([bool]$Result.dry_run) {
+            $messageEn = 'Dry run completed successfully.'
+            $messageZh = Zh 'DryRun \u5df2\u6210\u529f\u5b8c\u6210\u3002'
+        } elseif ($status -eq 'partial') {
+            $messageEn = 'The analyzer run completed with partial output.'
+            $messageZh = Zh '\u672c\u6b21 Analyzer \u8fd0\u884c\u5df2\u5b8c\u6210\uff0c\u4f46\u8f93\u51fa\u4e3a partial\u3002'
+        } else {
+            $messageEn = 'The analyzer run completed successfully.'
+            $messageZh = Zh '\u672c\u6b21 Analyzer \u8fd0\u884c\u6210\u529f\u5b8c\u6210\u3002'
+        }
+        Set-ObjectField -Object $Result -Name 'final_run_status' -Value 'SUCCESS' | Out-Null
+        Set-ObjectField -Object $Result -Name 'final_run_status_zh' -Value (Zh '\u6210\u529f') | Out-Null
+        Set-ObjectField -Object $Result -Name 'final_message_en' -Value $messageEn | Out-Null
+        Set-ObjectField -Object $Result -Name 'final_message_zh' -Value $messageZh | Out-Null
+        return $Result
+    }
+    $messageEn = if ($status -eq 'mock_fallback_after_llm_error') { 'Real model invocation failed and the pipeline fell back to mock output.' } else { 'Real model was not invoked; mock output was generated.' }
+    $messageZh = if ($status -eq 'mock_fallback_after_llm_error') { Zh '\u771f\u5b9e\u6a21\u578b\u8c03\u7528\u5931\u8d25\uff0c\u6d41\u7a0b\u5df2\u56de\u9000\u4e3a mock \u8f93\u51fa\u3002' } else { Zh '\u672c\u6b21\u672a\u8c03\u7528\u771f\u5b9e\u6a21\u578b\uff0c\u751f\u6210\u7684\u662f mock \u8f93\u51fa\u3002' }
+    Set-ObjectField -Object $Result -Name 'final_run_status' -Value 'FAILED' | Out-Null
+    Set-ObjectField -Object $Result -Name 'final_run_status_zh' -Value (Zh '\u5931\u8d25') | Out-Null
+    if (-not (Test-HasValue $failedStep)) { Set-ObjectField -Object $Result -Name 'failed_step' -Value 'llm_invoke' | Out-Null }
+    Set-ObjectField -Object $Result -Name 'final_message_en' -Value $messageEn | Out-Null
+    Set-ObjectField -Object $Result -Name 'final_message_zh' -Value $messageZh | Out-Null
+    $Result
+}
+
+function Get-AnalyzerSummaryLines {
+    param($Result)
+    $lines = New-Object System.Collections.Generic.List[string]
+    $failedStep = Get-StringValue -Data $Result -Name 'failed_step' -DefaultValue ''
+    $lines.Add('=== Analyzer Summary ===')
+    $lines.Add("mode     : $($Result.analysis_mode)")
+    $lines.Add("platform : $($Result.platform)")
+    $lines.Add("title    : $($Result.title)")
+    $lines.Add("status   : $($Result.analysis_status)")
+    $lines.Add("provider : $($Result.provider)")
+    $lines.Add("model    : $($Result.model)")
+    $lines.Add("language : $($Result.output_language)")
+    $lines.Add("folder   : $($Result.output_folder)")
+    if ($null -ne $Result.PSObject.Properties['analyzer_payload_path']) { $lines.Add("payload  : $($Result.analyzer_payload_path)") }
+    if ($null -ne $Result.PSObject.Properties['analysis_input_path'] -and (Test-HasValue ([string]$Result.analysis_input_path))) { $lines.Add("analysis : $($Result.analysis_input_path)") }
+    if ($null -ne $Result.PSObject.Properties['analyzer_payload_warning_count']) { $lines.Add("warnings : $($Result.analyzer_payload_warning_count)") }
+    if ($null -ne $Result.PSObject.Properties['note_path']) { $lines.Add("note     : $($Result.note_path)") }
+    if ($null -ne $Result.PSObject.Properties['support_bundle_path']) { $lines.Add("share    : $($Result.support_bundle_path)") }
+    if ($null -ne $Result.PSObject.Properties['debug_directory']) { $lines.Add("debug    : $($Result.debug_directory)") }
+    $lines.Add("result   : $($Result.final_run_status)")
+    $lines.Add(("{0}     : {1}" -f (Zh '\u7ed3\u679c'), $Result.final_run_status_zh))
+    if (Test-HasValue $failedStep) {
+        $lines.Add("step     : $failedStep")
+        $lines.Add(("{0}     : {1}" -f (Zh '\u6b65\u9aa4'), $failedStep))
+    }
+    $lines.Add("detail_en: $($Result.final_message_en)")
+    $lines.Add(("{0}     : {1}" -f (Zh '\u8be6\u60c5'), $Result.final_message_zh))
+    $lines.Add('issue_en : Upload support-bundle or the whole debug directory to your issue for troubleshooting and updates.')
+    $lines.Add(("{0} : {1}" -f (Zh '\u95ee\u9898\u4e0a\u62a5'), (Zh '\u8bf7\u5c06 support-bundle \u6216\u6574\u4e2a debug \u76ee\u5f55\u4e0a\u4f20\u5230\u4f60\u7684 issue\uff0c\u4fbf\u4e8e\u6392\u67e5\u548c\u66f4\u65b0\u3002')))
+    @($lines)
 }
 
 function Write-AnalyzerSummary {
     param($Result)
     Write-Host ''
-    Write-Host '=== Analyzer Summary ===' -ForegroundColor Cyan
-    Write-Host "mode     : $($Result.analysis_mode)"
-    Write-Host "platform : $($Result.platform)"
-    Write-Host "title    : $($Result.title)"
-    Write-Host "status   : $($Result.analysis_status)"
-    if ($null -ne $Result.PSObject.Properties['provider']) {
-        Write-Host "provider : $($Result.provider)"
-    }
-    if ($null -ne $Result.PSObject.Properties['model']) {
-        Write-Host "model    : $($Result.model)"
-    }
-    if ($null -ne $Result.PSObject.Properties['analyzer_payload_path']) {
-        Write-Host "payload  : $($Result.analyzer_payload_path)"
-    }
-    if ($null -ne $Result.PSObject.Properties['analyzer_payload_warning_count']) {
-        Write-Host "warnings : $($Result.analyzer_payload_warning_count)"
-    }
-    if ($null -ne $Result.PSObject.Properties['note_path']) {
-        Write-Host "note     : $($Result.note_path)"
-    }
-    if ($null -ne $Result.PSObject.Properties['support_bundle_path']) {
-        Write-Host "share    : $($Result.support_bundle_path)"
+    foreach ($line in (Get-AnalyzerSummaryLines -Result $Result)) {
+        if ($line -eq '=== Analyzer Summary ===') {
+            Write-Host $line -ForegroundColor Cyan
+        } elseif ($line -like 'result   : FAILED' -or $line -like '*失败' -or $line -like 'step     :*') {
+            Write-Host $line -ForegroundColor Yellow
+        } else {
+            Write-Host $line
+        }
     }
     Write-Host ''
 }
 
-function Mask-TextValue {
-    param(
-        [string]$Text,
-        [string]$Value,
-        [string]$Mask
-    )
-    if (-not (Test-HasValue $Value)) { return $Text }
-    $masked = $Text -replace [regex]::Escape($Value), $Mask
-    $jsonEncodedValue = (($Value | ConvertTo-Json -Compress).Trim('"'))
-    $masked -replace [regex]::Escape($jsonEncodedValue), $Mask
-}
-
 function Sanitize-Value {
-    param(
-        $Value,
-        [string]$VaultPath
-    )
+    param($Value, [string]$VaultPath)
     if ($Value -is [string]) {
         if ($Value.StartsWith('data:video/')) { return '<inline-video-base64>' }
         if (Test-HasValue $VaultPath) { return $Value.Replace($VaultPath, '<vault-root>') }
@@ -375,188 +305,166 @@ function Sanitize-Value {
     }
     if ($Value -is [System.Collections.IDictionary]) {
         $output = [ordered]@{}
-        foreach ($key in $Value.Keys) {
-            $output[$key] = Sanitize-Value -Value $Value[$key] -VaultPath $VaultPath
-        }
+        foreach ($key in $Value.Keys) { $output[$key] = Sanitize-Value -Value $Value[$key] -VaultPath $VaultPath }
         return [pscustomobject]$output
     }
     if ($Value -is [System.Collections.IEnumerable] -and -not ($Value -is [string])) {
-        $items = @()
-        foreach ($item in $Value) {
-            $items += ,(Sanitize-Value -Value $item -VaultPath $VaultPath)
-        }
-        return $items
+        return @($Value | ForEach-Object { Sanitize-Value -Value $_ -VaultPath $VaultPath })
     }
     if ($null -ne $Value -and $Value -is [psobject]) {
         $output = [ordered]@{}
-        foreach ($property in $Value.PSObject.Properties) {
-            $output[$property.Name] = Sanitize-Value -Value $property.Value -VaultPath $VaultPath
-        }
+        foreach ($property in $Value.PSObject.Properties) { $output[$property.Name] = Sanitize-Value -Value $property.Value -VaultPath $VaultPath }
         return [pscustomobject]$output
     }
     $Value
 }
 
-$configPathResolved = Get-ConfigPathResolved -RequestedPath $ConfigPath
-$config = Get-Config -Path $configPathResolved
-$resolvedVaultPath = Get-ResolvedVaultPath -Config $config -RequestedVaultPath $VaultPath
-
-if (-not (Test-HasValue $NotePath) -and -not (Test-HasValue $CaptureJsonPath)) {
-    throw 'Provide either -NotePath or -CaptureJsonPath.'
-}
-
-$resolvedNotePath = ''
-$frontmatter = [pscustomobject]@{}
-if (Test-HasValue $NotePath) {
-    $resolvedNotePath = $NotePath
-    if (-not (Test-Path $resolvedNotePath)) { throw "Note not found: $resolvedNotePath" }
-    $noteText = Read-Utf8Text -Path $resolvedNotePath
-    $frontmatter = Get-FrontmatterData -NoteText $noteText
-}
-
-$resolvedCaptureJsonPath = ''
-$capture = $null
-if (Test-HasValue $CaptureJsonPath) {
-    $resolvedCaptureJsonPath = $CaptureJsonPath
-} elseif ($null -ne $frontmatter.PSObject.Properties['sidecar_path'] -and (Test-HasValue $frontmatter.sidecar_path)) {
-    $resolvedCaptureJsonPath = Resolve-PathFromVault -VaultRoot $resolvedVaultPath -RelativeOrAbsolutePath $frontmatter.sidecar_path
-}
-
-if (Test-HasValue $resolvedCaptureJsonPath) {
-    if (-not (Test-Path $resolvedCaptureJsonPath)) { throw "Capture JSON not found: $resolvedCaptureJsonPath" }
-    $capture = ConvertFrom-JsonCompat -Json (Read-Utf8Text -Path $resolvedCaptureJsonPath) -Depth 100
-}
-
-$analysisMode = if (Test-HasValue $Mode) { $Mode } else { Get-DefaultMode -Frontmatter $frontmatter -Capture $capture }
-
+$configPathResolved = ''
+$config = $null
+$resolvedVaultPath = ''
+$resolvedDebugDirectory = ''
 $artifactDirectory = ''
-if (Test-HasValue $DebugDirectory) {
-    $artifactDirectory = New-Directory -Path $DebugDirectory
-} elseif (Test-HasValue $OutputJsonPath) {
-    $artifactDirectory = New-Directory -Path (Split-Path -Parent $OutputJsonPath)
-}
+$payloadJsonPath = ''
+$analysisJsonPath = ''
+$llmRequestJsonPath = ''
+$llmResponseJsonPath = ''
+$script:AnalyzerCurrentStep = 'startup'
 
-$pythonCommand = 'python'
-$rendererScriptPath = Join-Path $PSScriptRoot 'render_breakdown_note.py'
-$promptPath = if ($analysisMode -eq 'analyze') { Join-Path $PSScriptRoot '..\references\prompts\analyze.md' } else { Join-Path $PSScriptRoot '..\references\prompts\learn.md' }
-$schemaPath = if ($analysisMode -eq 'analyze') { Join-Path $PSScriptRoot '..\references\analyze-output.schema.json' } else { '' }
-$tempDirectory = if (Test-HasValue $artifactDirectory) { $artifactDirectory } else { New-Directory -Path (Join-Path $PSScriptRoot "..\\.tmp\\analyzer-$([guid]::NewGuid().ToString('N'))") }
-$payloadJsonPath = Join-Path $tempDirectory 'analyzer-payload.json'
-$payload = Build-AnalyzerPayloadWithPython -ResolvedVaultPath $resolvedVaultPath -ResolvedNotePath $resolvedNotePath -ResolvedCaptureJsonPath $resolvedCaptureJsonPath -AnalysisMode $analysisMode -PayloadJsonPath $payloadJsonPath
-$analysisJsonPath = Join-Path $tempDirectory 'analysis-input.json'
-$llmRequestJsonPath = Join-Path $tempDirectory 'llm-request.json'
-$llmResponseJsonPath = Join-Path $tempDirectory 'llm-response.json'
-$analysis = $null
-if ($analysisMode -eq 'analyze' -and (Test-RealLlmConfigured -Config $config)) {
-    try {
-        $analysis = Invoke-AnalyzerLlmWithPython -PayloadJsonPath $payloadJsonPath -ConfigJsonPath $configPathResolved -PromptPath $promptPath -SchemaPath $schemaPath -OutputPath $analysisJsonPath -RequestJsonPath $llmRequestJsonPath -ResponseJsonPath $llmResponseJsonPath
-    } catch {
+try {
+    $script:AnalyzerCurrentStep = 'config_load'
+    $configPathResolved = Get-ConfigPathResolved -RequestedPath $ConfigPath
+    $config = Get-Config -Path $configPathResolved
+    $resolvedVaultPath = Get-ResolvedVaultPath -Config $config -RequestedVaultPath $VaultPath
+    $resolvedDebugDirectory = Get-DefaultDebugDirectory -Config $config -RequestedDebugDirectory $DebugDirectory
+    if (-not (Test-HasValue $NotePath) -and -not (Test-HasValue $CaptureJsonPath)) { throw 'Provide either -NotePath or -CaptureJsonPath.' }
+
+    $script:AnalyzerCurrentStep = 'input_resolve'
+    $resolvedNotePath = ''
+    $frontmatter = [pscustomobject]@{}
+    if (Test-HasValue $NotePath) {
+        $resolvedNotePath = $NotePath
+        if (-not (Test-Path $resolvedNotePath)) { throw "Note not found: $resolvedNotePath" }
+        $frontmatter = Get-FrontmatterData -NoteText (Read-Utf8Text -Path $resolvedNotePath)
+    }
+
+    $resolvedCaptureJsonPath = if (Test-HasValue $CaptureJsonPath) { $CaptureJsonPath } else { Resolve-PathFromVault -VaultRoot $resolvedVaultPath -RelativeOrAbsolutePath (Get-StringValue -Data $frontmatter -Name 'sidecar_path' -DefaultValue '') }
+    $capture = $null
+    if (Test-HasValue $resolvedCaptureJsonPath) {
+        if (-not (Test-Path $resolvedCaptureJsonPath)) { throw "Capture JSON not found: $resolvedCaptureJsonPath" }
+        $capture = ConvertFrom-JsonCompat -Json (Read-Utf8Text -Path $resolvedCaptureJsonPath) -Depth 100
+    }
+    $analysisMode = if (Test-HasValue $Mode) { $Mode } else { Get-DefaultMode -Frontmatter $frontmatter -Capture $capture }
+
+    $script:AnalyzerCurrentStep = 'debug_prepare'
+    $artifactDirectory = New-Directory -Path $resolvedDebugDirectory
+    $payloadJsonPath = Join-Path $artifactDirectory 'analyzer-payload.json'
+
+    $script:AnalyzerCurrentStep = 'payload_build'
+    $payload = Build-AnalyzerPayloadWithPython -ResolvedVaultPath $resolvedVaultPath -ResolvedNotePath $resolvedNotePath -ResolvedCaptureJsonPath $resolvedCaptureJsonPath -AnalysisMode $analysisMode -PayloadJsonPath $payloadJsonPath
+
+    $analysisJsonPath = Join-Path $artifactDirectory 'analysis-input.json'
+    $llmRequestJsonPath = Join-Path $artifactDirectory 'llm-request.json'
+    $llmResponseJsonPath = Join-Path $artifactDirectory 'llm-response.json'
+    $promptPath = if ($analysisMode -eq 'analyze') { Join-Path $PSScriptRoot '..\references\prompts\analyze.md' } else { Join-Path $PSScriptRoot '..\references\prompts\learn.md' }
+    $schemaPath = if ($analysisMode -eq 'analyze') { Join-Path $PSScriptRoot '..\references\analyze-output.schema.json' } else { '' }
+
+    $script:AnalyzerCurrentStep = 'llm_invoke'
+    if ($analysisMode -eq 'analyze' -and (Test-RealLlmConfigured -Config $config)) {
+        try {
+            $analysis = Invoke-AnalyzerLlmWithPython -PayloadJsonPath $payloadJsonPath -ConfigJsonPath $configPathResolved -PromptPath $promptPath -SchemaPath $schemaPath -OutputPath $analysisJsonPath -RequestJsonPath $llmRequestJsonPath -ResponseJsonPath $llmResponseJsonPath
+        } catch {
+            $analysis = Build-MockAnalysisResult -Payload $payload -OutputLanguage ([string]$config.analyzer.output_language)
+            $analysis.analysis_status = 'mock_fallback_after_llm_error'
+        }
+    } else {
         $analysis = Build-MockAnalysisResult -Payload $payload -OutputLanguage ([string]$config.analyzer.output_language)
-        $analysis.analysis_status = 'mock_fallback_after_llm_error'
-        $analysis.risk_flags = @($analysis.risk_flags) + @("LLM adapter failed and the pipeline fell back to mock output: $($_.Exception.Message)")
     }
-} else {
-    $analysis = Build-MockAnalysisResult -Payload $payload -OutputLanguage ([string]$config.analyzer.output_language)
-}
-if (-not (Test-HasValue ([string](Get-DataValue -Data $analysis -Name 'output_language')))) {
-    $defaultOutputLanguage = if (Test-HasValue ([string]$config.analyzer.output_language)) { [string]$config.analyzer.output_language } else { 'zh-CN' }
-    $analysis | Add-Member -NotePropertyName output_language -NotePropertyValue $defaultOutputLanguage -Force
-}
+    Write-Utf8Text -Path $analysisJsonPath -Content ($analysis | ConvertTo-Json -Depth 20)
 
-$rendererOutputJsonPath = if (Test-HasValue $artifactDirectory) { Join-Path $artifactDirectory 'run-analyzer.json' } elseif (Test-HasValue $OutputJsonPath) { $OutputJsonPath } else { Join-Path $tempDirectory 'run-analyzer.json' }
-Write-Utf8Text -Path $analysisJsonPath -Content ($analysis | ConvertTo-Json -Depth 20)
+    $script:AnalyzerCurrentStep = 'note_render'
+    $targetFolder = if ($analysisMode -eq 'analyze') { [string]$config.analyzer.default_analyze_folder } else { [string]$config.analyzer.default_learn_folder }
+    if (-not (Test-HasValue $targetFolder)) { $targetFolder = if ($analysisMode -eq 'analyze') { Zh '\u7206\u6b3e\u62c6\u89e3' } else { 'Insights' } }
+    $rendererOutputJsonPath = Join-Path $artifactDirectory 'run-analyzer.json'
+    $args = @((Join-Path $PSScriptRoot 'render_breakdown_note.py'), '--analysis-json', $analysisJsonPath, '--folder', $targetFolder, '--output-json', $rendererOutputJsonPath)
+    if (Test-HasValue $resolvedVaultPath) { $args += @('--vault-path', $resolvedVaultPath) }
+    if ($DryRun) { $args += '--dry-run' }
+    $rendererOutput = & python @args 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        $detail = (($rendererOutput | Out-String).Trim())
+        throw "render_breakdown_note.py failed with exit code $LASTEXITCODE. Details: $detail"
+    }
 
-$targetFolder = if ($analysisMode -eq 'analyze') { [string]$config.analyzer.default_analyze_folder } else { [string]$config.analyzer.default_learn_folder }
-if (-not (Test-HasValue $targetFolder)) { $targetFolder = if ($analysisMode -eq 'analyze') { '爆款拆解' } else { 'Insights' } }
+    $rendererResult = ConvertFrom-JsonCompat -Json (Read-Utf8Text -Path $rendererOutputJsonPath) -Depth 100
+    $result = [pscustomobject]@{
+        success = $true
+        dry_run = [bool]$DryRun
+        analysis_mode = $analysisMode
+        analysis_status = [string]$rendererResult.analysis_status
+        title = [string]$rendererResult.title
+        platform = [string]$payload.platform
+        content_type = [string]$payload.content_type
+        provider = if ($null -ne $analysis.PSObject.Properties['provider']) { [string]$analysis.provider } else { 'mock' }
+        model = [string]$rendererResult.model
+        output_language = [string]$rendererResult.output_language
+        output_folder = [string]$rendererResult.folder
+        analyzer_payload_path = $payloadJsonPath
+        analysis_input_path = $analysisJsonPath
+        analyzer_payload_warning_count = @($payload.payload_warnings).Count
+        debug_directory = $artifactDirectory
+        support_bundle_path = Join-Path $artifactDirectory 'support-bundle'
+    }
+    if (Test-HasValue ([string]$rendererResult.note_path)) { $result | Add-Member -NotePropertyName note_path -NotePropertyValue ([string]$rendererResult.note_path) -Force }
+    $result = Add-AnalyzerFinalStatusFields -Result $result
 
-$rendererArguments = @($rendererScriptPath, '--analysis-json', $analysisJsonPath, '--folder', $targetFolder, '--output-json', $rendererOutputJsonPath)
-if (Test-HasValue $resolvedVaultPath) { $rendererArguments += @('--vault-path', $resolvedVaultPath) }
-if ($DryRun) { $rendererArguments += '--dry-run' }
-& $pythonCommand @rendererArguments | Out-Null
-if ($LASTEXITCODE -ne 0) { throw "render_breakdown_note.py failed with exit code $LASTEXITCODE." }
-
-$rendererResult = ConvertFrom-JsonCompat -Json (Read-Utf8Text -Path $rendererOutputJsonPath) -Depth 100
-$result = [ordered]@{
-    success = $true
-    dry_run = [bool]$DryRun
-    analysis_mode = $analysisMode
-    analysis_status = [string]$rendererResult.analysis_status
-    title = [string]$rendererResult.title
-    platform = [string]$payload.platform
-    content_type = [string]$payload.content_type
-    source_note_path = $resolvedNotePath
-    capture_json_path = $resolvedCaptureJsonPath
-    source_url = [string]$payload.source_url
-    normalized_url = [string]$payload.normalized_url
-    capture_id = [string]$payload.capture_id
-    model = [string]$rendererResult.model
-    provider = if ($null -ne $analysis.PSObject.Properties['provider']) { [string]$analysis.provider } else { if (Test-RealLlmConfigured -Config $config) { [string]$config.llm.provider } else { 'mock' } }
-    provider_reported_model = if ($null -ne $analysis.PSObject.Properties['provider_reported_model']) { [string]$analysis.provider_reported_model } else { '' }
-    prompt_template = [string]$rendererResult.prompt_template
-    output_contract_version = [string]$rendererResult.output_contract_version
-    output_language = [string]$rendererResult.output_language
-    output_folder = [string]$rendererResult.folder
-    output_file_name = [string]$rendererResult.file_name
-    note_preview = [string]$rendererResult.note_body
-    vault_path = $resolvedVaultPath
-    analyzer_payload_path = $payloadJsonPath
-    analyzer_payload_warning_count = @($payload.payload_warnings).Count
-}
-if (Test-HasValue ([string]$rendererResult.note_path)) {
-    $result.note_path = [string]$rendererResult.note_path
-}
-
-if (Test-HasValue $artifactDirectory) {
-    $result.debug_directory = $artifactDirectory
-    $result.support_bundle_path = Join-Path $artifactDirectory 'support-bundle'
+    $supportBundleDirectory = New-Directory -Path $result.support_bundle_path
+    $summary = (Get-AnalyzerSummaryLines -Result $result) -join "`r`n"
     Write-Utf8Text -Path $rendererOutputJsonPath -Content (($result | ConvertTo-Json -Depth 20))
-
-    $summary = @(
-        '=== Analyzer Summary ==='
-        "mode     : $($result.analysis_mode)"
-        "platform : $($result.platform)"
-        "title    : $($result.title)"
-        "status   : $($result.analysis_status)"
-        "provider : $($result.provider)"
-        "model    : $($result.model)"
-        "payload  : $($result.analyzer_payload_path)"
-        "warnings : $($result.analyzer_payload_warning_count)"
-        "note     : $(if ($null -ne $result.PSObject.Properties['note_path']) { $result.note_path } else { '' })"
-        "share    : $($result.support_bundle_path)"
-    ) -join "`r`n"
     Write-Utf8Text -Path (Join-Path $artifactDirectory 'run-analyzer-summary.txt') -Content $summary
+    Write-Utf8Text -Path (Join-Path $supportBundleDirectory 'run-analyzer.json') -Content (((Sanitize-Value -Value $result -VaultPath $resolvedVaultPath) | ConvertTo-Json -Depth 20))
+    Write-Utf8Text -Path (Join-Path $supportBundleDirectory 'run-analyzer-summary.txt') -Content (($summary -replace [regex]::Escape($resolvedVaultPath), '<vault-root>'))
+    if (Test-ExistingPath $payloadJsonPath) { Write-Utf8Text -Path (Join-Path $supportBundleDirectory 'analyzer-payload.json') -Content (((Sanitize-Value -Value $payload -VaultPath $resolvedVaultPath) | ConvertTo-Json -Depth 20)) }
+    if (Test-ExistingPath $analysisJsonPath) { Write-Utf8Text -Path (Join-Path $supportBundleDirectory 'analysis-input.json') -Content (((Sanitize-Value -Value (ConvertFrom-JsonCompat -Json (Read-Utf8Text -Path $analysisJsonPath) -Depth 100) -VaultPath $resolvedVaultPath) | ConvertTo-Json -Depth 20)) }
+    if (Test-ExistingPath $llmRequestJsonPath) { Write-Utf8Text -Path (Join-Path $supportBundleDirectory 'llm-request.json') -Content (((Sanitize-Value -Value (ConvertFrom-JsonCompat -Json (Read-Utf8Text -Path $llmRequestJsonPath) -Depth 100) -VaultPath $resolvedVaultPath) | ConvertTo-Json -Depth 20)) }
+    if (Test-ExistingPath $llmResponseJsonPath) { Write-Utf8Text -Path (Join-Path $supportBundleDirectory 'llm-response.json') -Content (((Sanitize-Value -Value (ConvertFrom-JsonCompat -Json (Read-Utf8Text -Path $llmResponseJsonPath) -Depth 100) -VaultPath $resolvedVaultPath) | ConvertTo-Json -Depth 20)) }
 
-    $supportBundleDirectory = New-Directory -Path (Join-Path $artifactDirectory 'support-bundle')
-    $sanitizedResultObject = Sanitize-Value -Value ([pscustomobject]$result) -VaultPath $resolvedVaultPath
-    $sanitizedJson = $sanitizedResultObject | ConvertTo-Json -Depth 20
-    $sanitizedSummary = Mask-TextValue -Text $summary -Value $resolvedVaultPath -Mask '<vault-root>'
-    Write-Utf8Text -Path (Join-Path $supportBundleDirectory 'run-analyzer.json') -Content $sanitizedJson
-    Write-Utf8Text -Path (Join-Path $supportBundleDirectory 'run-analyzer-summary.txt') -Content $sanitizedSummary
-    if (Test-Path $payloadJsonPath) {
-        $payloadRaw = Read-Utf8Text -Path $payloadJsonPath
-        Write-Utf8Text -Path (Join-Path $artifactDirectory 'analyzer-payload.json') -Content $payloadRaw
-        $sanitizedPayloadObject = Sanitize-Value -Value $payload -VaultPath $resolvedVaultPath
-        $sanitizedPayload = $sanitizedPayloadObject | ConvertTo-Json -Depth 20
-        Write-Utf8Text -Path (Join-Path $supportBundleDirectory 'analyzer-payload.json') -Content $sanitizedPayload
+    Write-AnalyzerSummary -Result $result
+    $json = $result | ConvertTo-Json -Depth 20
+    if (Test-HasValue $OutputJsonPath) { Write-Utf8Text -Path $OutputJsonPath -Content $json }
+    $json
+} catch {
+    if (-not (Test-HasValue $artifactDirectory)) {
+        $fallbackDebugDirectory = if (Test-HasValue $resolvedDebugDirectory) { $resolvedDebugDirectory } else { Join-Path $PSScriptRoot "..\\.tmp\\run-analyzer\\$(Get-Date -Format 'yyyyMMdd-HHmmss')" }
+        $artifactDirectory = New-Directory -Path $fallbackDebugDirectory
     }
-    if (Test-Path $llmRequestJsonPath) {
-        $requestRaw = Read-Utf8Text -Path $llmRequestJsonPath
-        Write-Utf8Text -Path (Join-Path $artifactDirectory 'llm-request.json') -Content $requestRaw
-        $sanitizedRequestObject = Sanitize-Value -Value (ConvertFrom-JsonCompat -Json $requestRaw -Depth 100) -VaultPath $resolvedVaultPath
-        Write-Utf8Text -Path (Join-Path $supportBundleDirectory 'llm-request.json') -Content ($sanitizedRequestObject | ConvertTo-Json -Depth 20)
+    $failure = [pscustomobject]@{
+        success = $false
+        dry_run = [bool]$DryRun
+        analysis_mode = if (Test-HasValue $Mode) { $Mode } else { '' }
+        analysis_status = 'failed'
+        failed_step = $script:AnalyzerCurrentStep
+        title = ''
+        platform = ''
+        provider = ''
+        model = ''
+        output_language = ''
+        output_folder = ''
+        analysis_input_path = ''
+        debug_directory = $artifactDirectory
+        support_bundle_path = Join-Path $artifactDirectory 'support-bundle'
+        error_message = $_.Exception.Message
+        error_message_zh = ('Analyzer [{0}] {1}{2}' -f $script:AnalyzerCurrentStep, (Zh '\u5931\u8d25\uff1a'), $_.Exception.Message)
     }
-    if (Test-Path $llmResponseJsonPath) {
-        $responseRaw = Read-Utf8Text -Path $llmResponseJsonPath
-        Write-Utf8Text -Path (Join-Path $artifactDirectory 'llm-response.json') -Content $responseRaw
-        $sanitizedResponseObject = Sanitize-Value -Value (ConvertFrom-JsonCompat -Json $responseRaw -Depth 100) -VaultPath $resolvedVaultPath
-        Write-Utf8Text -Path (Join-Path $supportBundleDirectory 'llm-response.json') -Content ($sanitizedResponseObject | ConvertTo-Json -Depth 20)
-    }
+    $failure = Add-AnalyzerFinalStatusFields -Result $failure
+    $supportBundleDirectory = New-Directory -Path $failure.support_bundle_path
+    $summary = (Get-AnalyzerSummaryLines -Result $failure) -join "`r`n"
+    Write-Utf8Text -Path (Join-Path $artifactDirectory 'run-analyzer.json') -Content (($failure | ConvertTo-Json -Depth 20))
+    Write-Utf8Text -Path (Join-Path $artifactDirectory 'run-analyzer-summary.txt') -Content $summary
+    Write-Utf8Text -Path (Join-Path $supportBundleDirectory 'run-analyzer.json') -Content (((Sanitize-Value -Value $failure -VaultPath $resolvedVaultPath) | ConvertTo-Json -Depth 20))
+    Write-Utf8Text -Path (Join-Path $supportBundleDirectory 'run-analyzer-summary.txt') -Content (($summary -replace [regex]::Escape($resolvedVaultPath), '<vault-root>'))
+    if (Test-ExistingPath $payloadJsonPath) { Write-Utf8Text -Path (Join-Path $supportBundleDirectory 'analyzer-payload.json') -Content (((Sanitize-Value -Value (ConvertFrom-JsonCompat -Json (Read-Utf8Text -Path $payloadJsonPath) -Depth 100) -VaultPath $resolvedVaultPath) | ConvertTo-Json -Depth 20)) }
+    if (Test-ExistingPath $analysisJsonPath) { Write-Utf8Text -Path (Join-Path $supportBundleDirectory 'analysis-input.json') -Content (((Sanitize-Value -Value (ConvertFrom-JsonCompat -Json (Read-Utf8Text -Path $analysisJsonPath) -Depth 100) -VaultPath $resolvedVaultPath) | ConvertTo-Json -Depth 20)) }
+    if (Test-ExistingPath $llmRequestJsonPath) { Write-Utf8Text -Path (Join-Path $supportBundleDirectory 'llm-request.json') -Content (((Sanitize-Value -Value (ConvertFrom-JsonCompat -Json (Read-Utf8Text -Path $llmRequestJsonPath) -Depth 100) -VaultPath $resolvedVaultPath) | ConvertTo-Json -Depth 20)) }
+    if (Test-ExistingPath $llmResponseJsonPath) { Write-Utf8Text -Path (Join-Path $supportBundleDirectory 'llm-response.json') -Content (((Sanitize-Value -Value (ConvertFrom-JsonCompat -Json (Read-Utf8Text -Path $llmResponseJsonPath) -Depth 100) -VaultPath $resolvedVaultPath) | ConvertTo-Json -Depth 20)) }
+    Write-AnalyzerSummary -Result $failure
+    throw
 }
-
-$resultObject = [pscustomobject]$result
-Write-AnalyzerSummary -Result $resultObject
-$json = $resultObject | ConvertTo-Json -Depth 20
-if (Test-HasValue $OutputJsonPath -and -not (Test-HasValue $artifactDirectory)) {
-    Write-Utf8Text -Path $OutputJsonPath -Content $json
-}
-$json

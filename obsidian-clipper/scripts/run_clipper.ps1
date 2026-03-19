@@ -76,6 +76,34 @@ function Get-ResolvedVaultPath {
     ''
 }
 
+function Resolve-ConfigDirectoryPath {
+    param([string]$ConfiguredPath, [string]$BasePath)
+    if (-not (Test-HasValue $ConfiguredPath)) { return '' }
+    if ([System.IO.Path]::IsPathRooted($ConfiguredPath)) { return $ConfiguredPath }
+    Join-Path $BasePath $ConfiguredPath
+}
+
+function Get-DefaultDebugDirectory {
+    param($Config, [string]$RequestedDebugDirectory)
+    if (Test-HasValue $RequestedDebugDirectory) { return $RequestedDebugDirectory }
+    $configured = ''
+    if ($null -ne $Config.clipper -and $null -ne $Config.clipper.PSObject.Properties['default_debug_directory'] -and (Test-HasValue ([string]$Config.clipper.default_debug_directory))) {
+        $configured = [string]$Config.clipper.default_debug_directory
+    }
+    $clipperRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
+    if (Test-HasValue $configured) {
+        $base = Resolve-ConfigDirectoryPath -ConfiguredPath $configured -BasePath $clipperRoot
+    } else {
+        $base = Join-Path $clipperRoot '.tmp\run-clipper'
+    }
+    Join-Path $base (Get-Date -Format 'yyyyMMdd-HHmmss')
+}
+
+function Zh {
+    param([string]$Escaped)
+    [regex]::Unescape($Escaped)
+}
+
 function Get-DataValue {
     param($Data, [string]$Name)
     if ($null -eq $Data) { return $null }
@@ -100,6 +128,16 @@ function Get-StringValue {
     $text = [string]$value
     if (Test-HasValue $text) { return $text }
     $DefaultValue
+}
+
+function Set-ObjectField {
+    param($Object, [string]$Name, $Value)
+    if ($Object -is [System.Collections.IDictionary]) {
+        $Object[$Name] = $Value
+        return $Object
+    }
+    $Object | Add-Member -NotePropertyName $Name -NotePropertyValue $Value -Force
+    $Object
 }
 
 function Get-StringArrayValue {
@@ -240,6 +278,7 @@ function Get-QueryParameterValue {
 function Sanitize-Url {
     param([string]$Url)
     if (-not (Test-HasValue $Url)) { return $Url }
+    $Url = Get-CanonicalShareUrl -Url $Url
     try {
         $uri = [System.Uri]$Url
     } catch {
@@ -252,6 +291,10 @@ function Sanitize-Url {
         $vid = Get-QueryParameterValue -Query $uri.Query -Name 'vid'
         if (Test-HasValue $vid) {
             return "https://www.douyin.com/video/$vid"
+        }
+        $modalId = Get-QueryParameterValue -Query $uri.Query -Name 'modal_id'
+        if (Test-HasValue $modalId) {
+            return "https://www.douyin.com/video/$modalId"
         }
         if ($path -match '/video/([0-9]+)') {
             return "https://www.douyin.com/video/$($Matches[1])"
@@ -350,13 +393,15 @@ function Write-SanitizedJsonFile {
 function Get-ArtifactDirectory {
     param(
         [string]$ExplicitDirectory,
-        [string]$JsonPath
+        [string]$JsonPath,
+        [string]$DefaultDirectory
     )
     if (Test-HasValue $ExplicitDirectory) { return (New-Directory -Path $ExplicitDirectory) }
     if (Test-HasValue $JsonPath) {
         $parent = Split-Path -Parent $JsonPath
         if (Test-HasValue $parent) { return (New-Directory -Path $parent) }
     }
+    if (Test-HasValue $DefaultDirectory) { return (New-Directory -Path $DefaultDirectory) }
     ''
 }
 function Resolve-AbsoluteUrl {
@@ -729,6 +774,24 @@ function Get-MarkdownDisplayTitle {
     $Title
 }
 
+function Get-CleanNoteTitle {
+    param([string]$Title)
+
+    if (-not (Test-HasValue $Title)) { return 'Untitled Clip' }
+
+    $cleaned = [string]$Title
+    $cleaned = [regex]::Replace($cleaned, 'https?://\S+', ' ', 'IgnoreCase')
+    $cleaned = [regex]::Replace($cleaned, '@\S+', ' ')
+    $cleaned = [regex]::Replace($cleaned, '#\S+', ' ')
+    $cleaned = [regex]::Replace($cleaned, '\s+', ' ').Trim()
+    $cleaned = [regex]::Replace($cleaned, '^[\s,.;:!?@\-_/]+', '')
+    $cleaned = [regex]::Replace($cleaned, '[\s,.;:!?@\-_/]+$', '')
+    $cleaned = [regex]::Replace($cleaned, '\s+', ' ').Trim()
+
+    if (-not (Test-HasValue $cleaned)) { return 'Untitled Clip' }
+    return $cleaned
+}
+
 function Test-LooksLikeLoginPrompt {
     param([string]$Text)
     if (-not (Test-HasValue $Text)) { return $false }
@@ -742,9 +805,10 @@ function Build-ClippingNote {
     $captured = Get-Date -Format 'yyyy-MM-dd'
     $folder = if (Test-HasValue $CategoryHint) { $CategoryHint } elseif (Test-HasValue $Config.clipper.default_folder) { [string]$Config.clipper.default_folder } else { 'Clippings' }
     $title = [string]$Capture.title
-    $displayTitle = Get-MarkdownDisplayTitle -Title $title
+    $noteTitle = Get-CleanNoteTitle -Title $title
+    $displayTitle = Get-MarkdownDisplayTitle -Title $noteTitle
     $prefixDate = if ($Config.clipper.prefix_date -eq $true) { "$captured " } else { '' }
-    $fileName = Get-SafeFileName "$prefixDate$title.md"
+    $fileName = Get-SafeFileName "$prefixDate$noteTitle.md"
     $tags = @($Capture.tags | Where-Object { Test-HasValue $_ } | Select-Object -Unique)
     if ($tags.Count -eq 0) { $tags = @('clipped') }
 
@@ -977,9 +1041,52 @@ function Write-NoteToVault {
     $targetPath
 }
 
+function Add-RunFinalStatusFields {
+    param($Result)
+    $downloadStatus = Get-StringValue -Data $Result -Name 'download_status' -DefaultValue ''
+    $failedStep = Get-StringValue -Data $Result -Name 'failed_step' -DefaultValue ''
+    $errors = @()
+    $resultErrors = Get-DataValue -Data $Result -Name 'errors'
+    if ($null -ne $resultErrors) { $errors = @($resultErrors) }
+
+    if (-not [bool]$Result.success) {
+        Set-ObjectField -Object $Result -Name 'final_run_status' -Value 'FAILED' | Out-Null
+        Set-ObjectField -Object $Result -Name 'final_run_status_zh' -Value (Zh '\u5931\u8d25') | Out-Null
+        if (-not (Test-HasValue $failedStep)) { Set-ObjectField -Object $Result -Name 'failed_step' -Value 'unknown' | Out-Null }
+        Set-ObjectField -Object $Result -Name 'final_message_en' -Value (Get-StringValue -Data $Result -Name 'error_message' -DefaultValue 'The clipper run failed.') | Out-Null
+        Set-ObjectField -Object $Result -Name 'final_message_zh' -Value (Get-StringValue -Data $Result -Name 'error_message_zh' -DefaultValue (Zh '\u672c\u6b21 Clipper \u8fd0\u884c\u5931\u8d25\u3002')) | Out-Null
+        return $Result
+    }
+
+    if ([bool]$Result.dry_run) {
+        Set-ObjectField -Object $Result -Name 'final_run_status' -Value 'SUCCESS' | Out-Null
+        Set-ObjectField -Object $Result -Name 'final_run_status_zh' -Value (Zh '\u6210\u529f') | Out-Null
+        Set-ObjectField -Object $Result -Name 'final_message_en' -Value 'Dry run completed successfully.' | Out-Null
+        Set-ObjectField -Object $Result -Name 'final_message_zh' -Value (Zh 'DryRun \u5df2\u6210\u529f\u5b8c\u6210\u3002') | Out-Null
+        return $Result
+    }
+
+    if ($downloadStatus -eq 'failed') {
+        Set-ObjectField -Object $Result -Name 'final_run_status' -Value 'FAILED' | Out-Null
+        Set-ObjectField -Object $Result -Name 'final_run_status_zh' -Value (Zh '\u5931\u8d25') | Out-Null
+        if (-not (Test-HasValue $failedStep)) { Set-ObjectField -Object $Result -Name 'failed_step' -Value 'download' | Out-Null }
+        $firstError = if ($errors.Count -gt 0) { [string]$errors[0] } else { 'Video download failed.' }
+        Set-ObjectField -Object $Result -Name 'final_message_en' -Value $firstError | Out-Null
+        Set-ObjectField -Object $Result -Name 'final_message_zh' -Value ('{0}{1}' -f (Zh '\u89c6\u9891\u4e0b\u8f7d\u5931\u8d25\uff1a'), $firstError) | Out-Null
+        return $Result
+    }
+
+    Set-ObjectField -Object $Result -Name 'final_run_status' -Value 'SUCCESS' | Out-Null
+    Set-ObjectField -Object $Result -Name 'final_run_status_zh' -Value (Zh '\u6210\u529f') | Out-Null
+    Set-ObjectField -Object $Result -Name 'final_message_en' -Value 'The clipper run completed successfully.' | Out-Null
+    Set-ObjectField -Object $Result -Name 'final_message_zh' -Value (Zh '\u672c\u6b21 Clipper \u8fd0\u884c\u6210\u529f\u5b8c\u6210\u3002') | Out-Null
+    $Result
+}
+
 function Get-RunSummaryLines {
     param($Result)
     $lines = New-Object System.Collections.Generic.List[string]
+    $failedStep = Get-StringValue -Data $Result -Name 'failed_step' -DefaultValue ''
     $lines.Add('=== Clipper Summary ===')
     $lines.Add("route    : $($Result.route)")
     $lines.Add("platform : $($Result.platform)")
@@ -987,6 +1094,12 @@ function Get-RunSummaryLines {
     $lines.Add("capture  : $($Result.capture_id)")
     $lines.Add("download : $($Result.download_status) / $($Result.download_method)")
     $lines.Add("video    : $($Result.video_path)")
+    if ($null -ne $Result.PSObject.Properties['final_run_status']) { $lines.Add("result   : $($Result.final_run_status)") }
+    if ($null -ne $Result.PSObject.Properties['final_run_status_zh']) { $lines.Add(("{0}     : {1}" -f (Zh '\u7ed3\u679c'), $Result.final_run_status_zh)) }
+    if (Test-HasValue $failedStep) {
+        $lines.Add("step     : $failedStep")
+        $lines.Add(("{0}     : {1}" -f (Zh '\u6b65\u9aa4'), $failedStep))
+    }
     if ($null -ne $Result.PSObject.Properties['note_path']) {
         $lines.Add("note     : $($Result.note_path)")
     }
@@ -996,6 +1109,10 @@ function Get-RunSummaryLines {
     if ($null -ne $Result.PSObject.Properties['errors'] -and @($Result.errors).Count -gt 0) {
         $lines.Add("error    : $((@($Result.errors) | Select-Object -First 1))")
     }
+    if ($null -ne $Result.PSObject.Properties['final_message_en']) { $lines.Add("detail_en: $($Result.final_message_en)") }
+    if ($null -ne $Result.PSObject.Properties['final_message_zh']) { $lines.Add(("{0}     : {1}" -f (Zh '\u8be6\u60c5'), $Result.final_message_zh)) }
+    $lines.Add('issue_en : Upload support-bundle or the whole debug directory to your issue for troubleshooting and updates.')
+    $lines.Add(("{0} : {1}" -f (Zh '\u95ee\u9898\u4e0a\u62a5'), (Zh '\u8bf7\u5c06 support-bundle \u6216\u6574\u4e2a debug \u76ee\u5f55\u4e0a\u4f20\u5230\u4f60\u7684 issue\uff0c\u4fbf\u4e8e\u6392\u67e5\u548c\u66f4\u65b0\u3002')))
     return @($lines)
 }
 
@@ -1005,7 +1122,7 @@ function Write-RunSummary {
     Write-Host ''
     Write-Host $lines[0] -ForegroundColor Cyan
     foreach ($line in @($lines | Select-Object -Skip 1)) {
-        if ($line -like 'error    :*') {
+        if ($line -like 'error    :*' -or $line -like 'result   : FAILED' -or $line -like '*失败' -or $line -like 'step     :*') {
             Write-Host $line -ForegroundColor Yellow
         } else {
             Write-Host $line
@@ -1014,71 +1131,156 @@ function Write-RunSummary {
     Write-Host ''
 }
 
-if (-not (Test-HasValue $ConfigPath)) {
-    if (Test-Path (Join-Path $PSScriptRoot '..\references\local-config.json')) { $ConfigPath = Join-Path $PSScriptRoot '..\references\local-config.json' } else { $ConfigPath = Join-Path $PSScriptRoot '..\references\local-config.example.json' }
-}
-$resolvedSourceInput = Resolve-SourceInput -InputText $SourceUrl
-$rawSourceInput = $SourceUrl
-$SourceUrl = $resolvedSourceInput.source_url
-$config = Get-Config -Path $ConfigPath
-$resolvedVaultPath = Get-ResolvedVaultPath -Config $config -VaultPath $VaultPath
-if (-not $DryRun -and -not (Test-HasValue $resolvedVaultPath)) { throw 'No vault path provided. Supply -VaultPath or set obsidian.vault_path in config.' }
-if (Test-HasValue $DetectionJsonPath) {
-    if (-not (Test-Path $DetectionJsonPath)) { throw "Detection JSON not found: $DetectionJsonPath" }
-    $detection = ConvertFrom-JsonCompat -Json (Read-Utf8Text -Path $DetectionJsonPath) -Depth 64
-} else {
-    $detection = Get-Detection -Url $SourceUrl
-}
-if (Test-HasValue $CaptureJsonPath) {
-    if (-not (Test-Path $CaptureJsonPath)) { throw "Capture JSON not found: $CaptureJsonPath" }
-    $capture = ConvertFrom-JsonCompat -Json (Read-Utf8Text -Path $CaptureJsonPath) -Depth 100
-} else {
-    $capture = Invoke-CaptureRoute -Config $config -Detection $detection -Url $SourceUrl -TitleHint $TitleHint -ResolvedVaultPath $resolvedVaultPath -DryRun:$DryRun
-}
-$note = Invoke-NoteRenderer -Config $config -Detection $detection -Capture $capture -SourceUrl $SourceUrl -CategoryHint $CategoryHint -ResolvedVaultPath $resolvedVaultPath -DryRun:$DryRun
-$captureMetadata = Get-DataValue -Data $capture -Name 'metadata'
-$captureIdForResult = Get-StringValue -Data $capture -Name 'capture_id' -DefaultValue ''
-if (-not (Test-HasValue $captureIdForResult) -and $null -ne $captureMetadata) { $captureIdForResult = Get-StringValue -Data $captureMetadata -Name 'capture_id' -DefaultValue '' }
-$downloadStatusForResult = Get-StringValue -Data $capture -Name 'download_status' -DefaultValue ''
-if (-not (Test-HasValue $downloadStatusForResult) -and $null -ne $captureMetadata) { $downloadStatusForResult = Get-StringValue -Data $captureMetadata -Name 'download_status' -DefaultValue '' }
-$downloadMethodForResult = Get-StringValue -Data $capture -Name 'download_method' -DefaultValue ''
-if (-not (Test-HasValue $downloadMethodForResult) -and $null -ne $captureMetadata) { $downloadMethodForResult = Get-StringValue -Data $captureMetadata -Name 'download_method' -DefaultValue '' }
-$videoPathForResult = Get-StringValue -Data $capture -Name 'video_path' -DefaultValue ''
-if (-not (Test-HasValue $videoPathForResult) -and $null -ne $captureMetadata) { $videoPathForResult = Get-StringValue -Data $captureMetadata -Name 'video_path' -DefaultValue '' }
-$sidecarPathForResult = Get-StringValue -Data $capture -Name 'sidecar_path' -DefaultValue ''
-if (-not (Test-HasValue $sidecarPathForResult) -and $null -ne $captureMetadata) { $sidecarPathForResult = Get-StringValue -Data $captureMetadata -Name 'sidecar_path' -DefaultValue '' }
-$result = [ordered]@{ success=$true; dry_run=[bool]$DryRun; title=$note.title; folder=$note.folder; file_name=$note.file_name; route=$detection.route; platform=$detection.platform; content_type=$detection.content_type; capture_id=$captureIdForResult; download_status=$downloadStatusForResult; download_method=$downloadMethodForResult; video_path=$videoPathForResult; sidecar_path=$sidecarPathForResult; tags=$note.tags; note_preview=$note.note_body; vault_path = $resolvedVaultPath; source_url = $SourceUrl; source_input_kind = $resolvedSourceInput.input_kind; source_url_extracted = [bool]$resolvedSourceInput.extraction_applied }
-$captureErrors = Get-DataValue -Data $capture -Name 'errors'
-if ($null -ne $captureErrors -and @($captureErrors).Count -gt 0) { $result.errors = @($captureErrors) }
-$notePathFromRenderer = Get-StringValue -Data $note -Name 'note_path' -DefaultValue ''
-if (Test-HasValue $notePathFromRenderer) { $result.note_path = $notePathFromRenderer }
-$artifactDirectory = Get-ArtifactDirectory -ExplicitDirectory $DebugDirectory -JsonPath $OutputJsonPath
-if (Test-HasValue $artifactDirectory) {
-    $result.debug_directory = $artifactDirectory
-    $result.support_bundle_path = Join-Path $artifactDirectory 'support-bundle'
-}
+$resolvedConfigPath = ''
+$config = $null
+$resolvedVaultPath = ''
+$artifactDirectory = ''
+$defaultDebugDirectory = ''
+$script:ClipperCurrentStep = 'startup'
 
-$resultObject = [pscustomobject]$result
-$summaryLines = Get-RunSummaryLines -Result $resultObject
-if (Test-HasValue $artifactDirectory) {
-    $rawSummaryPath = Join-Path $artifactDirectory 'run-clipper-summary.txt'
-    Write-Utf8Text -Path $rawSummaryPath -Content ($summaryLines -join "`r`n")
+try {
+    $script:ClipperCurrentStep = 'config_load'
+    if (-not (Test-HasValue $ConfigPath)) {
+        if (Test-Path (Join-Path $PSScriptRoot '..\references\local-config.json')) { $ConfigPath = Join-Path $PSScriptRoot '..\references\local-config.json' } else { $ConfigPath = Join-Path $PSScriptRoot '..\references\local-config.example.json' }
+    }
+    $resolvedConfigPath = $ConfigPath
+    $config = Get-Config -Path $resolvedConfigPath
+    $resolvedVaultPath = Get-ResolvedVaultPath -Config $config -VaultPath $VaultPath
+    $defaultDebugDirectory = Get-DefaultDebugDirectory -Config $config -RequestedDebugDirectory $DebugDirectory
 
-    $rawJsonPath = if (Test-HasValue $OutputJsonPath) { $OutputJsonPath } else { Join-Path $artifactDirectory 'run-clipper.json' }
+    $script:ClipperCurrentStep = 'input_resolve'
+    $resolvedSourceInput = Resolve-SourceInput -InputText $SourceUrl
+    $rawSourceInput = $SourceUrl
+    $SourceUrl = $resolvedSourceInput.source_url
+
+    $script:ClipperCurrentStep = 'debug_prepare'
+    $artifactDirectory = Get-ArtifactDirectory -ExplicitDirectory $DebugDirectory -JsonPath $OutputJsonPath -DefaultDirectory $defaultDebugDirectory
+
+    if (-not $DryRun -and -not (Test-HasValue $resolvedVaultPath)) { throw 'No vault path provided. Supply -VaultPath or set obsidian.vault_path in config.' }
+
+    $script:ClipperCurrentStep = 'detect'
+    if (Test-HasValue $DetectionJsonPath) {
+        if (-not (Test-Path $DetectionJsonPath)) { throw "Detection JSON not found: $DetectionJsonPath" }
+        $detection = ConvertFrom-JsonCompat -Json (Read-Utf8Text -Path $DetectionJsonPath) -Depth 64
+    } else {
+        $detection = Get-Detection -Url $SourceUrl
+    }
+
+    $script:ClipperCurrentStep = 'capture'
+    if (Test-HasValue $CaptureJsonPath) {
+        if (-not (Test-Path $CaptureJsonPath)) { throw "Capture JSON not found: $CaptureJsonPath" }
+        $capture = ConvertFrom-JsonCompat -Json (Read-Utf8Text -Path $CaptureJsonPath) -Depth 100
+    } else {
+        $capture = Invoke-CaptureRoute -Config $config -Detection $detection -Url $SourceUrl -TitleHint $TitleHint -ResolvedVaultPath $resolvedVaultPath -DryRun:$DryRun
+    }
+
+    $script:ClipperCurrentStep = 'note_render'
+    $note = Invoke-NoteRenderer -Config $config -Detection $detection -Capture $capture -SourceUrl $SourceUrl -CategoryHint $CategoryHint -ResolvedVaultPath $resolvedVaultPath -DryRun:$DryRun
+    $captureMetadata = Get-DataValue -Data $capture -Name 'metadata'
+    $captureIdForResult = Get-StringValue -Data $capture -Name 'capture_id' -DefaultValue ''
+    if (-not (Test-HasValue $captureIdForResult) -and $null -ne $captureMetadata) { $captureIdForResult = Get-StringValue -Data $captureMetadata -Name 'capture_id' -DefaultValue '' }
+    $downloadStatusForResult = Get-StringValue -Data $capture -Name 'download_status' -DefaultValue ''
+    if (-not (Test-HasValue $downloadStatusForResult) -and $null -ne $captureMetadata) { $downloadStatusForResult = Get-StringValue -Data $captureMetadata -Name 'download_status' -DefaultValue '' }
+    $downloadMethodForResult = Get-StringValue -Data $capture -Name 'download_method' -DefaultValue ''
+    if (-not (Test-HasValue $downloadMethodForResult) -and $null -ne $captureMetadata) { $downloadMethodForResult = Get-StringValue -Data $captureMetadata -Name 'download_method' -DefaultValue '' }
+    $videoPathForResult = Get-StringValue -Data $capture -Name 'video_path' -DefaultValue ''
+    if (-not (Test-HasValue $videoPathForResult) -and $null -ne $captureMetadata) { $videoPathForResult = Get-StringValue -Data $captureMetadata -Name 'video_path' -DefaultValue '' }
+    $sidecarPathForResult = Get-StringValue -Data $capture -Name 'sidecar_path' -DefaultValue ''
+    if (-not (Test-HasValue $sidecarPathForResult) -and $null -ne $captureMetadata) { $sidecarPathForResult = Get-StringValue -Data $captureMetadata -Name 'sidecar_path' -DefaultValue '' }
+
+    $result = [ordered]@{
+        success = $true
+        dry_run = [bool]$DryRun
+        title = $note.title
+        folder = $note.folder
+        file_name = $note.file_name
+        route = $detection.route
+        platform = $detection.platform
+        content_type = $detection.content_type
+        capture_id = $captureIdForResult
+        download_status = $downloadStatusForResult
+        download_method = $downloadMethodForResult
+        video_path = $videoPathForResult
+        sidecar_path = $sidecarPathForResult
+        tags = $note.tags
+        note_preview = $note.note_body
+        vault_path = $resolvedVaultPath
+        source_url = $SourceUrl
+        source_input_kind = $resolvedSourceInput.input_kind
+        source_url_extracted = [bool]$resolvedSourceInput.extraction_applied
+    }
+    $captureErrors = Get-DataValue -Data $capture -Name 'errors'
+    if ($null -ne $captureErrors -and @($captureErrors).Count -gt 0) { $result.errors = @($captureErrors) }
+    $notePathFromRenderer = Get-StringValue -Data $note -Name 'note_path' -DefaultValue ''
+    if (Test-HasValue $notePathFromRenderer) { $result.note_path = $notePathFromRenderer }
+    if (Test-HasValue $artifactDirectory) {
+        $result.debug_directory = $artifactDirectory
+        $result.support_bundle_path = Join-Path $artifactDirectory 'support-bundle'
+    }
+
+    $resultObject = Add-RunFinalStatusFields -Result ([pscustomobject]$result)
+    $summaryLines = Get-RunSummaryLines -Result $resultObject
     $json = $resultObject | ConvertTo-Json -Depth 20
-    Write-Utf8Text -Path $rawJsonPath -Content $json
 
-    $supportBundleDirectory = New-Directory -Path (Join-Path $artifactDirectory 'support-bundle')
-    $sanitizedResult = Get-SanitizedData -Value $resultObject
-    Write-Utf8Text -Path (Join-Path $supportBundleDirectory 'run-clipper.json') -Content (($sanitizedResult | ConvertTo-Json -Depth 20))
-    $sanitizedSummaryLines = @((Get-RunSummaryLines -Result ([pscustomobject]$sanitizedResult)) | ForEach-Object { Sanitize-Text -Text ([string]$_) })
-    Write-Utf8Text -Path (Join-Path $supportBundleDirectory 'run-clipper-summary.txt') -Content ($sanitizedSummaryLines -join "`r`n")
-    $resultObject = [pscustomobject]$result
-} else {
-    $json = $resultObject | ConvertTo-Json -Depth 20
-    if (Test-HasValue $OutputJsonPath) { Write-Utf8Text -Path $OutputJsonPath -Content $json }
+    if (Test-HasValue $artifactDirectory) {
+        Write-Utf8Text -Path (Join-Path $artifactDirectory 'run-clipper-summary.txt') -Content ($summaryLines -join "`r`n")
+        $rawJsonPath = if (Test-HasValue $OutputJsonPath) { $OutputJsonPath } else { Join-Path $artifactDirectory 'run-clipper.json' }
+        Write-Utf8Text -Path $rawJsonPath -Content $json
+
+        $supportBundleDirectory = New-Directory -Path (Join-Path $artifactDirectory 'support-bundle')
+        $sanitizedResult = Get-SanitizedData -Value $resultObject
+        Write-Utf8Text -Path (Join-Path $supportBundleDirectory 'run-clipper.json') -Content (($sanitizedResult | ConvertTo-Json -Depth 20))
+        $sanitizedSummaryLines = @((Get-RunSummaryLines -Result ([pscustomobject]$sanitizedResult)) | ForEach-Object { Sanitize-Text -Text ([string]$_) })
+        Write-Utf8Text -Path (Join-Path $supportBundleDirectory 'run-clipper-summary.txt') -Content ($sanitizedSummaryLines -join "`r`n")
+    } elseif (Test-HasValue $OutputJsonPath) {
+        Write-Utf8Text -Path $OutputJsonPath -Content $json
+    }
+
+    Write-RunSummary -Result $resultObject
+    $json
+} catch {
+    if (-not (Test-HasValue $artifactDirectory)) {
+        $artifactDirectory = Get-ArtifactDirectory -ExplicitDirectory $DebugDirectory -JsonPath $OutputJsonPath -DefaultDirectory $defaultDebugDirectory
+    }
+    $failure = [ordered]@{
+        success = $false
+        dry_run = [bool]$DryRun
+        title = ''
+        folder = ''
+        file_name = ''
+        route = ''
+        platform = ''
+        content_type = ''
+        capture_id = ''
+        download_status = ''
+        download_method = ''
+        video_path = ''
+        vault_path = $resolvedVaultPath
+        source_url = $SourceUrl
+        failed_step = $script:ClipperCurrentStep
+        error_message = $_.Exception.Message
+        error_message_zh = ('Clipper [{0}] {1}{2}' -f $script:ClipperCurrentStep, (Zh '\u5931\u8d25\uff1a'), $_.Exception.Message)
+    }
+    if (Test-HasValue $artifactDirectory) {
+        $failure.debug_directory = $artifactDirectory
+        $failure.support_bundle_path = Join-Path $artifactDirectory 'support-bundle'
+    }
+    $failureObject = Add-RunFinalStatusFields -Result ([pscustomobject]$failure)
+    $summaryLines = Get-RunSummaryLines -Result $failureObject
+    $json = $failureObject | ConvertTo-Json -Depth 20
+
+    if (Test-HasValue $artifactDirectory) {
+        Write-Utf8Text -Path (Join-Path $artifactDirectory 'run-clipper-summary.txt') -Content ($summaryLines -join "`r`n")
+        Write-Utf8Text -Path (Join-Path $artifactDirectory 'run-clipper.json') -Content $json
+        $supportBundleDirectory = New-Directory -Path (Join-Path $artifactDirectory 'support-bundle')
+        $sanitizedFailure = Get-SanitizedData -Value $failureObject
+        Write-Utf8Text -Path (Join-Path $supportBundleDirectory 'run-clipper.json') -Content (($sanitizedFailure | ConvertTo-Json -Depth 20))
+        $sanitizedSummaryLines = @((Get-RunSummaryLines -Result ([pscustomobject]$sanitizedFailure)) | ForEach-Object { Sanitize-Text -Text ([string]$_) })
+        Write-Utf8Text -Path (Join-Path $supportBundleDirectory 'run-clipper-summary.txt') -Content ($sanitizedSummaryLines -join "`r`n")
+    } elseif (Test-HasValue $OutputJsonPath) {
+        Write-Utf8Text -Path $OutputJsonPath -Content $json
+    }
+
+    Write-RunSummary -Result $failureObject
+    throw
 }
-
-Write-RunSummary -Result $resultObject
-if (-not (Test-HasValue $json)) { $json = $resultObject | ConvertTo-Json -Depth 20 }
-$json

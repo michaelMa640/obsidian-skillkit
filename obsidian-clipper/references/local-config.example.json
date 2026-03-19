@@ -23,7 +23,8 @@
     "default_folder": "Clippings",
     "prefix_date": true,
     "default_tag": "clipped",
-    "attachments_root": "Attachments/ShortVideos"
+    "attachments_root": "Attachments/ShortVideos",
+    "default_debug_directory": ".tmp/run-clipper"
   },
   "routes": {
     "article": {

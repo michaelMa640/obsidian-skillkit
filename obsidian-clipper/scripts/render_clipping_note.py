@@ -66,6 +66,38 @@ def safe_file_name(value: str) -> str:
     return sanitized.strip() or "untitled.md"
 
 
+def normalize_inline_spaces(value: str) -> str:
+    return re.sub(r"\s+", " ", string_value(value)).strip()
+
+
+def clean_note_title(raw_title: str) -> str:
+    text = normalize_inline_spaces(raw_title)
+    if not has_value(text):
+        return "未命名剪藏"
+
+    text = re.sub(r"https?://\S+", " ", text, flags=re.IGNORECASE)
+    text = re.sub(r"@\S+", " ", text)
+    text = re.sub(r"#\S+", " ", text)
+
+    removable_phrases = (
+        "视频很长，建议大家收藏",
+        "视频很长,建议大家收藏",
+        "建议大家收藏",
+        "建议收藏",
+        "记得收藏",
+        "先收藏",
+        "值得收藏",
+    )
+    for phrase in removable_phrases:
+        text = text.replace(phrase, " ")
+
+    text = normalize_inline_spaces(text)
+    text = re.sub(r"^[\s,.;:!?，。！？、#@\-_/]+", "", text)
+    text = re.sub(r"[\s,.;:!?，。！？、#@\-_/]+$", "", text)
+    text = normalize_inline_spaces(text)
+    return text or "未命名剪藏"
+
+
 def nested_value(data: Any, *keys: str) -> Any:
     current = data
     for key in keys:
@@ -217,9 +249,10 @@ def render_note(config: dict[str, Any], detection: dict[str, Any], capture: dict
     captured_at = datetime.now().strftime("%Y-%m-%d")
     folder = string_value(category_hint, clipper_config.get("default_folder"), default="Clippings")
     title = string_value(capture.get("title"), default="未命名剪藏")
+    note_title = clean_note_title(title)
     file_prefix = f"{captured_at} " if bool_value(clipper_config.get("prefix_date"), True) else ""
-    file_name = safe_file_name(f"{file_prefix}{title}.md")
-    display_title = markdown_title(title)
+    file_name = safe_file_name(f"{file_prefix}{note_title}.md")
+    display_title = markdown_title(note_title)
     tags = [string_value(tag) for tag in capture.get("tags") or [] if has_value(tag)] or ["clipped"]
 
     normalized_url = string_value(capture.get("normalized_url"), nested_value(capture, "metadata", "normalized_url"))
@@ -243,6 +276,7 @@ def render_note(config: dict[str, Any], detection: dict[str, Any], capture: dict
     lines = [
         "---",
         f"title: {yaml_scalar(title)}",
+        f"note_title: {yaml_scalar(note_title)}",
         f"source_url: {yaml_scalar(source_url)}",
         f"normalized_url: {yaml_scalar(normalized_url)}",
         f"platform: {yaml_scalar(detection.get('platform', ''))}",
@@ -317,6 +351,7 @@ def render_note(config: dict[str, Any], detection: dict[str, Any], capture: dict
     lines.extend(["", "## 采集状态", *status_lines(capture)])
     return {
         "title": title,
+        "note_title": note_title,
         "folder": folder,
         "file_name": file_name,
         "tags": tags,

@@ -15,11 +15,13 @@
   "analyzer": {
     "default_learn_folder": "Insights",
     "default_analyze_folder": "爆款拆解",
-    "output_language": "zh-CN"
+    "output_language": "zh-CN",
+    "default_debug_directory": ".tmp/run-analyzer"
   },
   "llm": {
     "provider": "dashscope_openai_compatible",
     "model": "qwen3.5-flash",
+    "api_key": "",
     "api_key_env": "DASHSCOPE_API_KEY",
     "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
     "timeout_seconds": 120,

@@ -1,131 +1,114 @@
 # Obsidian Analyzer
 
-## English
+`obsidian-analyzer` is the second stage of the workflow.
+It reads an existing clipping note plus sidecar files from Obsidian and writes a structured analysis note back into the vault.
 
-### Overview
+## Scope
 
-Obsidian Analyzer is the second-stage OpenClaw skill in the new workflow.
-It reads an existing clipping note from Obsidian and turns it into formal knowledge.
+- Input: a clipping note from `Clippings/` and its sidecars such as `capture.json`
+- Output: a knowledge note written to `爆款拆解/` for `analyze` mode
+- Current priority: `analyze` for Douyin / Xiaohongshu short video content
 
-### What This Skill Does
+It does not:
 
-- reads a clipping note from `Clippings/`
-- chooses `learn` or `analyze`
-- prepares structured model input
-- writes a finished knowledge note into the vault
+- capture content from the web
+- download source media
+- replace `obsidian-clipper`
 
-### Current Runnable Phase
+## Main entrypoint
 
-The current runnable phase now includes the Phase 4 `analyze` contract:
+Run with only a note path after `references/local-config.json` is configured:
 
-- `scripts/run_analyzer.ps1` exists as the main entrypoint
-- `scripts/build_analyzer_payload.py` normalizes the clipping note plus sidecars into one payload
-- `scripts/invoke_analyzer_llm.py` calls the configured LLM provider
-- `scripts/render_breakdown_note.py` renders a structured breakdown note
-- the current implementation writes `analyzer-payload.json` into the debug directory
-- `references/prompts/analyze.md` defines the short-video analysis prompt
-- `references/analyze-output.schema.json` defines the expected `analyze` result shape
-- the current implementation can call DashScope OpenAI-compatible models such as `qwen3.5-flash`
-- when the provider is not configured or the API key is missing, the pipeline falls back to deterministic mock output
+```powershell
+powershell -ExecutionPolicy Bypass -File "E:\Codex_project\obsidian-skillkit\obsidian-analyzer\scripts\run_analyzer.ps1" `
+  -NotePath "E:\iCloudDrive\iCloudDrive\iCloud~md~obsidian\michael内容库\Clippings\example.md"
+```
 
-### Supported Modes
+Optional overrides:
 
-- `learn`: articles, educational videos, podcasts, Xiaoyuzhou, experience-sharing content
-- `analyze`: Xiaohongshu and Douyin style short content only
+- `-VaultPath`
+- `-DebugDirectory`
+- `-ConfigPath`
+- `-DryRun`
 
-### Qwen3.5-Flash Setup
-
-The default local config template is now aligned to DashScope OpenAI-compatible access for `qwen3.5-flash`.
-
-Minimum setup:
+## Configuration
 
 1. Copy `references/local-config.example.json` to `references/local-config.json`
-2. Set the environment variable `DASHSCOPE_API_KEY`
-3. Run `scripts/run_analyzer.ps1`
+2. Set `obsidian.vault_path`
+3. Set `analyzer.default_analyze_folder` if your vault uses a different folder name
+4. Configure the model provider in `llm`
+5. Put the API key in either:
+   - `llm.api_key` in `local-config.json`
+   - or the environment variable named by `llm.api_key_env`
 
-If the provider or API key is missing, `run_analyzer.ps1` falls back to mock output instead of failing the entire pipeline.
+Key local settings:
 
-Why use an environment variable for the API key:
+- `obsidian.vault_path`
+- `analyzer.default_learn_folder`
+- `analyzer.default_analyze_folder`
+- `analyzer.output_language`
+- `analyzer.default_debug_directory`
+- `llm.provider`
+- `llm.model`
+- `llm.api_key`
+- `llm.api_key_env`
 
-- avoids storing secrets in the repository
-- avoids leaking keys through shared config files or support bundles
-- lets each machine keep its own secret while sharing the same non-secret `local-config.json`
+## Current pipeline
 
-Typical machine setup:
+- `scripts/build_analyzer_payload.py`
+  reads the clipping note and sidecars and produces `analyzer-payload.json`
+- `scripts/invoke_analyzer_llm.py`
+  calls the configured model provider for `analyze` mode
+- `scripts/render_breakdown_note.py`
+  renders the final note into the vault
+- `scripts/run_analyzer.ps1`
+  orchestrates the full run and writes debug artifacts
 
-- non-secret settings go into `references/local-config.json`
-- the API key goes into a user or system environment variable such as `DASHSCOPE_API_KEY`
-- for a temporary PowerShell session you can use `$env:DASHSCOPE_API_KEY="..."`
-- for a persistent Windows user environment you can use `setx DASHSCOPE_API_KEY "..."` and reopen the shell
+If no real provider is configured, the pipeline falls back to deterministic mock output instead of crashing the full run.
 
-Relevant local settings:
+## Debug and support
 
-- `analyzer.default_analyze_folder`: defaults to `爆款拆解`
-- `analyzer.output_language`: defaults to `zh-CN`
+Every run creates a debug directory.
+By default it is rooted at `analyzer.default_debug_directory`, and each run gets its own timestamped subfolder.
 
-### Not In Scope
+Typical artifacts:
 
-- direct web capture
-- long-video viral breakdown
-- podcast viral breakdown
+- `analyzer-payload.json`
+- `analysis-input.json`
+- `llm-request.json`
+- `llm-response.json`
+- `run-analyzer.json`
+- `run-analyzer-summary.txt`
+- `support-bundle/`
 
-### Files In This Skill
+`support-bundle/` is the shareable package for issue reporting.
+It contains sanitized copies of the main debug artifacts so another machine can be diagnosed without exposing the local vault path.
 
-- `SKILL.md`: agent-facing instructions
-- `agents/openai.yaml`: UI metadata
-- `references/local-config.example.json`: local config template
-- `references/prompts/`: prompt placeholders for analysis modes
-- `references/analyzer-data-model.md`: Phase 1 analyzer payload contract
-- `references/analyzer-record.schema.json`: analyzer payload schema
-- `references/analyze-output.schema.json`: analyze result schema
-- `references/output-note-contract.md`: output note contract
-- `scripts/run_analyzer.ps1`: runnable analyzer entrypoint
-- `scripts/build_analyzer_payload.py`: clipping note plus sidecar parser
-- `scripts/invoke_analyzer_llm.py`: provider adapter for real model calls
-- `scripts/render_breakdown_note.py`: breakdown note renderer
+When asking for help, upload either:
 
-### Thanks
+- `support-bundle/`
+- or the full debug directory if more detail is needed
 
-Thanks to the projects this skill is expected to integrate with:
-- [Obsidian](https://obsidian.md/)
-- OpenClaw
-- your configured LLM provider
+## Output behavior
 
-## 中文
+- `analyze` mode writes to `爆款拆解/` by default
+- output language defaults to `zh-CN`
+- the final note includes:
+  - source links
+  - capture JSON link
+  - local video link
+  - embedded local video when available
 
-### 说明
+## Related files
 
-Obsidian Analyzer 是这套新工作流里的第二阶段 skill。
-它读取已经存在于 Obsidian 中的剪藏内容，并把它转化成正式知识结果。
-
-### 它做什么
-
-- 读取 `Clippings/` 中的剪藏笔记
-- 选择 `learn` 或 `analyze`
-- 组织模型输入
-- 把结果写回正式知识目录
-
-### 支持模式
-
-- `learn`：文章、知识视频、播客、小宇宙、经验分享内容
-- `analyze`：只面向小红书、抖音等短内容
-
-### 不在范围内
-
-- 直接网页抓取
-- 长视频爆款拆解
-- 播客爆款拆解
-
-### 这个 skill 目录里的文件
-
-- `SKILL.md`：给代理看的说明
-- `agents/openai.yaml`：skill 元数据
-- `references/local-config.example.json`：本地配置模板
-- `references/prompts/`：分析 prompt 占位文件
-
-### 致谢
-
-感谢这个 skill 预期会集成的项目：
-- [Obsidian](https://obsidian.md/)
-- OpenClaw
-- 你配置的大模型提供方
+- `SKILL.md`
+- `references/local-config.example.json`
+- `references/analyzer-data-model.md`
+- `references/analyzer-record.schema.json`
+- `references/analyze-output.schema.json`
+- `references/output-note-contract.md`
+- `references/prompts/analyze.md`
+- `scripts/run_analyzer.ps1`
+- `scripts/build_analyzer_payload.py`
+- `scripts/invoke_analyzer_llm.py`
+- `scripts/render_breakdown_note.py`

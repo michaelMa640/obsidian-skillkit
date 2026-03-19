@@ -2,8 +2,10 @@ import argparse
 import base64
 import json
 import os
+import sys
 import urllib.error
 import urllib.request
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +23,16 @@ def string_value(*values: Any, default: str = "") -> str:
 
 def load_json(path: str) -> dict[str, Any]:
     return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
+def configure_console_output() -> None:
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        if stream is None:
+            continue
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            reconfigure(encoding="utf-8", errors="backslashreplace")
 
 
 def read_text(path: str) -> str:
@@ -106,7 +118,7 @@ def build_messages(
     video_path = string_value(payload.get("video_path"))
 
     if include_video and has_value(video_path):
-        if video_path.startswith("http://") or video_path.startswith("https://") or video_path.startswith("data:video/"):
+        if video_path.startswith(("http://", "https://", "data:video/")):
             user_content.append(
                 {
                     "type": "video_url",
@@ -123,19 +135,14 @@ def build_messages(
                 }
             )
         else:
-            warnings.append(
-                f"video_not_included:local_video_exceeds_inline_limit_or_missing:{video_path}"
-            )
+            warnings.append(f"video_not_included:local_video_exceeds_inline_limit_or_missing:{video_path}")
     elif include_video:
         warnings.append("video_not_included:no_video_path")
 
     user_content.append(
         {
             "type": "text",
-            "text": (
-                f"{language_instruction(output_language)}\n\n"
-                + build_text_instruction(prompt_text=prompt_text, payload=payload, schema_brief=schema_brief)
-            ),
+            "text": f"{language_instruction(output_language)}\n\n{build_text_instruction(prompt_text, payload, schema_brief)}",
         }
     )
     return [{"role": "user", "content": user_content}], warnings
@@ -190,18 +197,29 @@ def extract_content(response_json: dict[str, Any]) -> str:
     return str(content)
 
 
+def resolve_api_key(llm: dict[str, Any]) -> tuple[str, str]:
+    configured_key = string_value(llm.get("api_key"))
+    if has_value(configured_key):
+        return configured_key, "config"
+    api_key_env = string_value(llm.get("api_key_env"), default="DASHSCOPE_API_KEY")
+    env_value = os.getenv(api_key_env)
+    if has_value(env_value):
+        return str(env_value).strip(), f"env:{api_key_env}"
+    return "", f"env:{api_key_env}"
+
+
 def ensure_defaults(result: dict[str, Any], payload: dict[str, Any], model: str, output_language: str) -> dict[str, Any]:
     return {
         "title": string_value(result.get("title"), default=default_analysis_title(payload, output_language, "analyze")),
         "analysis_mode": "analyze",
-        "source_note_path": string_value(result.get("source_note_path"), payload.get("source_note_path")),
-        "capture_json_path": string_value(result.get("capture_json_path"), payload.get("capture_json_path")),
-        "source_url": string_value(result.get("source_url"), payload.get("source_url")),
-        "normalized_url": string_value(result.get("normalized_url"), payload.get("normalized_url")),
-        "platform": string_value(result.get("platform"), payload.get("platform")),
-        "content_type": string_value(result.get("content_type"), payload.get("content_type")),
-        "capture_id": string_value(result.get("capture_id"), payload.get("capture_id")),
-        "analyzed_at": string_value(result.get("analyzed_at"), default=__import__("datetime").datetime.now().strftime("%Y-%m-%d")),
+        "source_note_path": string_value(payload.get("source_note_path"), result.get("source_note_path")),
+        "capture_json_path": string_value(payload.get("capture_json_path"), result.get("capture_json_path")),
+        "source_url": string_value(payload.get("source_url"), result.get("source_url")),
+        "normalized_url": string_value(payload.get("normalized_url"), result.get("normalized_url")),
+        "platform": string_value(payload.get("platform"), result.get("platform")),
+        "content_type": string_value(payload.get("content_type"), result.get("content_type")),
+        "capture_id": string_value(payload.get("capture_id"), result.get("capture_id")),
+        "analyzed_at": string_value(result.get("analyzed_at"), default=datetime.now().strftime("%Y-%m-%d")),
         "model": string_value(model),
         "provider_reported_model": string_value(result.get("model")),
         "analysis_status": string_value(result.get("analysis_status"), default="success"),
@@ -221,12 +239,13 @@ def ensure_defaults(result: dict[str, Any], payload: dict[str, Any], model: str,
         "metrics_share": string_value(result.get("metrics_share"), payload.get("metrics_share")),
         "metrics_collect": string_value(result.get("metrics_collect"), payload.get("metrics_collect")),
         "comments_count": result.get("comments_count", payload.get("comments_count")),
-        "video_path": string_value(result.get("video_path"), payload.get("video_path")),
+        "video_path": string_value(payload.get("video_path"), result.get("video_path")),
         "output_language": output_language,
     }
 
 
 def main() -> int:
+    configure_console_output()
     parser = argparse.ArgumentParser()
     parser.add_argument("--payload-json", required=True)
     parser.add_argument("--config-json", required=True)
@@ -249,10 +268,11 @@ def main() -> int:
     if not has_value(model):
         raise ValueError("llm.model is required.")
 
-    api_key_env = string_value(llm.get("api_key_env"), default="DASHSCOPE_API_KEY")
-    api_key = os.getenv(api_key_env)
+    api_key, api_key_source = resolve_api_key(llm)
     if not has_value(api_key):
-        raise ValueError(f"Environment variable {api_key_env} is not set.")
+        raise ValueError(
+            "LLM API key is not configured. Set llm.api_key in local-config.json or provide llm.api_key_env as an environment variable."
+        )
 
     base_url = string_value(llm.get("base_url"), default="https://dashscope.aliyuncs.com/compatible-mode/v1")
     timeout_seconds = int(llm.get("timeout_seconds") or 120)
@@ -285,6 +305,7 @@ def main() -> int:
         "response_format": {"type": "json_object"},
         "messages": messages,
         "input_warnings": input_warnings,
+        "api_key_source": api_key_source,
     }
     if has_value(args.request_json):
         Path(args.request_json).write_text(json.dumps(request_payload, ensure_ascii=False, indent=2), encoding="utf-8")

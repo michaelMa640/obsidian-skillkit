@@ -1,8 +1,19 @@
 import argparse
 import json
 import re
+import sys
 from pathlib import Path
 from typing import Any
+
+
+def configure_console_output() -> None:
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        if stream is None:
+            continue
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            reconfigure(encoding="utf-8", errors="backslashreplace")
 
 
 def has_value(value: Any) -> bool:
@@ -323,6 +334,7 @@ def build_payload(note_path: str, capture_json_path: str, vault_path: str, analy
 
 
 def main() -> int:
+    configure_console_output()
     parser = argparse.ArgumentParser()
     parser.add_argument("--note-path", default="")
     parser.add_argument("--capture-json-path", default="")

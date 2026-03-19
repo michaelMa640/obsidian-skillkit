@@ -203,6 +203,14 @@ def normalize_ws(text: str) -> str:
     return text.strip()
 
 
+def extract_first_url(text: str) -> str:
+    raw = (text or "").strip()
+    if not raw:
+        return ""
+    match = re.search(r"https?://[^\s\"'<>]+", raw, re.IGNORECASE)
+    return match.group(0).strip() if match else raw
+
+
 def truncate(text: str, length: int) -> str:
     text = text or ""
     if len(text) <= length:
@@ -301,10 +309,21 @@ def inspect_auth_session(context, platform: str, timeout_ms: int) -> dict[str, A
 
 
 def normalize_identity_url(url: str) -> str:
+    url = extract_first_url(url)
     try:
         parts = urlsplit(url)
     except Exception:
         return (url or "").strip()
+
+    host = parts.netloc.lower()
+    if host == "v.douyin.com":
+        short_match = re.match(r"^/([A-Za-z0-9_-]+)/?", parts.path or "")
+        if short_match:
+            return f"{parts.scheme.lower()}://{host}/{short_match.group(1)}/"
+    if host == "xhslink.com":
+        short_match = re.match(r"^/([A-Za-z0-9_-]+)/?", parts.path or "")
+        if short_match:
+            return f"{parts.scheme.lower()}://{host}/{short_match.group(1)}"
 
     filtered_query = []
     for key, value in parse_qsl(parts.query, keep_blank_values=True):
@@ -320,7 +339,7 @@ def normalize_identity_url(url: str) -> str:
     return urlunsplit(
         (
             parts.scheme.lower(),
-            parts.netloc.lower(),
+            host,
             normalized_path,
             urlencode(filtered_query),
             "",

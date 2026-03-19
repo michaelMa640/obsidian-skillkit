@@ -210,6 +210,7 @@ function Get-QueryParameterValue {
 function Sanitize-Url {
     param([string]$Url)
     if (-not (Test-HasValue $Url)) { return $Url }
+    $Url = Get-CanonicalShareUrl -Url $Url
     try {
         $uri = [System.Uri]$Url
     } catch {
@@ -222,6 +223,10 @@ function Sanitize-Url {
         $vid = Get-QueryParameterValue -Query $uri.Query -Name 'vid'
         if (Test-HasValue $vid) {
             return "https://www.douyin.com/video/$vid"
+        }
+        $modalId = Get-QueryParameterValue -Query $uri.Query -Name 'modal_id'
+        if (Test-HasValue $modalId) {
+            return "https://www.douyin.com/video/$modalId"
         }
         if ($path -match '/video/([0-9]+)') {
             return "https://www.douyin.com/video/$($Matches[1])"
