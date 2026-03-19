@@ -27,6 +27,11 @@ function Write-Utf8Text {
     [System.IO.File]::WriteAllText($Path, $Content, [System.Text.UTF8Encoding]::new($false))
 }
 
+function Zh {
+    param([string]$Escaped)
+    [regex]::Unescape($Escaped)
+}
+
 function ConvertFrom-JsonCompat {
     param(
         [Parameter(Mandatory = $true)]
@@ -247,6 +252,23 @@ function Get-YtDlpAuthArguments {
     @()
 }
 
+function Test-IsAuthRefreshRequired {
+    param([string[]]$Errors)
+    foreach ($entry in @($Errors)) {
+        $text = [string]$entry
+        if (-not (Test-HasValue $text)) { continue }
+        if (
+            $text -match '(?i)Fresh cookies are needed' -or
+            $text -match '(?i)login required' -or
+            $text -match '(?i)cookies file was not found' -or
+            $text -match '(?i)storage state file was not found'
+        ) {
+            return $true
+        }
+    }
+    $false
+}
+
 function Get-VideoTechnicalMetadata {
     param([string]$VideoPath, $YtMetadata)
     $result = [ordered]@{
@@ -319,6 +341,11 @@ $downloadStatus = 'failed'
 $generatedCookiesFile = ''
 $effectiveCookiesFile = ''
 $ytDlpAuthMode = 'none'
+$authActionRequired = ''
+$authFailureReason = ''
+$authRefreshCommand = ''
+$authGuidanceEn = ''
+$authGuidanceZh = ''
 
 $storageStateAvailable = ((Test-HasValue $StorageStatePath) -and (Test-Path $StorageStatePath))
 $cookiesFileAvailable = ((Test-HasValue $CookiesFile) -and (Test-Path $CookiesFile))
@@ -427,6 +454,14 @@ if ($null -eq $videoFile) {
     $downloadMethod = 'none'
 }
 
+if (Test-IsAuthRefreshRequired -Errors @($errors)) {
+    $authActionRequired = 'refresh_douyin_auth'
+    $authFailureReason = 'cookies_expired_or_missing'
+    $authRefreshCommand = ('python "{0}" --platform douyin' -f (Join-Path $PSScriptRoot 'bootstrap_social_auth.py'))
+    $authGuidanceEn = 'Douyin auth appears expired or missing. Refresh local auth and retry.'
+    $authGuidanceZh = Zh '\u6296\u97f3\u767b\u5f55\u6001\u7591\u4f3c\u5df2\u8fc7\u671f\u6216\u7f3a\u5931\u3002\u8bf7\u5148\u5237\u65b0\u672c\u5730\u767b\u5f55\u6001\uff0c\u518d\u91cd\u65b0\u8fd0\u884c\u3002'
+}
+
 $coverUrl = Get-StringValue -Data $record -Name 'cover_url' -DefaultValue ''
 if (-not (Test-HasValue $coverUrl)) {
     $images = Get-StringArrayValue -Data $record -Name 'images'
@@ -494,6 +529,11 @@ Set-DataValue -Data $record -Name 'status' -Value 'clipped'
 Set-DataValue -Data $record -Name 'yt_dlp_auth_mode' -Value $ytDlpAuthMode
 Set-DataValue -Data $record -Name 'yt_dlp_cookies_file_used' -Value $effectiveCookiesFile
 Set-DataValue -Data $record -Name 'yt_dlp_cookie_file_generated' -Value ([bool](Test-HasValue $generatedCookiesFile))
+Set-DataValue -Data $record -Name 'auth_action_required' -Value $authActionRequired
+Set-DataValue -Data $record -Name 'auth_failure_reason' -Value $authFailureReason
+Set-DataValue -Data $record -Name 'auth_refresh_command' -Value $authRefreshCommand
+Set-DataValue -Data $record -Name 'auth_guidance_en' -Value $authGuidanceEn
+Set-DataValue -Data $record -Name 'auth_guidance_zh' -Value $authGuidanceZh
 if (-not (Test-HasValue (Get-StringValue -Data $record -Name 'analyzer_status'))) {
     Set-DataValue -Data $record -Name 'analyzer_status' -Value 'pending'
 }
@@ -525,7 +565,12 @@ foreach ($pair in @(
     @{ Name = 'video_height'; Value = $videoTechnical.video_height },
     @{ Name = 'yt_dlp_auth_mode'; Value = $ytDlpAuthMode },
     @{ Name = 'yt_dlp_cookies_file_used'; Value = $effectiveCookiesFile },
-    @{ Name = 'yt_dlp_cookie_file_generated'; Value = ([bool](Test-HasValue $generatedCookiesFile)) }
+    @{ Name = 'yt_dlp_cookie_file_generated'; Value = ([bool](Test-HasValue $generatedCookiesFile)) },
+    @{ Name = 'auth_action_required'; Value = $authActionRequired },
+    @{ Name = 'auth_failure_reason'; Value = $authFailureReason },
+    @{ Name = 'auth_refresh_command'; Value = $authRefreshCommand },
+    @{ Name = 'auth_guidance_en'; Value = $authGuidanceEn },
+    @{ Name = 'auth_guidance_zh'; Value = $authGuidanceZh }
 )) {
     Set-DataValue -Data $metadataObject -Name $pair.Name -Value $pair.Value
 }
@@ -547,6 +592,11 @@ $metadataPayload = [ordered]@{
     yt_dlp_auth_mode = $ytDlpAuthMode
     yt_dlp_cookies_file_used = $effectiveCookiesFile
     yt_dlp_cookie_file_generated = ([bool](Test-HasValue $generatedCookiesFile))
+    auth_action_required = $authActionRequired
+    auth_failure_reason = $authFailureReason
+    auth_refresh_command = $authRefreshCommand
+    auth_guidance_en = $authGuidanceEn
+    auth_guidance_zh = $authGuidanceZh
     yt_dlp_output = $downloadOutput.Trim()
     errors = @($errors)
     fallbacks = @($fallbacks)

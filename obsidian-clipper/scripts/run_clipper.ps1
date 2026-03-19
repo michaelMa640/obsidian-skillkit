@@ -1045,6 +1045,10 @@ function Add-RunFinalStatusFields {
     param($Result)
     $downloadStatus = Get-StringValue -Data $Result -Name 'download_status' -DefaultValue ''
     $failedStep = Get-StringValue -Data $Result -Name 'failed_step' -DefaultValue ''
+    $authActionRequired = Get-StringValue -Data $Result -Name 'auth_action_required' -DefaultValue ''
+    $authRefreshCommand = Get-StringValue -Data $Result -Name 'auth_refresh_command' -DefaultValue ''
+    $authGuidanceEn = Get-StringValue -Data $Result -Name 'auth_guidance_en' -DefaultValue ''
+    $authGuidanceZh = Get-StringValue -Data $Result -Name 'auth_guidance_zh' -DefaultValue ''
     $errors = @()
     $resultErrors = Get-DataValue -Data $Result -Name 'errors'
     if ($null -ne $resultErrors) { $errors = @($resultErrors) }
@@ -1069,10 +1073,16 @@ function Add-RunFinalStatusFields {
     if ($downloadStatus -eq 'failed') {
         Set-ObjectField -Object $Result -Name 'final_run_status' -Value 'FAILED' | Out-Null
         Set-ObjectField -Object $Result -Name 'final_run_status_zh' -Value (Zh '\u5931\u8d25') | Out-Null
-        if (-not (Test-HasValue $failedStep)) { Set-ObjectField -Object $Result -Name 'failed_step' -Value 'download' | Out-Null }
-        $firstError = if ($errors.Count -gt 0) { [string]$errors[0] } else { 'Video download failed.' }
-        Set-ObjectField -Object $Result -Name 'final_message_en' -Value $firstError | Out-Null
-        Set-ObjectField -Object $Result -Name 'final_message_zh' -Value ('{0}{1}' -f (Zh '\u89c6\u9891\u4e0b\u8f7d\u5931\u8d25\uff1a'), $firstError) | Out-Null
+        if (Test-HasValue $authActionRequired) {
+            Set-ObjectField -Object $Result -Name 'failed_step' -Value 'auth_refresh_required' | Out-Null
+            Set-ObjectField -Object $Result -Name 'final_message_en' -Value (if (Test-HasValue $authGuidanceEn) { $authGuidanceEn } else { 'Douyin auth appears expired or missing. Refresh local auth and retry.' }) | Out-Null
+            Set-ObjectField -Object $Result -Name 'final_message_zh' -Value (if (Test-HasValue $authGuidanceZh) { $authGuidanceZh } else { Zh '\u6296\u97f3\u767b\u5f55\u6001\u7591\u4f3c\u5df2\u8fc7\u671f\u6216\u7f3a\u5931\u3002\u8bf7\u5148\u5237\u65b0\u672c\u5730\u767b\u5f55\u6001\uff0c\u518d\u91cd\u65b0\u8fd0\u884c\u3002' }) | Out-Null
+        } else {
+            if (-not (Test-HasValue $failedStep)) { Set-ObjectField -Object $Result -Name 'failed_step' -Value 'download' | Out-Null }
+            $firstError = if ($errors.Count -gt 0) { [string]$errors[0] } else { 'Video download failed.' }
+            Set-ObjectField -Object $Result -Name 'final_message_en' -Value $firstError | Out-Null
+            Set-ObjectField -Object $Result -Name 'final_message_zh' -Value ('{0}{1}' -f (Zh '\u89c6\u9891\u4e0b\u8f7d\u5931\u8d25\uff1a'), $firstError) | Out-Null
+        }
         return $Result
     }
 
@@ -1105,6 +1115,15 @@ function Get-RunSummaryLines {
     }
     if ($null -ne $Result.PSObject.Properties['support_bundle_path']) {
         $lines.Add("share    : $($Result.support_bundle_path)")
+    }
+    if ($null -ne $Result.PSObject.Properties['debug_directory']) {
+        $lines.Add("debug    : $($Result.debug_directory)")
+    }
+    if ($null -ne $Result.PSObject.Properties['auth_action_required'] -and (Test-HasValue ([string]$Result.auth_action_required))) {
+        $lines.Add("auth     : $($Result.auth_action_required)")
+    }
+    if ($null -ne $Result.PSObject.Properties['auth_refresh_command'] -and (Test-HasValue ([string]$Result.auth_refresh_command))) {
+        $lines.Add("refresh  : $($Result.auth_refresh_command)")
     }
     if ($null -ne $Result.PSObject.Properties['errors'] -and @($Result.errors).Count -gt 0) {
         $lines.Add("error    : $((@($Result.errors) | Select-Object -First 1))")
@@ -1187,6 +1206,18 @@ try {
     if (-not (Test-HasValue $videoPathForResult) -and $null -ne $captureMetadata) { $videoPathForResult = Get-StringValue -Data $captureMetadata -Name 'video_path' -DefaultValue '' }
     $sidecarPathForResult = Get-StringValue -Data $capture -Name 'sidecar_path' -DefaultValue ''
     if (-not (Test-HasValue $sidecarPathForResult) -and $null -ne $captureMetadata) { $sidecarPathForResult = Get-StringValue -Data $captureMetadata -Name 'sidecar_path' -DefaultValue '' }
+    $authActionRequiredForResult = Get-StringValue -Data $capture -Name 'auth_action_required' -DefaultValue ''
+    if (-not (Test-HasValue $authActionRequiredForResult) -and $null -ne $captureMetadata) { $authActionRequiredForResult = Get-StringValue -Data $captureMetadata -Name 'auth_action_required' -DefaultValue '' }
+    $authFailureReasonForResult = Get-StringValue -Data $capture -Name 'auth_failure_reason' -DefaultValue ''
+    if (-not (Test-HasValue $authFailureReasonForResult) -and $null -ne $captureMetadata) { $authFailureReasonForResult = Get-StringValue -Data $captureMetadata -Name 'auth_failure_reason' -DefaultValue '' }
+    $authRefreshCommandForResult = Get-StringValue -Data $capture -Name 'auth_refresh_command' -DefaultValue ''
+    if (-not (Test-HasValue $authRefreshCommandForResult) -and $null -ne $captureMetadata) { $authRefreshCommandForResult = Get-StringValue -Data $captureMetadata -Name 'auth_refresh_command' -DefaultValue '' }
+    $authGuidanceEnForResult = Get-StringValue -Data $capture -Name 'auth_guidance_en' -DefaultValue ''
+    if (-not (Test-HasValue $authGuidanceEnForResult) -and $null -ne $captureMetadata) { $authGuidanceEnForResult = Get-StringValue -Data $captureMetadata -Name 'auth_guidance_en' -DefaultValue '' }
+    $authGuidanceZhForResult = Get-StringValue -Data $capture -Name 'auth_guidance_zh' -DefaultValue ''
+    if (-not (Test-HasValue $authGuidanceZhForResult) -and $null -ne $captureMetadata) { $authGuidanceZhForResult = Get-StringValue -Data $captureMetadata -Name 'auth_guidance_zh' -DefaultValue '' }
+    $authSessionStateForResult = Get-StringValue -Data $capture -Name 'auth_session_state' -DefaultValue ''
+    $authSessionLikelyValidForResult = Get-DataValue -Data $capture -Name 'auth_session_likely_valid'
 
     $result = [ordered]@{
         success = $true
@@ -1202,6 +1233,13 @@ try {
         download_method = $downloadMethodForResult
         video_path = $videoPathForResult
         sidecar_path = $sidecarPathForResult
+        auth_action_required = $authActionRequiredForResult
+        auth_failure_reason = $authFailureReasonForResult
+        auth_refresh_command = $authRefreshCommandForResult
+        auth_guidance_en = $authGuidanceEnForResult
+        auth_guidance_zh = $authGuidanceZhForResult
+        auth_session_state = $authSessionStateForResult
+        auth_session_likely_valid = if ($null -ne $authSessionLikelyValidForResult) { [bool]$authSessionLikelyValidForResult } else { $null }
         tags = $note.tags
         note_preview = $note.note_body
         vault_path = $resolvedVaultPath

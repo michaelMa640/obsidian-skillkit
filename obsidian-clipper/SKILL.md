@@ -1,125 +1,99 @@
 ---
 name: obsidian-clipper
-description: Quickly clip a URL into an Obsidian vault as a reusable raw-content note. Use when OpenClaw should save a link into Clippings first, preserve source facts, and prepare analyzer-ready records.
+description: Quickly clip a URL or share text into an Obsidian vault as a reusable raw-content note. Use when OpenClaw should save a link into Clippings first, preserve source facts, and prepare analyzer-ready records.
 ---
 
 # Obsidian Clipper
 
-## Overview
+## Use this skill when
 
-Use this skill when the user wants to save a source into Obsidian quickly as a stable raw record.
+- the user wants to clip, save, archive, or collect a link into Obsidian
+- the user provides a raw URL or a full share-text block copied from Douyin / Xiaohongshu
+- the user wants a stored clipping note first, before any deeper analysis
 
-This skill is the first stage of the new workflow:
-- OpenClaw receives a clipping request
-- `obsidian-clipper` identifies the source type
-- the skill routes the request to the appropriate capture path
-- the skill writes a clipping note into `Clippings/`
-- later, `obsidian-analyzer` reads that stored record and turns it into formal knowledge
+## Do not use this skill when
 
-This skill does not do deep knowledge extraction by default.
-Its job is fast capture, stable metadata, stable IDs, and analyzer-ready record structure.
+- the user already has an Obsidian clipping note and only wants analysis
+- the task is purely downstream analysis or knowledge distillation
 
-## Current runnable entrypoint
+## OpenClaw behavior rules
 
-Current runnable scripts:
+- User intent like `剪藏`, `保存链接`, `收录视频`, `保存到 Obsidian` should call this skill directly.
+- If the machine is running this skill for the first time, or the run fails before capture starts, run `scripts/validate_local_config.ps1` first.
+- If `validate_local_config.ps1` reports missing required fields, stop and tell the user:
+  - which file to edit
+  - which fields are missing
+  - what they should point to
+- Do not continue until required config is fixed.
+- If the run fails with a Douyin auth problem, especially `Fresh cookies are needed`, tell the user local auth must be refreshed.
+- In that auth-expired case, tell the user to run:
+  - `python "E:\Codex_project\obsidian-skillkit\obsidian-clipper\scripts\bootstrap_social_auth.py" --platform douyin`
+- Always return these fields after a run:
+  - `note_path`
+  - `debug_directory`
+  - `support_bundle_path`
+  - `final_run_status`
+  - `failed_step` when failed
+  - `auth_action_required` and `auth_refresh_command` when auth refresh is needed
+
+## Current entrypoints
+
 - `scripts/run_clipper.ps1`
+- `scripts/validate_local_config.ps1`
 - `scripts/detect_platform.ps1`
 - `scripts/capture_social_playwright.py`
 - `scripts/download_social_media.ps1`
 - `scripts/bootstrap_social_auth.py`
 
-This implementation already supports:
-- URL input
-- route detection
-- clipping note generation
-- filesystem write into an Obsidian vault
-- `video_metadata` via real `yt-dlp` metadata/subtitle capture with fallback clipping
-- `social` via built-in Playwright page capture plus downloader handoff, with structured comments, engagement hints, candidate video references, attachment landing, and sidecar JSON output
-- `podcast` via built-in page metadata capture, RSS hint extraction, transcript-link discovery, and show-notes-style text extraction with fallback clipping
-
-It still does not execute the full ideal external stack for every route.
-Treat the current route handlers as a runnable baseline whose short-social path is now downloader-aware and supports local auth reuse through Playwright storage state plus yt-dlp cookies, while Bitable sync and object-storage sync are still pending.
-
 ## Responsibilities
 
-`obsidian-clipper` is responsible for:
-- normalizing the incoming request
-- detecting platform and content type
-- choosing the correct capture route
-- preserving the source URL and core metadata
-- generating deterministic capture identifiers for stable storage
-- creating analyzer-ready raw records for later processing
-- saving a clipping note into Obsidian
+- normalize incoming source input
+- extract an embedded URL from share text
+- detect route, platform, and content type
+- capture the raw source record
+- create a clipping note in Obsidian
+- for short social video, download media during clipping when possible
+- persist sidecar JSON and attachment references even if download partially fails
 
-For short social video sources such as Xiaohongshu and Douyin, the architectural contract is now asset-first:
-- the clipper stage owns the raw source record
-- the clipper stage owns the media download step and attachment landing
-- the analyzer stage should consume stored assets instead of re-fetching the source URL
+## Output contract
 
-`obsidian-clipper` is not responsible for:
-- long-form AI summarization by default
-- deep content analysis
-- viral-content breakdown
-- final knowledge distillation into `Breakdowns/` or `Insights/`
+Each run should create or update a clipping record that includes:
 
-## Core routing model
-
-Use the route that matches the source:
-- article pages: built-in page fetch plus main-text extraction, with fallback clipping on fetch failure
-- Xiaohongshu and Douyin: built-in Playwright page capture with platform-specific selectors, optional login-state reuse through storage state / cookies.txt, structured social metadata, downloader handoff, local attachment landing, and fallback clipping
-- Bilibili and YouTube: metadata plus subtitles first, currently implemented through `yt-dlp`, with fallback clipping when extraction fails
-- Xiaoyuzhou and podcasts: page metadata, RSS hints, transcript hints, and show-notes-style text first, with fallback clipping when the source page cannot be reached
-
-Default rules:
-- save the lightest useful representation for the source type
-- for short social video, download binary media during clipping when the source is reachable and persist sidecars even if the download fails
-- do not block clipping-note creation when media download fails; write a partial record instead
-- for long media, stay metadata-first unless the workflow explicitly requires binary download
-
-## Output expectations
-
-Each successful run should create one clipping record that includes:
 - `capture_id`
 - `capture_key`
-- source URL
-- normalized URL where available
-- platform
-- content type
-- title
-- author or channel if known
-- publish date if known
-- captured date
-- raw text, transcript, or visible page text
-- comments or top comments where available
-- engagement hints where available
-- image or video references where available
-- download-state metadata for later reuse
+- `source_url`
+- `normalized_url`
+- `platform`
+- `content_type`
+- `title`
+- `author`
+- `published_at`
+- `comments` / `top_comments` when available
+- engagement hints when available
+- `download_status`
+- `download_method`
+- `video_path`
+- `sidecar_path`
 
-The resulting record should be suitable for later processing by `obsidian-analyzer`.
+## Debug and support contract
 
-## Video and podcast rules
+Every non-trivial run should keep a debug directory and a shareable support bundle.
 
-For short social video:
-- default contract is record-first and asset-ready
-- the clipper should preserve title, author, description, visible comments, engagement hints, and candidate video references
-- downloader integration belongs to the clipper stage, not the analyzer stage
+The main fields OpenClaw should surface back to the user are:
 
-For Bilibili and YouTube long video:
-- default to metadata-first and transcript-first
-- do not force binary video download unless the workflow explicitly requires it
+- `note_path`
+- `debug_directory`
+- `support_bundle_path`
+- `final_run_status`
+- `final_message_en`
+- `final_message_zh`
 
-For podcasts such as Xiaoyuzhou:
-- treat them as knowledge sources, not social short content
-- prefer transcript, show notes, RSS hints, episode metadata, and source link
-- do not route them into viral-breakdown analysis
+When auth expires, the result should also include:
 
-## Obsidian handoff
+- `auth_action_required = refresh_douyin_auth`
+- `auth_failure_reason`
+- `auth_refresh_command`
+- `auth_guidance_en`
+- `auth_guidance_zh`
 
-Prefer using the existing Obsidian skill or direct vault file creation depending on the local deployment.
-
-Write clipping notes into a clipping-oriented folder such as:
-- `Clippings/`
-
-Keep the note structure stable so downstream analysis can rely on it.
-Use a stable attachment pattern such as:
-- `Attachments/ShortVideos/{platform}/{capture_id}/`
+If the user needs help, ask them to upload `support-bundle/` first.

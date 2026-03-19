@@ -8,31 +8,34 @@ description: Read an existing clipping note from Obsidian and turn it into a str
 ## Use this skill when
 
 - the source has already been clipped into Obsidian
-- the task is to analyze, summarize, or structurally break down that stored content
-- the output should be written back into the vault as a reusable note
+- the user wants to analyze,拆解, summarize, or structurally break down stored content
+- the output should be written back into the vault as a reusable analysis note
 
 ## Do not use this skill when
 
-- the user needs web capture or media download
-- the source URL has not been clipped yet
+- the user only provided a raw URL or share text and the source has not been clipped yet
+- the task requires media download or source capture
 - the task belongs to `obsidian-clipper`
 
-## Current priority
+## OpenClaw behavior rules
 
-Current runnable priority is `analyze` mode for short-video content, especially Douyin and Xiaohongshu.
+- User intent like `拆解视频`, `分析视频`, `分析这条短视频` needs two different behaviors:
+  - if the input is an existing clipping note or explicit `note_path`, call this skill directly
+  - if the input is a raw URL or share text, first call `obsidian-clipper`, then call `obsidian-analyzer` with the returned `note_path`
+- Treat `拆解视频（链接）` as `clip first -> analyze second` by default.
+- If the machine is running this skill for the first time, or the run fails before payload build, run `scripts/validate_local_config.ps1` first.
+- If required config is missing, stop and tell the user exactly which file and fields must be updated.
+- Always return these fields after a run:
+  - `note_path`
+  - `debug_directory`
+  - `support_bundle_path`
+  - `final_run_status`
+  - `failed_step` when failed
 
-## Responsibilities
-
-- read a clipping note
-- resolve sidecars such as `capture.json`
-- build a normalized analyzer payload
-- invoke a configured LLM provider or fall back to mock output
-- render the final note into the Obsidian vault
-- produce debug artifacts and a shareable `support-bundle`
-
-## Entry point
+## Entry points
 
 - `scripts/run_analyzer.ps1`
+- `scripts/validate_local_config.ps1`
 
 ## Key implementation files
 
@@ -43,7 +46,16 @@ Current runnable priority is `analyze` mode for short-video content, especially 
 - `references/analyze-output.schema.json`
 - `references/local-config.example.json`
 
-## Debug expectations
+## Responsibilities
+
+- read a clipping note
+- resolve sidecars such as `capture.json`
+- build a normalized analyzer payload
+- invoke the configured LLM provider or fall back to mock output
+- render the final analysis note into the Obsidian vault
+- produce debug artifacts and a shareable `support-bundle`
+
+## Debug and support contract
 
 Every run should produce a timestamped debug directory containing at least:
 
