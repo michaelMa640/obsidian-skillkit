@@ -291,7 +291,7 @@ function Get-SanitizedData {
         if ($name -like '*url*') {
             return (Sanitize-Url -Url $Value)
         }
-        if ($name -like '*path*' -or $name -eq 'run_directory' -or $name -eq 'validation_vault' -or $name -eq 'config_path') {
+        if ($name -like '*path*' -or $name -like '*directory*' -or $name -eq 'run_directory' -or $name -eq 'validation_vault' -or $name -eq 'config_path') {
             return (Sanitize-PathValue -Value $Value)
         }
         return (Sanitize-Text -Text $Value)
@@ -532,6 +532,9 @@ function Write-ValidationSummary {
     }
     Write-Host "clipper  : success=$($Report.end_to_end.success) note=$($Report.end_to_end.note_path)"
     Write-Host "debug    : $($Report.run_directory)"
+    if ($null -ne $Report.PSObject.Properties['support_bundle_path']) {
+        Write-Host "share    : $($Report.support_bundle_path)"
+    }
     Write-Host ''
 }
 
@@ -801,6 +804,7 @@ $report = [ordered]@{
     source_url = $SourceUrl
     generated_at = (Get-Date).ToString('o')
     run_directory = $runDirectory
+    support_bundle_path = (Join-Path $runDirectory 'support-bundle')
     validation_vault = $validationVault
     config_path = $resolvedConfigPath
     full_clipper_run = (-not $SkipFullClipper)
@@ -863,20 +867,31 @@ $report = [ordered]@{
 
 $reportJsonPath = Join-Path $runDirectory 'validation-report.json'
 $reportMdPath = Join-Path $runDirectory 'validation-report.md'
-Write-SanitizedJsonFile -Path $detectJsonPath -Data $detection -Depth 50
-Write-SanitizedJsonFile -Path $captureJsonPath -Data $capturePayload -Depth 100
-Write-SanitizedJsonFile -Path $downloadJsonPath -Data $downloadPayload -Depth 100
-Write-SanitizedJsonFile -Path $runClipperJsonPath -Data $runClipperPayload -Depth 100
-Write-SanitizedJsonFile -Path (Join-Path $runDirectory 'environment.json') -Data $tooling -Depth 20
+Write-Utf8Text -Path $reportJsonPath -Content ($report | ConvertTo-Json -Depth 50)
+Write-MarkdownReport -Report $report -Path $reportMdPath
 
-$textArtifacts = Get-ChildItem -Path $runDirectory -File -Filter '*.log' | Select-Object -ExpandProperty FullName
-foreach ($artifactPath in $textArtifacts) {
-    Sanitize-FileInPlace -Path $artifactPath
+$supportBundleDirectory = New-Directory -Path (Join-Path $runDirectory 'support-bundle')
+$sanitizedReport = Get-SanitizedDataCopy -Value $report -Depth 100
+Write-Utf8Text -Path (Join-Path $supportBundleDirectory 'validation-report.json') -Content ($sanitizedReport | ConvertTo-Json -Depth 50)
+Write-MarkdownReport -Report $sanitizedReport -Path (Join-Path $supportBundleDirectory 'validation-report.md')
+Write-SanitizedJsonFile -Path (Join-Path $supportBundleDirectory 'detect-platform.json') -Data $detection -Depth 50
+Write-SanitizedJsonFile -Path (Join-Path $supportBundleDirectory 'capture-social.json') -Data $capturePayload -Depth 100
+Write-SanitizedJsonFile -Path (Join-Path $supportBundleDirectory 'download-social.json') -Data $downloadPayload -Depth 100
+Write-SanitizedJsonFile -Path (Join-Path $supportBundleDirectory 'run-clipper.json') -Data $runClipperPayload -Depth 100
+Write-SanitizedJsonFile -Path (Join-Path $supportBundleDirectory 'environment.json') -Data $tooling -Depth 20
+
+$textArtifacts = Get-ChildItem -Path $runDirectory -File -Filter '*.log'
+foreach ($artifact in $textArtifacts) {
+    $sanitizedLogPath = Join-Path $supportBundleDirectory $artifact.Name
+    $sanitizedContent = Sanitize-Text -Text (Read-Utf8Text -Path $artifact.FullName)
+    Write-Utf8Text -Path $sanitizedLogPath -Content $sanitizedContent
 }
 
-$sanitizedReport = Get-SanitizedDataCopy -Value $report -Depth 100
-Write-Utf8Text -Path $reportJsonPath -Content ($sanitizedReport | ConvertTo-Json -Depth 50)
-Write-MarkdownReport -Report $sanitizedReport -Path $reportMdPath
+if (Test-Path $treePath) {
+    $sanitizedTreePath = Join-Path $supportBundleDirectory 'validation-vault-tree.txt'
+    Write-Utf8Text -Path $sanitizedTreePath -Content (Sanitize-Text -Text (Read-Utf8Text -Path $treePath))
+}
+
 Write-ValidationSummary -Report $sanitizedReport
 
 $sanitizedReport | ConvertTo-Json -Depth 50

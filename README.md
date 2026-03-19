@@ -71,20 +71,23 @@ For `obsidian-clipper` social capture validation:
 - use `obsidian-clipper/scripts/dev_validate_social_download.ps1`
 - every run prints a step summary in the terminal for `detect`, `capture`, `download`, and `clipper`
 - every run writes a debug bundle under `obsidian-clipper/.tmp/social-download-validation/<timestamp>/`
-- the expected debug files are `validation-report.json`, `capture-social.json`, `download-social.json`, `run-clipper.json`, and the corresponding `.log` files
+- the run folder keeps raw local debug files for full-fidelity investigation on that machine
+- the same run folder also includes `support-bundle/` with sanitized copies intended for sharing
+- the expected shareable files are `support-bundle/validation-report.json`, `support-bundle/capture-social.json`, `support-bundle/download-social.json`, `support-bundle/run-clipper.json`, and the corresponding `.log` files
+- direct `run_clipper.ps1` usage can opt into the same pattern with `-DebugDirectory <dir>`
 
 ### Privacy Guardrails
 
 Debug artifacts are intended to be shareable for troubleshooting without exposing local secrets.
 
 The validation bundle keeps these protections:
-- auth material such as `storage_state.json` and `cookies.txt` contents are never copied into the debug bundle
-- auth file paths are masked as placeholders such as `<auth-storage-state>` and `<auth-cookies-file>`
-- real Obsidian vault roots are masked as `<vault-root>` inside debug JSON and logs
-- source URLs are sanitized before being written to the final debug report
+- auth material such as `storage_state.json` and `cookies.txt` contents are never copied into `support-bundle/`
+- auth file paths are masked as placeholders such as `<auth-storage-state>` and `<auth-cookies-file>` in `support-bundle/`
+- real Obsidian vault roots are masked as `<vault-root>` inside `support-bundle/` JSON and logs
+- source URLs are sanitized before being written to the shareable debug report
 - `.local-auth/` and local machine config files remain ignored by git
 
-If a user reports a problem, ask for the sanitized debug bundle instead of raw auth files.
+If a user reports a problem, ask for `support-bundle/` instead of raw auth files or raw local logs.
 
 ### Thanks
 

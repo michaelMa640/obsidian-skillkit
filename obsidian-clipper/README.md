@@ -100,36 +100,40 @@ Recommended local layout:
 
 Primary command:
 - `scripts/dev_validate_social_download.ps1`
+- direct clipper runs can also use `scripts/run_clipper.ps1 -DebugDirectory <dir>` to keep raw local artifacts plus a shareable `support-bundle/`
 
 What the validator does:
 - prints step-by-step terminal status for `detect`, `capture`, `download`, and `clipper`
 - prints a short end-of-run summary with the current route, auth state, capture result, download result, and debug folder
 - writes a debug bundle under `obsidian-clipper/.tmp/social-download-validation/<timestamp>/`
-- always attempts to produce `validation-report.json`, `capture-social.json`, `download-social.json`, `run-clipper.json`, and related `.log` files even when a step fails
+- keeps raw local debug files in the run folder for machine-local investigation
+- writes `support-bundle/` with sanitized copies intended for sharing
+- always attempts to produce both raw and sanitized `validation-report.json`, `capture-social.json`, `download-social.json`, `run-clipper.json`, and related `.log` files even when a step fails
 
 Recommended files to share when debugging a failed run:
-- `validation-report.json`
-- `capture-social.json`
-- `download-social.json`
-- `capture-social.log`
-- `download-social.log`
-- `run-clipper.log`
+- `support-bundle/validation-report.json`
+- `support-bundle/capture-social.json`
+- `support-bundle/download-social.json`
+- `support-bundle/capture-social.log`
+- `support-bundle/download-social.log`
+- `support-bundle/run-clipper.log`
 
 ### Debug Privacy Rules
 
 The validation bundle is designed to help debugging without leaking local secrets.
 
 Current guardrails:
-- local auth files are used at runtime but not copied into the debug bundle
-- auth file paths are masked in saved JSON and logs
-- real vault paths are masked as `<vault-root>` in saved debug artifacts
-- raw source URLs are sanitized before being written to saved debug artifacts
+- local auth files are used at runtime but not copied into `support-bundle/`
+- auth file paths are masked in `support-bundle/` JSON and logs
+- real vault paths are masked as `<vault-root>` in `support-bundle/`
+- raw source URLs are sanitized before being written to `support-bundle/`
 - `.local-auth/`, `.tmp/`, and `references/local-config.json` stay local-only and are excluded from git
 
 Users should never share:
 - `obsidian-clipper/.local-auth/*`
 - raw browser cookie exports
 - unsanitized local config files
+- raw debug logs when a sanitized `support-bundle/` exists
 
 ### Dependencies
 

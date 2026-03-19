@@ -8,6 +8,7 @@ param(
     [string]$DetectionJsonPath,
     [string]$CaptureJsonPath,
     [string]$OutputJsonPath,
+    [string]$DebugDirectory,
     [switch]$DryRun
 )
 
@@ -208,6 +209,154 @@ function Get-PreviewText {
     if (-not (Test-HasValue $Text)) { return '' }
     if ($Text.Length -le $Length) { return $Text }
     $Text.Substring(0, $Length) + '...'
+}
+
+function New-Directory {
+    param([string]$Path)
+    if (-not (Test-HasValue $Path)) { return '' }
+    New-Item -ItemType Directory -Path $Path -Force | Out-Null
+    $Path
+}
+
+function Get-QueryParameterValue {
+    param(
+        [string]$Query,
+        [string]$Name
+    )
+    if (-not (Test-HasValue $Query)) { return '' }
+    $trimmed = $Query.TrimStart('?')
+    foreach ($part in ($trimmed -split '&')) {
+        if (-not (Test-HasValue $part)) { continue }
+        $segments = $part -split '=', 2
+        $key = [System.Uri]::UnescapeDataString($segments[0])
+        if ($key -ne $Name) { continue }
+        if ($segments.Count -lt 2) { return '' }
+        return [System.Uri]::UnescapeDataString($segments[1])
+    }
+    ''
+}
+
+function Sanitize-Url {
+    param([string]$Url)
+    if (-not (Test-HasValue $Url)) { return $Url }
+    try {
+        $uri = [System.Uri]$Url
+    } catch {
+        return $Url
+    }
+
+    $urlHost = $uri.Host.ToLowerInvariant()
+    $path = $uri.AbsolutePath
+    if ($urlHost -eq 'www.douyin.com' -or $urlHost -eq 'v.douyin.com' -or $urlHost -eq 'douyin.com') {
+        $vid = Get-QueryParameterValue -Query $uri.Query -Name 'vid'
+        if (Test-HasValue $vid) {
+            return "https://www.douyin.com/video/$vid"
+        }
+        if ($path -match '/video/([0-9]+)') {
+            return "https://www.douyin.com/video/$($Matches[1])"
+        }
+    }
+
+    $builder = [System.UriBuilder]::new($uri)
+    $builder.Query = ''
+    $builder.Fragment = ''
+    $sanitized = $builder.Uri.AbsoluteUri
+    if ($sanitized.EndsWith('/')) {
+        return $sanitized.TrimEnd('/')
+    }
+    $sanitized
+}
+
+function Sanitize-PathValue {
+    param([string]$Value)
+    if (-not (Test-HasValue $Value)) { return $Value }
+
+    $sanitized = $Value
+    if (Test-HasValue $resolvedVaultPath) {
+        $vaultFull = [System.IO.Path]::GetFullPath($resolvedVaultPath).TrimEnd('\', '/')
+        $vaultFullForward = ($vaultFull -replace '\\', '/')
+        $sanitized = $sanitized.Replace($vaultFull, '<vault-root>')
+        $sanitized = $sanitized.Replace($vaultFullForward, '<vault-root>')
+    }
+    if (Test-HasValue $env:USERPROFILE) {
+        $userProfileForward = ($env:USERPROFILE -replace '\\', '/')
+        $sanitized = $sanitized.Replace($env:USERPROFILE, '%USERPROFILE%')
+        $sanitized = $sanitized.Replace($userProfileForward, '%USERPROFILE%')
+    }
+    $sanitized
+}
+
+function Sanitize-Text {
+    param([string]$Text)
+    if (-not (Test-HasValue $Text)) { return $Text }
+    $sanitized = $Text
+    if (Test-HasValue $SourceUrl) {
+        $sanitized = $sanitized.Replace($SourceUrl, (Sanitize-Url -Url $SourceUrl))
+    }
+    $sanitized = Sanitize-PathValue -Value $sanitized
+    $sanitized
+}
+
+function Get-SanitizedData {
+    param(
+        $Value,
+        [string]$PropertyName = ''
+    )
+    if ($null -eq $Value) { return $null }
+    if ($Value -is [string]) {
+        $name = $PropertyName.ToLowerInvariant()
+        if ($name -like '*url*') { return (Sanitize-Url -Url $Value) }
+        if ($name -like '*path*' -or $name -like '*directory*' -or $name -eq 'vault_path' -or $name -eq 'note_path') { return (Sanitize-PathValue -Value $Value) }
+        return (Sanitize-Text -Text $Value)
+    }
+    if ($Value -is [bool] -or $Value -is [int] -or $Value -is [long] -or $Value -is [double] -or $Value -is [decimal]) { return $Value }
+    if ($Value -is [System.Collections.IDictionary]) {
+        $result = [ordered]@{}
+        foreach ($key in $Value.Keys) {
+            $result[$key] = Get-SanitizedData -Value $Value[$key] -PropertyName ([string]$key)
+        }
+        return $result
+    }
+    if ($Value -is [System.Collections.IEnumerable] -and -not ($Value -is [string])) {
+        $items = @()
+        foreach ($item in $Value) {
+            $items += ,(Get-SanitizedData -Value $item -PropertyName $PropertyName)
+        }
+        return $items
+    }
+    $properties = @($Value.PSObject.Properties)
+    if ($properties.Count -gt 0) {
+        $result = [ordered]@{}
+        foreach ($property in $properties) {
+            $result[$property.Name] = Get-SanitizedData -Value $property.Value -PropertyName $property.Name
+        }
+        return $result
+    }
+    $Value
+}
+
+function Write-SanitizedJsonFile {
+    param(
+        [string]$Path,
+        $Data,
+        [int]$Depth = 100
+    )
+    if (-not (Test-HasValue $Path) -or $null -eq $Data) { return }
+    $sanitized = Get-SanitizedData -Value $Data
+    Write-Utf8Text -Path $Path -Content ($sanitized | ConvertTo-Json -Depth $Depth)
+}
+
+function Get-ArtifactDirectory {
+    param(
+        [string]$ExplicitDirectory,
+        [string]$JsonPath
+    )
+    if (Test-HasValue $ExplicitDirectory) { return (New-Directory -Path $ExplicitDirectory) }
+    if (Test-HasValue $JsonPath) {
+        $parent = Split-Path -Parent $JsonPath
+        if (Test-HasValue $parent) { return (New-Directory -Path $parent) }
+    }
+    ''
 }
 function Resolve-AbsoluteUrl {
     param([string]$BaseUrl, [string]$Candidate)
@@ -827,21 +976,39 @@ function Write-NoteToVault {
     $targetPath
 }
 
-function Write-RunSummary {
+function Get-RunSummaryLines {
     param($Result)
-    Write-Host ''
-    Write-Host '=== Clipper Summary ===' -ForegroundColor Cyan
-    Write-Host "route    : $($Result.route)"
-    Write-Host "platform : $($Result.platform)"
-    Write-Host "title    : $($Result.title)"
-    Write-Host "capture  : $($Result.capture_id)"
-    Write-Host "download : $($Result.download_status) / $($Result.download_method)"
-    Write-Host "video    : $($Result.video_path)"
+    $lines = New-Object System.Collections.Generic.List[string]
+    $lines.Add('=== Clipper Summary ===')
+    $lines.Add("route    : $($Result.route)")
+    $lines.Add("platform : $($Result.platform)")
+    $lines.Add("title    : $($Result.title)")
+    $lines.Add("capture  : $($Result.capture_id)")
+    $lines.Add("download : $($Result.download_status) / $($Result.download_method)")
+    $lines.Add("video    : $($Result.video_path)")
     if ($null -ne $Result.PSObject.Properties['note_path']) {
-        Write-Host "note     : $($Result.note_path)"
+        $lines.Add("note     : $($Result.note_path)")
+    }
+    if ($null -ne $Result.PSObject.Properties['support_bundle_path']) {
+        $lines.Add("share    : $($Result.support_bundle_path)")
     }
     if ($null -ne $Result.PSObject.Properties['errors'] -and @($Result.errors).Count -gt 0) {
-        Write-Host "error    : $((@($Result.errors) | Select-Object -First 1))" -ForegroundColor Yellow
+        $lines.Add("error    : $((@($Result.errors) | Select-Object -First 1))")
+    }
+    return @($lines)
+}
+
+function Write-RunSummary {
+    param($Result)
+    $lines = Get-RunSummaryLines -Result $Result
+    Write-Host ''
+    Write-Host $lines[0] -ForegroundColor Cyan
+    foreach ($line in @($lines | Select-Object -Skip 1)) {
+        if ($line -like 'error    :*') {
+            Write-Host $line -ForegroundColor Yellow
+        } else {
+            Write-Host $line
+        }
     }
     Write-Host ''
 }
@@ -881,7 +1048,33 @@ $captureErrors = Get-DataValue -Data $capture -Name 'errors'
 if ($null -ne $captureErrors -and @($captureErrors).Count -gt 0) { $result.errors = @($captureErrors) }
 $notePathFromRenderer = Get-StringValue -Data $note -Name 'note_path' -DefaultValue ''
 if (Test-HasValue $notePathFromRenderer) { $result.note_path = $notePathFromRenderer }
-Write-RunSummary -Result ([pscustomobject]$result)
-$json = $result | ConvertTo-Json -Depth 20
-if (Test-HasValue $OutputJsonPath) { Write-Utf8Text -Path $OutputJsonPath -Content $json }
+$artifactDirectory = Get-ArtifactDirectory -ExplicitDirectory $DebugDirectory -JsonPath $OutputJsonPath
+if (Test-HasValue $artifactDirectory) {
+    $result.debug_directory = $artifactDirectory
+    $result.support_bundle_path = Join-Path $artifactDirectory 'support-bundle'
+}
+
+$resultObject = [pscustomobject]$result
+$summaryLines = Get-RunSummaryLines -Result $resultObject
+if (Test-HasValue $artifactDirectory) {
+    $rawSummaryPath = Join-Path $artifactDirectory 'run-clipper-summary.txt'
+    Write-Utf8Text -Path $rawSummaryPath -Content ($summaryLines -join "`r`n")
+
+    $rawJsonPath = if (Test-HasValue $OutputJsonPath) { $OutputJsonPath } else { Join-Path $artifactDirectory 'run-clipper.json' }
+    $json = $resultObject | ConvertTo-Json -Depth 20
+    Write-Utf8Text -Path $rawJsonPath -Content $json
+
+    $supportBundleDirectory = New-Directory -Path (Join-Path $artifactDirectory 'support-bundle')
+    $sanitizedResult = Get-SanitizedData -Value $resultObject
+    Write-Utf8Text -Path (Join-Path $supportBundleDirectory 'run-clipper.json') -Content (($sanitizedResult | ConvertTo-Json -Depth 20))
+    $sanitizedSummaryLines = @((Get-RunSummaryLines -Result ([pscustomobject]$sanitizedResult)) | ForEach-Object { Sanitize-Text -Text ([string]$_) })
+    Write-Utf8Text -Path (Join-Path $supportBundleDirectory 'run-clipper-summary.txt') -Content ($sanitizedSummaryLines -join "`r`n")
+    $resultObject = [pscustomobject]$result
+} else {
+    $json = $resultObject | ConvertTo-Json -Depth 20
+    if (Test-HasValue $OutputJsonPath) { Write-Utf8Text -Path $OutputJsonPath -Content $json }
+}
+
+Write-RunSummary -Result $resultObject
+if (-not (Test-HasValue $json)) { $json = $resultObject | ConvertTo-Json -Depth 20 }
 $json
