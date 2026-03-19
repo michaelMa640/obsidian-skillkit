@@ -100,6 +100,57 @@ function Get-StringArrayValue {
     @()
 }
 
+function Get-CollectionCount {
+    param($Value)
+    if ($null -eq $Value) { return 0 }
+    if ($Value -is [System.Array]) { return @($Value).Count }
+    if ($Value -is [System.Collections.IEnumerable] -and -not ($Value -is [string])) { return @($Value).Count }
+    if (Test-HasValue ([string]$Value)) { return 1 }
+    0
+}
+
+function Test-LooksLikeInterstitialTitle {
+    param([string]$Text)
+    if (-not (Test-HasValue $Text)) { return $false }
+    return ([regex]::IsMatch($Text, '(?i)captcha|verify'))
+}
+
+function Get-RecordRichnessScore {
+    param($Record)
+    if ($null -eq $Record) { return 0 }
+
+    $score = 0
+    $title = Get-StringValue -Data $Record -Name 'title' -DefaultValue ''
+    $author = Get-StringValue -Data $Record -Name 'author' -DefaultValue ''
+    $publishedAt = Get-StringValue -Data $Record -Name 'published_at' -DefaultValue ''
+    $description = Get-StringValue -Data $Record -Name 'description' -DefaultValue ''
+    $rawText = Get-StringValue -Data $Record -Name 'raw_text' -DefaultValue ''
+    $coverUrl = Get-StringValue -Data $Record -Name 'cover_url' -DefaultValue ''
+    $metricsLike = Get-StringValue -Data $Record -Name 'metrics_like' -DefaultValue ''
+    $metricsComment = Get-StringValue -Data $Record -Name 'metrics_comment' -DefaultValue ''
+    $metricsShare = Get-StringValue -Data $Record -Name 'metrics_share' -DefaultValue ''
+    $metricsCollect = Get-StringValue -Data $Record -Name 'metrics_collect' -DefaultValue ''
+    $images = Get-StringArrayValue -Data $Record -Name 'images'
+    $videos = Get-StringArrayValue -Data $Record -Name 'videos'
+    $candidateVideoRefs = Get-StringArrayValue -Data $Record -Name 'candidate_video_refs'
+    $topComments = Get-StringArrayValue -Data $Record -Name 'top_comments'
+    $comments = Get-DataValue -Data $Record -Name 'comments'
+
+    if (Test-HasValue $title -and $title -notlike 'Social Clip*' -and -not (Test-LooksLikeInterstitialTitle -Text $title)) { $score += 2 }
+    if (Test-HasValue $author -and $author -ne 'unknown') { $score += 1 }
+    if (Test-HasValue $publishedAt -and $publishedAt -ne 'unknown') { $score += 1 }
+    if (Test-HasValue $description) { $score += 2 }
+    if (Test-HasValue $rawText -and $rawText.Length -ge 20) { $score += 1 }
+    if (@($images).Count -gt 0) { $score += 1 }
+    if (@($videos).Count -gt 0) { $score += 1 }
+    if (@($candidateVideoRefs).Count -gt 0) { $score += 2 }
+    if (Get-CollectionCount -Value $comments -gt 0 -or @($topComments).Count -gt 0) { $score += 2 }
+    if ((Test-HasValue $metricsLike) -or (Test-HasValue $metricsComment) -or (Test-HasValue $metricsShare) -or (Test-HasValue $metricsCollect)) { $score += 2 }
+    if (Test-HasValue $coverUrl) { $score += 1 }
+
+    return $score
+}
+
 function Get-NormalizedRelativePath {
     param([string]$BasePath, [string]$TargetPath)
     $baseFull = [System.IO.Path]::GetFullPath($BasePath).TrimEnd('\', '/')
@@ -249,6 +300,18 @@ if (Test-Path $existingCaptureSidecarPath) {
 
 $errors = New-Object System.Collections.Generic.List[string]
 $fallbacks = New-Object System.Collections.Generic.List[string]
+$currentRecordScore = Get-RecordRichnessScore -Record $record
+$existingRecordScore = Get-RecordRichnessScore -Record $existingCaptureRecord
+$existingCaptureId = if ($null -ne $existingCaptureRecord) { Get-StringValue -Data $existingCaptureRecord -Name 'capture_id' -DefaultValue '' } else { '' }
+if (
+    ($null -ne $existingCaptureRecord) -and
+    (Test-HasValue $existingCaptureId) -and
+    ($existingCaptureId -eq $captureId) -and
+    ($existingRecordScore -gt ($currentRecordScore + 2))
+) {
+    $record = $existingCaptureRecord
+    $fallbacks.Add('existing_capture_reused')
+}
 $downloadOutput = ''
 $videoFile = $null
 $downloadMethod = 'none'
@@ -257,15 +320,15 @@ $generatedCookiesFile = ''
 $effectiveCookiesFile = ''
 $ytDlpAuthMode = 'none'
 
-$storageStateAvailable = Test-HasValue $StorageStatePath -and (Test-Path $StorageStatePath)
-$cookiesFileAvailable = Test-HasValue $CookiesFile -and (Test-Path $CookiesFile)
+$storageStateAvailable = ((Test-HasValue $StorageStatePath) -and (Test-Path $StorageStatePath))
+$cookiesFileAvailable = ((Test-HasValue $CookiesFile) -and (Test-Path $CookiesFile))
 if ($cookiesFileAvailable) {
     $effectiveCookiesFile = $CookiesFile
     $ytDlpAuthMode = if ($storageStateAvailable) { 'storage_state+cookies_file' } else { 'cookies_file' }
 } elseif ($storageStateAvailable) {
     $generatedCookiesFile = Join-Path ([System.IO.Path]::GetTempPath()) ("obsidian-clipper-" + $captureId + "-cookies.txt")
     $effectiveCookiesFile = Export-StorageStateCookiesFile -StorageStatePath $StorageStatePath -OutputPath $generatedCookiesFile
-    if (Test-HasValue $effectiveCookiesFile -and (Test-Path $effectiveCookiesFile)) {
+    if ((Test-HasValue $effectiveCookiesFile) -and (Test-Path $effectiveCookiesFile)) {
         $ytDlpAuthMode = 'storage_state'
     }
 }
@@ -276,7 +339,21 @@ if ((Test-HasValue $StorageStatePath) -and -not $storageStateAvailable) {
     $errors.Add("Configured storage state file was not found: $StorageStatePath")
 }
 $ytDlpAuthArgs = Get-YtDlpAuthArguments -EffectiveCookiesFile $effectiveCookiesFile
-$ytMetadata = Get-YtDlpMetadata -Command $YtDlpCommand -Url $SourceUrl -ExtraArgs $ytDlpAuthArgs
+$downloadUrl = Get-StringValue -Data $record -Name 'normalized_url' -DefaultValue ''
+if (-not (Test-HasValue $downloadUrl)) {
+    $downloadUrl = Get-StringValue -Data $record -Name 'source_url' -DefaultValue $SourceUrl
+}
+if (-not (Test-HasValue $downloadUrl)) {
+    $downloadUrl = $SourceUrl
+}
+$downloadReferer = if (Test-HasValue $downloadUrl) { $downloadUrl } else { $SourceUrl }
+$downloadOrigin = ''
+try {
+    $downloadOrigin = ([System.Uri]$downloadReferer).GetLeftPart([System.UriPartial]::Authority)
+} catch {
+    $downloadOrigin = ''
+}
+$ytMetadata = Get-YtDlpMetadata -Command $YtDlpCommand -Url $downloadUrl -ExtraArgs $ytDlpAuthArgs
 
 try {
     $videoTemplate = Join-Path $attachmentDir 'video.%(ext)s'
@@ -284,7 +361,7 @@ try {
     if ($null -ne $ytDlpAuthArgs -and @($ytDlpAuthArgs).Count -gt 0) {
         $downloadArguments += $ytDlpAuthArgs
     }
-    $downloadArguments += @('-o', $videoTemplate, $SourceUrl)
+    $downloadArguments += @('-o', $videoTemplate, $downloadUrl)
     $downloadOutput = (& $YtDlpCommand @downloadArguments 2>&1 | Out-String)
     if ($LASTEXITCODE -eq 0) {
         $videoFile = Get-VideoFile -Directory $attachmentDir
@@ -316,8 +393,11 @@ if ($null -eq $videoFile) {
             $extension = Get-DownloadFileExtension -Url $candidate
             $fallbackVideoPath = Join-Path $attachmentDir ("video-playwright" + $extension)
             $headers = @{
-                'Referer' = $SourceUrl
+                'Referer' = $downloadReferer
                 'User-Agent' = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+            }
+            if (Test-HasValue $downloadOrigin) {
+                $headers['Origin'] = $downloadOrigin
             }
             Invoke-WebRequest -Uri $candidate -OutFile $fallbackVideoPath -Headers $headers -UseBasicParsing
             if ((Test-Path $fallbackVideoPath) -and ((Get-Item -LiteralPath $fallbackVideoPath).Length -gt 0)) {
@@ -357,7 +437,10 @@ if (Test-HasValue $coverUrl -and $coverUrl.StartsWith('http')) {
     try {
         $coverExtension = Get-DownloadFileExtension -Url $coverUrl -DefaultExtension '.jpg'
         $coverPath = Join-Path $attachmentDir ("cover" + $coverExtension)
-        $headers = @{ 'Referer' = $SourceUrl; 'User-Agent' = 'Mozilla/5.0' }
+        $headers = @{ 'Referer' = $downloadReferer; 'User-Agent' = 'Mozilla/5.0' }
+        if (Test-HasValue $downloadOrigin) {
+            $headers['Origin'] = $downloadOrigin
+        }
         Invoke-WebRequest -Uri $coverUrl -OutFile $coverPath -Headers $headers -UseBasicParsing
         if ((Test-Path $coverPath) -and ((Get-Item -LiteralPath $coverPath).Length -gt 0)) {
             $coverFile = Get-Item -LiteralPath $coverPath
@@ -472,7 +555,7 @@ $metadataPayload = [ordered]@{
 Write-Utf8Text -Path $sidecarCapturePath -Content ($record | ConvertTo-Json -Depth 100)
 Write-Utf8Text -Path $sidecarCommentsPath -Content ((Get-DataValue -Data $record -Name 'comments') | ConvertTo-Json -Depth 50)
 Write-Utf8Text -Path $sidecarMetadataPath -Content ($metadataPayload | ConvertTo-Json -Depth 50)
-if (Test-HasValue $generatedCookiesFile -and (Test-Path $generatedCookiesFile)) {
+if ((Test-HasValue $generatedCookiesFile) -and (Test-Path $generatedCookiesFile)) {
     Remove-Item -LiteralPath $generatedCookiesFile -Force -ErrorAction SilentlyContinue
 }
 

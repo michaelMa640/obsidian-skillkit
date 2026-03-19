@@ -94,6 +94,43 @@ Recommended local layout:
 - `scripts/download_social_media.ps1`: downloader + attachment landing helper for short social video
 - `scripts/bootstrap_social_auth.py`: local auth bootstrap helper for storage state + cookies export
 
+### Validation And Debugging
+
+`obsidian-clipper` keeps an explicit user-facing validation path for social capture and download debugging.
+
+Primary command:
+- `scripts/dev_validate_social_download.ps1`
+
+What the validator does:
+- prints step-by-step terminal status for `detect`, `capture`, `download`, and `clipper`
+- prints a short end-of-run summary with the current route, auth state, capture result, download result, and debug folder
+- writes a debug bundle under `obsidian-clipper/.tmp/social-download-validation/<timestamp>/`
+- always attempts to produce `validation-report.json`, `capture-social.json`, `download-social.json`, `run-clipper.json`, and related `.log` files even when a step fails
+
+Recommended files to share when debugging a failed run:
+- `validation-report.json`
+- `capture-social.json`
+- `download-social.json`
+- `capture-social.log`
+- `download-social.log`
+- `run-clipper.log`
+
+### Debug Privacy Rules
+
+The validation bundle is designed to help debugging without leaking local secrets.
+
+Current guardrails:
+- local auth files are used at runtime but not copied into the debug bundle
+- auth file paths are masked in saved JSON and logs
+- real vault paths are masked as `<vault-root>` in saved debug artifacts
+- raw source URLs are sanitized before being written to saved debug artifacts
+- `.local-auth/`, `.tmp/`, and `references/local-config.json` stay local-only and are excluded from git
+
+Users should never share:
+- `obsidian-clipper/.local-auth/*`
+- raw browser cookie exports
+- unsanitized local config files
+
 ### Dependencies
 
 Current runnable version needs:

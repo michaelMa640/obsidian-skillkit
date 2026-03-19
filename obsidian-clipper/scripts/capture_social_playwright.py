@@ -134,6 +134,36 @@ LOGIN_PROMPT_PATTERNS = (
     "鐧诲綍鏌ョ湅璇勮",
     "璇峰厛鐧诲綍",
 )
+INTERSTITIAL_TEXT_PATTERNS = (
+    "captcha",
+    "verify",
+    "验证码",
+    "验证码中间页",
+    "安全验证",
+    "请完成安全验证",
+)
+AUTH_HOME_URLS = {
+    "douyin": "https://www.douyin.com/",
+}
+AUTH_SESSION_COOKIE_NAMES = {
+    "douyin": {
+        "sessionid",
+        "sessionid_ss",
+        "sid_tt",
+        "uid_tt",
+        "passport_csrf_token",
+        "passport_csrf_token_default",
+        "ttwid",
+    },
+}
+AUTH_INVALID_PATTERNS = {
+    "douyin": (
+        *LOGIN_PROMPT_PATTERNS,
+        "登录查看更多精彩内容",
+        "登录后查看更多精彩内容",
+        "扫码登录",
+    ),
+}
 LIKELY_STATIC_IMAGE_MARKERS = (
     "douyinstatic.com/obj/douyin-pc-web",
     "byteimg.com/tos-cn-i-9r5gewecjs/emblem",
@@ -180,11 +210,94 @@ def truncate(text: str, length: int) -> str:
     return text[:length] + "..."
 
 
+def is_zero_like(value: str) -> bool:
+    normalized = normalize_ws(value)
+    return normalized in {"0", "0.0", "0.00"}
+
+
 def looks_like_login_prompt(text: str) -> bool:
     normalized = normalize_ws(text)
     if not normalized:
         return False
     return any(pattern in normalized for pattern in LOGIN_PROMPT_PATTERNS)
+
+
+def looks_like_interstitial_text(text: str) -> bool:
+    normalized = normalize_ws(text)
+    if not normalized:
+        return False
+    lowered = normalized.lower()
+    return any(pattern in lowered for pattern in INTERSTITIAL_TEXT_PATTERNS)
+
+
+def inspect_auth_session(context, platform: str, timeout_ms: int) -> dict[str, Any]:
+    home_url = AUTH_HOME_URLS.get(platform, "")
+    if not home_url:
+        return {
+            "auth_session_state": "unsupported_platform",
+            "auth_session_likely_valid": False,
+            "auth_session_reason": "no_preflight_for_platform",
+            "auth_visible_login_prompt": False,
+            "auth_context_cookie_count": 0,
+            "auth_session_cookie_names": [],
+        }
+
+    page = context.new_page()
+    try:
+        page.goto(home_url, wait_until="domcontentloaded", timeout=min(timeout_ms, 15000))
+        page.wait_for_timeout(1000)
+        try:
+            body_text = normalize_ws(page.locator("body").inner_text(timeout=min(timeout_ms, 2000)))
+        except Exception:
+            body_text = ""
+        cookies = context.cookies([home_url])
+        cookie_names = [normalize_ws(cookie.get("name", "")) for cookie in cookies if normalize_ws(cookie.get("name", ""))]
+        session_cookie_names = sorted(
+            {
+                name
+                for name in cookie_names
+                if name in AUTH_SESSION_COOKIE_NAMES.get(platform, set())
+            }
+        )
+        invalid_patterns = AUTH_INVALID_PATTERNS.get(platform, ())
+        login_prompt_seen = any(pattern in body_text for pattern in invalid_patterns)
+
+        if login_prompt_seen:
+            session_state = "login_prompt_visible"
+            likely_valid = False
+            session_reason = "login_prompt_visible_on_home"
+        elif session_cookie_names:
+            session_state = "likely_valid"
+            likely_valid = True
+            session_reason = "session_cookies_present_without_login_prompt"
+        elif cookie_names:
+            session_state = "cookies_loaded_without_session_cookie"
+            likely_valid = False
+            session_reason = "context_has_cookies_but_no_session_cookie"
+        else:
+            session_state = "no_cookies_loaded"
+            likely_valid = False
+            session_reason = "context_has_no_cookies"
+
+        return {
+            "auth_session_state": session_state,
+            "auth_session_likely_valid": likely_valid,
+            "auth_session_reason": session_reason,
+            "auth_visible_login_prompt": login_prompt_seen,
+            "auth_context_cookie_count": len(cookie_names),
+            "auth_session_cookie_names": session_cookie_names,
+        }
+    except Exception as exc:
+        return {
+            "auth_session_state": "unknown",
+            "auth_session_likely_valid": False,
+            "auth_session_reason": f"preflight_error: {exc}",
+            "auth_visible_login_prompt": False,
+            "auth_context_cookie_count": 0,
+            "auth_session_cookie_names": [],
+        }
+    finally:
+        page.close()
 
 
 def normalize_identity_url(url: str) -> str:
@@ -233,6 +346,15 @@ def extract_source_item_id(url: str, platform: str) -> str:
         if match:
             return match.group(1)
     return ""
+
+
+def build_navigation_url(url: str, platform: str) -> str:
+    normalized_input = normalize_identity_url(url)
+    if platform == "douyin":
+        source_item_id = extract_source_item_id(normalized_input, platform)
+        if source_item_id:
+            return f"https://www.douyin.com/video/{source_item_id}"
+    return normalized_input
 
 
 def build_capture_identity(platform: str, normalized_url: str, source_item_id: str) -> tuple[str, str]:
@@ -704,10 +826,17 @@ def fill_metric_fallbacks(platform: str, metrics: dict[str, str], *texts: str) -
 
 def extract_social_payload(page, source_url: str, platform: str, timeout_ms: int, auth_debug: dict[str, Any] | None = None) -> dict[str, Any]:
     rules = PLATFORM_RULES.get(platform, {})
-    final_url = normalize_identity_url(page.url)
+    requested_url = build_navigation_url(source_url, platform)
+    page_url = normalize_identity_url(page.url)
     source_item_id = first_non_empty(
-        extract_source_item_id(final_url, platform),
+        extract_source_item_id(page_url, platform),
+        extract_source_item_id(requested_url, platform),
         extract_source_item_id(source_url, platform),
+    )
+    final_url = requested_url if (platform == "douyin" and source_item_id) else first_non_empty(
+        page_url,
+        requested_url,
+        normalize_identity_url(source_url),
     )
     capture_key, capture_id = build_capture_identity(platform, final_url, source_item_id)
 
@@ -715,13 +844,19 @@ def extract_social_payload(page, source_url: str, platform: str, timeout_ms: int
     if platform == "douyin" and source_item_id:
         structured_payload = extract_douyin_api_payload(page, source_item_id, timeout_ms=min(timeout_ms, 5000))
 
+    page_title = normalize_ws(page.title().strip())
+    if looks_like_interstitial_text(page_title):
+        page_title = ""
+
     title = first_non_empty(
         structured_payload.get("title", ""),
         safe_meta_content(page, 'meta[property="og:title"]'),
         pick_text_by_selectors(page, rules.get("title_selectors", [])),
-        page.title().strip(),
+        page_title,
         f"Social Clip - {platform}",
     )
+    if looks_like_interstitial_text(title):
+        title = f"Social Clip - {platform}"
     description = normalize_ws(
         first_non_empty(
             structured_payload.get("description", ""),
@@ -729,6 +864,8 @@ def extract_social_payload(page, source_url: str, platform: str, timeout_ms: int
             safe_meta_content(page, 'meta[name="description"]'),
         )
     )
+    if looks_like_interstitial_text(description):
+        description = ""
     author = first_non_empty(
         structured_payload.get("author", ""),
         safe_meta_content(page, 'meta[name="author"]'),
@@ -756,6 +893,8 @@ def extract_social_payload(page, source_url: str, platform: str, timeout_ms: int
             normalize_ws(page.locator("body").inner_text(timeout=timeout_ms)),
         )
     visible_text = normalize_ws(visible_text)
+    if looks_like_interstitial_text(visible_text):
+        visible_text = ""
 
     api_comments = structured_payload.get("comments") or []
     api_top_comments = structured_payload.get("top_comments") or []
@@ -807,8 +946,13 @@ def extract_social_payload(page, source_url: str, platform: str, timeout_ms: int
 
     metrics = collect_metric_values(page, rules.get("metric_map", {}))
     for key, value in (structured_payload.get("metrics") or {}).items():
-        if value:
-            metrics[key] = value
+        normalized_value = normalize_ws(str(value))
+        if not normalized_value:
+            continue
+        existing_value = normalize_ws(metrics.get(key, ""))
+        if is_zero_like(normalized_value) and existing_value and not is_zero_like(existing_value):
+            continue
+        metrics[key] = normalized_value
     metrics = fill_metric_fallbacks(platform, metrics, description, visible_text, title)
     engagement = build_engagement(metrics)
 
@@ -859,14 +1003,24 @@ def extract_social_payload(page, source_url: str, platform: str, timeout_ms: int
         "comments_source": "douyin_api" if api_comments else ("dom" if comment_objects else "none"),
         "detail_api_status": structured_payload.get("detail_status", 0),
         "comments_api_status": structured_payload.get("comments_status", 0),
+        "detail_api_ok": bool(structured_payload.get("detail_ok")),
+        "comments_api_ok": bool(structured_payload.get("comments_ok")),
         "auth_applied": bool(auth_debug.get("auth_applied")),
         "auth_mode": first_non_empty(auth_debug.get("auth_mode"), "none"),
         "auth_cookie_count": int(auth_debug.get("auth_cookie_count", 0)),
+        "auth_session_state": first_non_empty(auth_debug.get("auth_session_state"), "unknown"),
+        "auth_session_likely_valid": bool(auth_debug.get("auth_session_likely_valid")),
+        "auth_visible_login_prompt": bool(auth_debug.get("auth_visible_login_prompt")),
+        "auth_context_cookie_count": int(auth_debug.get("auth_context_cookie_count", 0)),
         "auth_storage_state_configured": bool(auth_debug.get("auth_storage_state_configured")),
         "auth_cookies_file_configured": bool(auth_debug.get("auth_cookies_file_configured")),
     }
     if auth_debug.get("auth_error"):
         metadata["auth_error"] = first_non_empty(auth_debug.get("auth_error"))
+    if auth_debug.get("auth_session_reason"):
+        metadata["auth_session_reason"] = first_non_empty(auth_debug.get("auth_session_reason"))
+    if auth_debug.get("auth_session_cookie_names"):
+        metadata["auth_session_cookie_names"] = auth_debug.get("auth_session_cookie_names")
     metadata.update(metrics)
     if top_comments:
         metadata["comments_preview"] = top_comments
@@ -907,6 +1061,8 @@ def extract_social_payload(page, source_url: str, platform: str, timeout_ms: int
         "auth_applied": bool(auth_debug.get("auth_applied")),
         "auth_mode": first_non_empty(auth_debug.get("auth_mode"), "none"),
         "auth_cookie_count": int(auth_debug.get("auth_cookie_count", 0)),
+        "auth_session_state": first_non_empty(auth_debug.get("auth_session_state"), "unknown"),
+        "auth_session_likely_valid": bool(auth_debug.get("auth_session_likely_valid")),
         "engagement": engagement,
         "metrics_like": first_non_empty(engagement.get("like")),
         "metrics_comment": first_non_empty(engagement.get("comment")),
@@ -929,6 +1085,12 @@ def capture(url: str, platform: str, timeout_ms: int, storage_state: str = "", c
         "auth_cookie_count": 0,
         "auth_storage_state_configured": bool(storage_state),
         "auth_cookies_file_configured": bool(cookies_file),
+        "auth_session_state": "not_configured",
+        "auth_session_likely_valid": False,
+        "auth_session_reason": "",
+        "auth_visible_login_prompt": False,
+        "auth_context_cookie_count": 0,
+        "auth_session_cookie_names": [],
     }
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=True)
@@ -959,7 +1121,13 @@ def capture(url: str, platform: str, timeout_ms: int, storage_state: str = "", c
                 auth_debug["auth_error"] = f"cookies_file_missing: {cookies_file_path}"
 
             page = context.new_page()
-            page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+            if auth_debug.get("auth_applied"):
+                auth_debug.update(inspect_auth_session(context, platform, timeout_ms=min(timeout_ms, 15000)))
+            elif auth_debug.get("auth_error"):
+                auth_debug["auth_session_state"] = "missing_files"
+                auth_debug["auth_session_reason"] = first_non_empty(auth_debug.get("auth_error"))
+            navigation_url = build_navigation_url(url, platform)
+            page.goto(navigation_url, wait_until="domcontentloaded", timeout=timeout_ms)
             page.wait_for_timeout(1200)
             wait_for_platform(page, platform, timeout_ms)
             page.mouse.wheel(0, 1800)

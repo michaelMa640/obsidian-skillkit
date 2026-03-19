@@ -59,6 +59,21 @@ powershell -ExecutionPolicy Bypass -File ".\obsidian-clipper\scripts\dev_validat
 - tool logs such as `tool-python.log`, `tool-yt-dlp.log`, `tool-ffprobe.log`
 - step logs such as `detect-platform.log`, `capture-social.log`, `download-social.log`, `run-clipper.log`
 
+## Privacy Defaults
+
+The validation bundle is intended to be shareable for troubleshooting.
+
+Saved debug artifacts are sanitized before the run completes:
+- real vault roots are masked as `<vault-root>`
+- auth file paths are masked as `<auth-storage-state>` and `<auth-cookies-file>`
+- source URLs are normalized or stripped of extra query noise before being written into final debug artifacts
+- local auth files themselves are never copied into the debug bundle
+
+Do not share:
+- anything under `obsidian-clipper/.local-auth/`
+- `references/local-config.json`
+- raw browser exports that contain cookie values
+
 ## Success Criteria
 
 - detection route is `social`

@@ -5,6 +5,8 @@ param(
     [string]$CategoryHint,
     [string]$TitleHint,
     [string]$ConfigPath,
+    [string]$DetectionJsonPath,
+    [string]$CaptureJsonPath,
     [string]$OutputJsonPath,
     [switch]$DryRun
 )
@@ -825,14 +827,43 @@ function Write-NoteToVault {
     $targetPath
 }
 
+function Write-RunSummary {
+    param($Result)
+    Write-Host ''
+    Write-Host '=== Clipper Summary ===' -ForegroundColor Cyan
+    Write-Host "route    : $($Result.route)"
+    Write-Host "platform : $($Result.platform)"
+    Write-Host "title    : $($Result.title)"
+    Write-Host "capture  : $($Result.capture_id)"
+    Write-Host "download : $($Result.download_status) / $($Result.download_method)"
+    Write-Host "video    : $($Result.video_path)"
+    if ($null -ne $Result.PSObject.Properties['note_path']) {
+        Write-Host "note     : $($Result.note_path)"
+    }
+    if ($null -ne $Result.PSObject.Properties['errors'] -and @($Result.errors).Count -gt 0) {
+        Write-Host "error    : $((@($Result.errors) | Select-Object -First 1))" -ForegroundColor Yellow
+    }
+    Write-Host ''
+}
+
 if (-not (Test-HasValue $ConfigPath)) {
     if (Test-Path (Join-Path $PSScriptRoot '..\references\local-config.json')) { $ConfigPath = Join-Path $PSScriptRoot '..\references\local-config.json' } else { $ConfigPath = Join-Path $PSScriptRoot '..\references\local-config.example.json' }
 }
 $config = Get-Config -Path $ConfigPath
 $resolvedVaultPath = Get-ResolvedVaultPath -Config $config -VaultPath $VaultPath
 if (-not $DryRun -and -not (Test-HasValue $resolvedVaultPath)) { throw 'No vault path provided. Supply -VaultPath or set obsidian.vault_path in config.' }
-$detection = Get-Detection -Url $SourceUrl
-$capture = Invoke-CaptureRoute -Config $config -Detection $detection -Url $SourceUrl -TitleHint $TitleHint -ResolvedVaultPath $resolvedVaultPath -DryRun:$DryRun
+if (Test-HasValue $DetectionJsonPath) {
+    if (-not (Test-Path $DetectionJsonPath)) { throw "Detection JSON not found: $DetectionJsonPath" }
+    $detection = ConvertFrom-JsonCompat -Json (Read-Utf8Text -Path $DetectionJsonPath) -Depth 64
+} else {
+    $detection = Get-Detection -Url $SourceUrl
+}
+if (Test-HasValue $CaptureJsonPath) {
+    if (-not (Test-Path $CaptureJsonPath)) { throw "Capture JSON not found: $CaptureJsonPath" }
+    $capture = ConvertFrom-JsonCompat -Json (Read-Utf8Text -Path $CaptureJsonPath) -Depth 100
+} else {
+    $capture = Invoke-CaptureRoute -Config $config -Detection $detection -Url $SourceUrl -TitleHint $TitleHint -ResolvedVaultPath $resolvedVaultPath -DryRun:$DryRun
+}
 $note = Invoke-NoteRenderer -Config $config -Detection $detection -Capture $capture -SourceUrl $SourceUrl -CategoryHint $CategoryHint -ResolvedVaultPath $resolvedVaultPath -DryRun:$DryRun
 $captureMetadata = Get-DataValue -Data $capture -Name 'metadata'
 $captureIdForResult = Get-StringValue -Data $capture -Name 'capture_id' -DefaultValue ''
@@ -846,8 +877,11 @@ if (-not (Test-HasValue $videoPathForResult) -and $null -ne $captureMetadata) { 
 $sidecarPathForResult = Get-StringValue -Data $capture -Name 'sidecar_path' -DefaultValue ''
 if (-not (Test-HasValue $sidecarPathForResult) -and $null -ne $captureMetadata) { $sidecarPathForResult = Get-StringValue -Data $captureMetadata -Name 'sidecar_path' -DefaultValue '' }
 $result = [ordered]@{ success=$true; dry_run=[bool]$DryRun; title=$note.title; folder=$note.folder; file_name=$note.file_name; route=$detection.route; platform=$detection.platform; content_type=$detection.content_type; capture_id=$captureIdForResult; download_status=$downloadStatusForResult; download_method=$downloadMethodForResult; video_path=$videoPathForResult; sidecar_path=$sidecarPathForResult; tags=$note.tags; note_preview=$note.note_body; vault_path = $resolvedVaultPath }
+$captureErrors = Get-DataValue -Data $capture -Name 'errors'
+if ($null -ne $captureErrors -and @($captureErrors).Count -gt 0) { $result.errors = @($captureErrors) }
 $notePathFromRenderer = Get-StringValue -Data $note -Name 'note_path' -DefaultValue ''
 if (Test-HasValue $notePathFromRenderer) { $result.note_path = $notePathFromRenderer }
+Write-RunSummary -Result ([pscustomobject]$result)
 $json = $result | ConvertTo-Json -Depth 20
 if (Test-HasValue $OutputJsonPath) { Write-Utf8Text -Path $OutputJsonPath -Content $json }
 $json
