@@ -11,6 +11,25 @@ Supported user intents:
 
 - `剪藏（链接）`
 - `拆解视频（链接）`
+- `剪藏视频：<share text>`
+- `拆解视频：<share text>`
+
+## Entry modules
+
+Current entry layers may coexist:
+
+- Feishu bot entry
+- iOS Shortcuts entry
+
+For iOS mobile usage, the current recommended route is:
+
+`iOS Shortcuts -> Feishu bot -> OpenClaw -> skills`
+
+See also:
+
+- `ios-shortcuts-entry/README.md`
+- `ios-shortcuts-entry/references/feishu-message-contract.md`
+- `ios-shortcuts-entry/references/openclaw-routing-contract.md`
 
 ## Intent mapping
 
@@ -26,6 +45,11 @@ OpenClaw should:
 
 - call only `obsidian-clipper`
 
+Shortcut-style prefixes that should map here:
+
+- `剪藏视频：`
+- `剪藏：`
+
 ### 2. Analyze video
 
 Examples:
@@ -39,6 +63,12 @@ OpenClaw should:
 - if the input is already a clipping note or explicit `note_path`, call `obsidian-analyzer`
 - if the input is a raw URL or share text, call `obsidian-clipper` first
 - then call `obsidian-analyzer`
+
+Shortcut-style prefixes that should map here:
+
+- `拆解视频：`
+- `分析视频：`
+- `爆款拆解：`
 
 Workflow:
 

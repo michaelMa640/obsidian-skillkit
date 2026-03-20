@@ -19,11 +19,13 @@ description: Quickly clip a URL or share text into an Obsidian vault as a reusab
 ## OpenClaw behavior rules
 
 - User intent like `剪藏`, `保存链接`, `收录视频`, `保存到 Obsidian` should call this skill directly.
+- Explicit entry prefixes like `剪藏视频：` or `剪藏：` should call this skill directly.
 - If the user intent contains `拆解`, `分析`, `爆款拆解`, or `分析视频`, and the input is a raw URL or share text, do not stop after clipping.
 - In that case, this skill is stage 1 of a two-stage workflow:
   - first create the clipping note
   - then hand the returned `note_path` or `sidecar_path` to `obsidian-analyzer`
 - `拆解视频（链接）` must not end at clipping unless clipping itself failed.
+- `拆解视频：<share text>` must not end at clipping unless clipping itself failed.
 - OpenClaw must use the exact `note_path` and `sidecar_path` returned by this skill.
 - Do not rewrite the clipping note name into a slug, English alias, pinyin alias, or capture-id file name.
 - Do not manually rename the clipping note inside OpenClaw.

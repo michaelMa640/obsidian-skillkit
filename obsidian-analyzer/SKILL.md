@@ -20,9 +20,11 @@ description: Read an existing clipping note from Obsidian and turn it into a str
 ## OpenClaw behavior rules
 
 - For requests like `拆解视频`, `分析视频`, `爆款拆解`, or `分析这条短视频`:
+- For requests like `拆解视频`, `分析视频`, `爆款拆解`, `分析这条短视频`, or prefixes like `拆解视频：`:
   - if the input is an existing clipping note or explicit `note_path`, call this skill directly
   - if the input is a raw URL or share text, first call `obsidian-clipper`, then call `obsidian-analyzer`
 - Treat `拆解视频（链接）` as `clip first -> analyze second` by default.
+- Treat `拆解视频：<share text>` as `clip first -> analyze second` by default.
 - If OpenClaw only matched `obsidian-clipper` first, it must continue into this skill after clipping succeeds.
 - The workflow is not complete until the breakdown note is generated or the analyzer stage fails explicitly.
 - OpenClaw must trust only the structured outputs returned by `obsidian-clipper`.
