@@ -54,6 +54,10 @@ def yaml_scalar(value: Any) -> str:
     return "'" + str(value).replace("'", "''") + "'"
 
 
+def frontmatter_text(value: Any) -> str:
+    return normalize_inline_spaces(value)
+
+
 def markdown_title(title: str) -> str:
     if not has_value(title):
         return "未命名剪藏"
@@ -275,27 +279,27 @@ def render_note(config: dict[str, Any], detection: dict[str, Any], capture: dict
     top_comments = collect_top_comments(capture)
     lines = [
         "---",
-        f"title: {yaml_scalar(title)}",
-        f"note_title: {yaml_scalar(note_title)}",
-        f"source_url: {yaml_scalar(source_url)}",
-        f"normalized_url: {yaml_scalar(normalized_url)}",
-        f"platform: {yaml_scalar(detection.get('platform', ''))}",
-        f"content_type: {yaml_scalar(detection.get('content_type', ''))}",
-        f"author: {yaml_scalar(author)}",
-        f"published_at: {yaml_scalar(published_at)}",
-        f"captured_at: {yaml_scalar(captured_at)}",
-        f"route: {yaml_scalar(detection.get('route', ''))}",
-        f"capture_id: {yaml_scalar(capture_id)}",
-        f"capture_key: {yaml_scalar(capture_key)}",
-        f"source_item_id: {yaml_scalar(source_item_id)}",
-        f"capture_level: {yaml_scalar(capture_level)}",
-        f"transcript_status: {yaml_scalar(transcript_status)}",
+        f"title: {yaml_scalar(frontmatter_text(title))}",
+        f"note_title: {yaml_scalar(frontmatter_text(note_title))}",
+        f"source_url: {yaml_scalar(frontmatter_text(source_url))}",
+        f"normalized_url: {yaml_scalar(frontmatter_text(normalized_url))}",
+        f"platform: {yaml_scalar(frontmatter_text(detection.get('platform', '')))}",
+        f"content_type: {yaml_scalar(frontmatter_text(detection.get('content_type', '')))}",
+        f"author: {yaml_scalar(frontmatter_text(author))}",
+        f"published_at: {yaml_scalar(frontmatter_text(published_at))}",
+        f"captured_at: {yaml_scalar(frontmatter_text(captured_at))}",
+        f"route: {yaml_scalar(frontmatter_text(detection.get('route', '')))}",
+        f"capture_id: {yaml_scalar(frontmatter_text(capture_id))}",
+        f"capture_key: {yaml_scalar(frontmatter_text(capture_key))}",
+        f"source_item_id: {yaml_scalar(frontmatter_text(source_item_id))}",
+        f"capture_level: {yaml_scalar(frontmatter_text(capture_level))}",
+        f"transcript_status: {yaml_scalar(frontmatter_text(transcript_status))}",
         f"media_downloaded: {str(media_downloaded).lower()}",
         f"analysis_ready: {str(analysis_ready).lower()}",
-        f"download_status: {yaml_scalar(download_status)}",
-        f"download_method: {yaml_scalar(download_method)}",
-        f"video_path: {yaml_scalar(video_path)}",
-        f"sidecar_path: {yaml_scalar(sidecar_path)}",
+        f"download_status: {yaml_scalar(frontmatter_text(download_status))}",
+        f"download_method: {yaml_scalar(frontmatter_text(download_method))}",
+        f"video_path: {yaml_scalar(frontmatter_text(video_path))}",
+        f"sidecar_path: {yaml_scalar(frontmatter_text(sidecar_path))}",
         "tags:",
     ]
     lines.extend([f"  - {yaml_scalar(tag)}" for tag in tags])
