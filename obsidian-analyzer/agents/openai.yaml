@@ -1,4 +1,4 @@
 interface:
   display_name: "Obsidian Analyzer"
-  short_description: "Analyze an existing clipping into structured knowledge."
-  default_prompt: "Use $obsidian-analyzer to read an existing Obsidian clipping and turn it into a learn note or a short-content breakdown."
+  short_description: "Analyze a clipping into structured knowledge. If the input is a raw short-video link or share text, clip it first and then analyze it."
+  default_prompt: "Use $obsidian-analyzer to generate a breakdown from an existing clipping. If the user gave a raw short-video link or share text instead of a note_path, first call $obsidian-clipper, then analyze the returned clipping note."

@@ -45,6 +45,14 @@ OpenClaw 应执行：
 1. clip first
 2. analyze second
 
+这个意图的完成条件不是“剪藏成功”，而是：
+
+1. clipping note 已生成
+2. `obsidian-analyzer` 已运行
+3. `爆款拆解/` 下生成了拆解笔记
+
+如果只完成了第 1 步，OpenClaw 不能把任务当作完成。
+
 ## 首次运行前先做配置预检
 
 OpenClaw 在首次运行，或在流程进入正式抓取前失败时，先检查本机配置。
@@ -188,4 +196,10 @@ https://v.douyin.com/xxxxxxx/
 请帮我拆解这个抖音短视频。
 如果它还没有被剪藏，请先用 Obsidian-Clipper 剪藏，再用 Obsidian-Analyzer 生成爆款拆解：
 https://v.douyin.com/xxxxxxx/
+```
+
+更直接的说法也应该被当成同一个工作流：
+
+```text
+拆解视频：0.25 复制打开抖音，看看…… https://v.douyin.com/xxxxxxx/ ...
 ```

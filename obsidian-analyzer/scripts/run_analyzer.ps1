@@ -63,6 +63,145 @@ function New-Directory {
     $Path
 }
 
+function Get-CheckMarkedTitle {
+    param([string]$Title)
+    $value = if (Test-HasValue $Title) { $Title.Trim() } else { '' }
+    if (-not (Test-HasValue $value)) { return ([string][char]0x2713) }
+    if ($value -match '^[\u2713\u2714\u221A\u2705]\s*') { return $value }
+    ('{0} {1}' -f ([string][char]0x2713), $value)
+}
+
+function Set-FrontmatterScalarLine {
+    param(
+        [System.Collections.Generic.List[string]]$Lines,
+        [int]$FrontmatterEndIndex,
+        [string]$Key,
+        [string]$Value
+    )
+    $updated = $false
+    for ($index = 1; $index -lt $FrontmatterEndIndex; $index += 1) {
+        if ($Lines[$index] -match ('^{0}:' -f [regex]::Escape($Key))) {
+            $Lines[$index] = ('{0}: {1}' -f $Key, ("'" + $Value.Replace("'", "''") + "'"))
+            $updated = $true
+            break
+        }
+    }
+    if (-not $updated) {
+        $Lines.Insert($FrontmatterEndIndex, ('{0}: {1}' -f $Key, ("'" + $Value.Replace("'", "''") + "'")))
+    }
+}
+
+function Mark-ClippingNoteAsAnalyzed {
+    param([string]$NotePath)
+
+    $result = [ordered]@{
+        note_path = $NotePath
+        changed = $false
+        warning = ''
+    }
+    if (-not (Test-ExistingPath $NotePath)) { return [pscustomobject]$result }
+
+    $content = Read-Utf8Text -Path $NotePath
+    $lines = [System.Collections.Generic.List[string]]::new()
+    foreach ($line in ($content -split "`r?`n")) { $lines.Add([string]$line) }
+    if ($lines.Count -eq 0) { return [pscustomobject]$result }
+
+    $frontmatterEndIndex = -1
+    if ($lines[0] -eq '---') {
+        for ($index = 1; $index -lt $lines.Count; $index += 1) {
+            if ($lines[$index] -eq '---') {
+                $frontmatterEndIndex = $index
+                break
+            }
+        }
+    }
+
+    $currentNoteTitle = ''
+    if ($frontmatterEndIndex -gt 0) {
+        for ($index = 1; $index -lt $frontmatterEndIndex; $index += 1) {
+            if ($lines[$index] -match '^note_title:\s*''(?<value>.*)''\s*$') {
+                $currentNoteTitle = $Matches['value'].Replace("''", "'")
+                break
+            }
+        }
+    }
+    if (-not (Test-HasValue $currentNoteTitle)) {
+        for ($index = 0; $index -lt $lines.Count; $index += 1) {
+            if ($lines[$index] -match '^#\s+(?<value>.+)$') {
+                $currentNoteTitle = [string]$Matches['value']
+                break
+            }
+        }
+    }
+    if (-not (Test-HasValue $currentNoteTitle)) {
+        $currentNoteTitle = [System.IO.Path]::GetFileNameWithoutExtension($NotePath)
+    }
+
+    $markedNoteTitle = Get-CheckMarkedTitle -Title $currentNoteTitle
+    if ($markedNoteTitle -ne $currentNoteTitle) {
+        $result.changed = $true
+    }
+
+    if ($frontmatterEndIndex -gt 0) {
+        Set-FrontmatterScalarLine -Lines $lines -FrontmatterEndIndex $frontmatterEndIndex -Key 'note_title' -Value $markedNoteTitle
+        Set-FrontmatterScalarLine -Lines $lines -FrontmatterEndIndex $frontmatterEndIndex -Key 'analyzer_status' -Value 'analyzed'
+    }
+
+    for ($index = 0; $index -lt $lines.Count; $index += 1) {
+        if ($lines[$index] -match '^#\s+') {
+            $lines[$index] = '# ' + $markedNoteTitle
+            break
+        }
+    }
+    for ($index = 0; $index -lt $lines.Count; $index += 1) {
+        if ($lines[$index] -match '^- Analyzer 状态:') {
+            $lines[$index] = '- Analyzer 状态: analyzed'
+            break
+        }
+    }
+
+    $currentFileName = [System.IO.Path]::GetFileName($NotePath)
+    $targetFileName = $currentFileName
+    if ($currentFileName -notmatch '^[\u2713\u2714\u221A\u2705]\s*') {
+        $targetFileName = ('{0} {1}' -f ([string][char]0x2713), $currentFileName)
+        $result.changed = $true
+    }
+    $targetPath = Join-Path (Split-Path -Parent $NotePath) $targetFileName
+    if (($targetPath -ne $NotePath) -and (Test-Path $targetPath)) {
+        $result.warning = "Marked clipping note already exists: $targetPath"
+        return [pscustomobject]$result
+    }
+
+    $updatedContent = ($lines -join "`n")
+    if (-not $updatedContent.EndsWith("`n")) { $updatedContent += "`n" }
+    Write-Utf8Text -Path $NotePath -Content $updatedContent
+    if ($targetPath -ne $NotePath) {
+        Move-Item -LiteralPath $NotePath -Destination $targetPath
+        $result.note_path = $targetPath
+    }
+
+    [pscustomobject]$result
+}
+
+function Invoke-BreakdownRenderer {
+    param(
+        [string]$AnalysisJsonPath,
+        [string]$TargetFolder,
+        [string]$RendererOutputJsonPath,
+        [string]$ResolvedVaultPath,
+        [bool]$DryRun
+    )
+    $args = @((Join-Path $PSScriptRoot 'render_breakdown_note.py'), '--analysis-json', $AnalysisJsonPath, '--folder', $TargetFolder, '--output-json', $RendererOutputJsonPath)
+    if (Test-HasValue $ResolvedVaultPath) { $args += @('--vault-path', $ResolvedVaultPath) }
+    if ($DryRun) { $args += '--dry-run' }
+    $rendererOutput = & python @args 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        $detail = (($rendererOutput | Out-String).Trim())
+        throw "render_breakdown_note.py failed with exit code $LASTEXITCODE. Details: $detail"
+    }
+    ConvertFrom-JsonCompat -Json (Read-Utf8Text -Path $RendererOutputJsonPath) -Depth 100
+}
+
 function Get-ConfigPathResolved {
     param([string]$RequestedPath)
     if (Test-HasValue $RequestedPath) { return $RequestedPath }
@@ -266,6 +405,9 @@ function Get-AnalyzerSummaryLines {
     if ($null -ne $Result.PSObject.Properties['analysis_input_path'] -and (Test-HasValue ([string]$Result.analysis_input_path))) { $lines.Add("analysis : $($Result.analysis_input_path)") }
     if ($null -ne $Result.PSObject.Properties['analyzer_payload_warning_count']) { $lines.Add("warnings : $($Result.analyzer_payload_warning_count)") }
     if ($null -ne $Result.PSObject.Properties['note_path']) { $lines.Add("note     : $($Result.note_path)") }
+    if ($null -ne $Result.PSObject.Properties['source_note_path'] -and (Test-HasValue ([string]$Result.source_note_path))) { $lines.Add("source   : $($Result.source_note_path)") }
+    if ($null -ne $Result.PSObject.Properties['clipping_note_marked']) { $lines.Add("marked   : $($Result.clipping_note_marked)") }
+    if ($null -ne $Result.PSObject.Properties['clipping_note_mark_warning'] -and (Test-HasValue ([string]$Result.clipping_note_mark_warning))) { $lines.Add("markwarn : $($Result.clipping_note_mark_warning)") }
     if ($null -ne $Result.PSObject.Properties['support_bundle_path']) { $lines.Add("share    : $($Result.support_bundle_path)") }
     if ($null -ne $Result.PSObject.Properties['debug_directory']) { $lines.Add("debug    : $($Result.debug_directory)") }
     $lines.Add("result   : $($Result.final_run_status)")
@@ -385,16 +527,24 @@ try {
     $targetFolder = if ($analysisMode -eq 'analyze') { [string]$config.analyzer.default_analyze_folder } else { [string]$config.analyzer.default_learn_folder }
     if (-not (Test-HasValue $targetFolder)) { $targetFolder = if ($analysisMode -eq 'analyze') { Zh '\u7206\u6b3e\u62c6\u89e3' } else { 'Insights' } }
     $rendererOutputJsonPath = Join-Path $artifactDirectory 'run-analyzer.json'
-    $args = @((Join-Path $PSScriptRoot 'render_breakdown_note.py'), '--analysis-json', $analysisJsonPath, '--folder', $targetFolder, '--output-json', $rendererOutputJsonPath)
-    if (Test-HasValue $resolvedVaultPath) { $args += @('--vault-path', $resolvedVaultPath) }
-    if ($DryRun) { $args += '--dry-run' }
-    $rendererOutput = & python @args 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        $detail = (($rendererOutput | Out-String).Trim())
-        throw "render_breakdown_note.py failed with exit code $LASTEXITCODE. Details: $detail"
+    $rendererResult = Invoke-BreakdownRenderer -AnalysisJsonPath $analysisJsonPath -TargetFolder $targetFolder -RendererOutputJsonPath $rendererOutputJsonPath -ResolvedVaultPath $resolvedVaultPath -DryRun ([bool]$DryRun)
+
+    $markedSourceNotePath = Get-StringValue -Data $payload -Name 'source_note_path' -DefaultValue ''
+    $clippingNoteMarked = $false
+    $clippingNoteMarkWarning = ''
+    if (-not [bool]$DryRun -and $analysisMode -eq 'analyze' -and $rendererResult.analysis_status -in @('success', 'partial')) {
+        $markResult = Mark-ClippingNoteAsAnalyzed -NotePath $markedSourceNotePath
+        $markedSourceNotePath = [string]$markResult.note_path
+        $clippingNoteMarked = [bool]$markResult.changed
+        $clippingNoteMarkWarning = [string]$markResult.warning
+        if (Test-HasValue $markedSourceNotePath) {
+            Set-ObjectField -Object $payload -Name 'source_note_path' -Value $markedSourceNotePath | Out-Null
+            Set-ObjectField -Object $analysis -Name 'source_note_path' -Value $markedSourceNotePath | Out-Null
+            Write-Utf8Text -Path $analysisJsonPath -Content ($analysis | ConvertTo-Json -Depth 20)
+            $rendererResult = Invoke-BreakdownRenderer -AnalysisJsonPath $analysisJsonPath -TargetFolder $targetFolder -RendererOutputJsonPath $rendererOutputJsonPath -ResolvedVaultPath $resolvedVaultPath -DryRun $false
+        }
     }
 
-    $rendererResult = ConvertFrom-JsonCompat -Json (Read-Utf8Text -Path $rendererOutputJsonPath) -Depth 100
     $result = [pscustomobject]@{
         success = $true
         dry_run = [bool]$DryRun
@@ -410,6 +560,9 @@ try {
         analyzer_payload_path = $payloadJsonPath
         analysis_input_path = $analysisJsonPath
         analyzer_payload_warning_count = @($payload.payload_warnings).Count
+        source_note_path = $markedSourceNotePath
+        clipping_note_marked = [bool]$clippingNoteMarked
+        clipping_note_mark_warning = $clippingNoteMarkWarning
         debug_directory = $artifactDirectory
         support_bundle_path = Join-Path $artifactDirectory 'support-bundle'
     }

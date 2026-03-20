@@ -23,6 +23,8 @@ description: Read an existing clipping note from Obsidian and turn it into a str
   - if the input is an existing clipping note or explicit `note_path`, call this skill directly
   - if the input is a raw URL or share text, first call `obsidian-clipper`, then call `obsidian-analyzer` with the returned `note_path`
 - Treat `拆解视频（链接）` as `clip first -> analyze second` by default.
+- If OpenClaw only matched `obsidian-clipper` first, it should still continue into this skill after clipping succeeds.
+- The workflow is not complete until the breakdown note is generated or the analyzer stage fails explicitly.
 - If the machine is running this skill for the first time, or the run fails before payload build, run `scripts/validate_local_config.ps1` first.
 - If required config is missing, stop and tell the user exactly which file and fields must be updated.
 - Always return these fields after a run:

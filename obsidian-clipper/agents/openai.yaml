@@ -1,4 +1,4 @@
 interface:
   display_name: "Obsidian Clipper"
-  short_description: "Quickly clip a link into Obsidian Clippings."
-  default_prompt: "Use $obsidian-clipper to capture a link into Obsidian Clippings with the lightest useful route for that source."
+  short_description: "Clip links or share text into Obsidian. For analyze/breakdown requests, clip first and then hand off to Obsidian Analyzer."
+  default_prompt: "Use $obsidian-clipper to capture a link or share text into Obsidian Clippings. If the user asked to analyze or break down a raw short-video link, clip it first and then continue with $obsidian-analyzer on the returned note_path."
