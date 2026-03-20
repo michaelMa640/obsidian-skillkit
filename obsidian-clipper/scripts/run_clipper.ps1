@@ -16,6 +16,16 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'source_input_helpers.ps1')
 
+function Initialize-Utf8ProcessEncoding {
+    $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+    [Console]::InputEncoding = $utf8NoBom
+    [Console]::OutputEncoding = $utf8NoBom
+    $script:OutputEncoding = $utf8NoBom
+    $env:PYTHONIOENCODING = 'utf-8'
+}
+
+Initialize-Utf8ProcessEncoding
+
 function Read-Utf8Text {
     param([string]$Path)
     [System.IO.File]::ReadAllText($Path, [System.Text.UTF8Encoding]::new($false))

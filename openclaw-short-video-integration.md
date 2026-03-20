@@ -1,162 +1,174 @@
-# OpenClaw 短视频接入说明
+# OpenClaw Short-Video Integration
 
-## 目标
+## Goal
 
-让 OpenClaw 通过两个 skill 完成短视频工作流：
+Use two skills to complete the short-video workflow:
 
 - `obsidian-clipper`
 - `obsidian-analyzer`
 
-对应两类用户意图：
+Supported user intents:
 
 - `剪藏（链接）`
 - `拆解视频（链接）`
 
-## 推荐意图映射
+## Intent mapping
 
-### 1. 只剪藏
+### 1. Clip only
 
-用户说法示例：
+Examples:
 
 - 帮我剪藏这个视频
 - 请帮我保存这个抖音链接到 Obsidian
 - 帮我收录这个短视频
 
-OpenClaw 应执行：
+OpenClaw should:
 
-- 只调用 `obsidian-clipper`
+- call only `obsidian-clipper`
 
-### 2. 拆解视频
+### 2. Analyze video
 
-用户说法示例：
+Examples:
 
 - 帮我拆解这个视频
 - 分析这个抖音短视频
 - 拆解视频：https://...
 
-OpenClaw 应执行：
+OpenClaw should:
 
-- 如果输入已经是 clipping note 或明确 `note_path`，直接调用 `obsidian-analyzer`
-- 如果输入是 URL 或分享文本，先调用 `obsidian-clipper`
-- 取得 `note_path` 后，再调用 `obsidian-analyzer`
+- if the input is already a clipping note or explicit `note_path`, call `obsidian-analyzer`
+- if the input is a raw URL or share text, call `obsidian-clipper` first
+- then call `obsidian-analyzer`
 
-也就是：
+Workflow:
 
 1. clip first
 2. analyze second
 
-这个意图的完成条件不是“剪藏成功”，而是：
+The task is complete only when:
 
-1. clipping note 已生成
-2. `obsidian-analyzer` 已运行
-3. `爆款拆解/` 下生成了拆解笔记
+1. the clipping note exists
+2. analyzer has run
+3. a breakdown note exists in `爆款拆解/`
 
-如果只完成了第 1 步，OpenClaw 不能把任务当作完成。
+If only step 1 completed, the workflow is not complete.
 
-## 首次运行前先做配置预检
+## Handoff rules that OpenClaw must follow
 
-OpenClaw 在首次运行，或在流程进入正式抓取前失败时，先检查本机配置。
+- After `obsidian-clipper` succeeds, OpenClaw must read the structured result JSON and use the returned `note_path`.
+- OpenClaw must not reconstruct a clipping file name from:
+  - title
+  - hashtags
+  - platform
+  - capture id
+  - guessed English slug or pinyin slug
+- OpenClaw must never invent names like `2026-03-20-douyin-yashua.md`.
+- If the returned `note_path` includes Chinese or emoji and shell argument passing is unreliable, OpenClaw must switch to the returned `sidecar_path` and invoke analyzer with `-CaptureJsonPath`.
+- OpenClaw must not use wildcard matching, manual renaming, or repeated file-system guessing to locate the clipping note.
+- If the first analyzer handoff fails, OpenClaw should stop and return the real failure plus `support-bundle/`, not brute-force multiple retries.
 
-### Clipper 预检
+## First-run config checks
 
-脚本：
+Before formal execution, or whenever the workflow fails before capture/analyze starts, OpenClaw should run local config validation.
+
+### Clipper config check
+
+Script:
 
 - `obsidian-clipper/scripts/validate_local_config.ps1`
 
-检查项：
+Required fields:
 
 - `obsidian.vault_path`
 - `routes.social.script`
 - `routes.social.auth.storage_state_path`
 - `routes.social.auth.cookies_file`
 
-配置文件：
+Config file:
 
 - `obsidian-clipper/references/local-config.json`
 
-如果必填项缺失，OpenClaw 应该：
+If required fields are missing, OpenClaw should:
 
-- 不继续执行剪藏
-- 告诉用户去改哪个文件
-- 明确指出缺失字段
+- stop the workflow
+- tell the user which file to edit
+- list the missing fields
 
-### Analyzer 预检
+### Analyzer config check
 
-脚本：
+Script:
 
 - `obsidian-analyzer/scripts/validate_local_config.ps1`
 
-检查项：
+Required fields:
 
 - `obsidian.vault_path`
 - `analyzer.default_analyze_folder`
 - `llm.provider`
 - `llm.model`
-- `llm.api_key` 或环境变量
+- `llm.api_key` or environment variable
 
-配置文件：
+Config file:
 
 - `obsidian-analyzer/references/local-config.json`
 
-## 抖音登录状态怎么来
+## Douyin auth handling
 
-OpenClaw 不会自己登录抖音。
-当前方案是：先在本机生成可复用的本地登录态文件，然后让 `Clipper` 复用。
+OpenClaw does not log in to Douyin itself. It reuses locally generated auth state.
 
-生成方式：
+Refresh command:
 
 ```powershell
 python "E:\Codex_project\obsidian-skillkit\obsidian-clipper\scripts\bootstrap_social_auth.py" --platform douyin
 ```
 
-这个步骤会生成：
+Generated files:
 
 - `obsidian-clipper/.local-auth/douyin-storage-state.json`
 - `obsidian-clipper/.local-auth/douyin-cookies.txt`
 
-然后在 `obsidian-clipper/references/local-config.json` 里配置：
+Configured in:
+
+- `obsidian-clipper/references/local-config.json`
+
+Required fields:
 
 - `routes.social.auth.storage_state_path`
 - `routes.social.auth.cookies_file`
 
-## cookies 失效时怎么处理
+## Handling expired cookies
 
-如果结果里出现：
+If the result contains:
 
 - `auth_action_required = refresh_douyin_auth`
 
-或者错误里出现：
+or the error contains:
 
 - `Fresh cookies are needed`
 
-说明：
+OpenClaw should tell the user:
 
-- 页面捕获可能已经成功
-- 视频 ID 可能也已经拿到
-- 但下载或后续访问需要更新登录态
-
-这时 OpenClaw 应明确告诉用户：
-
-- 当前抖音登录态已失效或缺失
-- 需要先刷新本地登录态
-- 刷新命令是：
+- local Douyin auth is expired or missing
+- they need to refresh local auth
+- the refresh command is:
 
 ```powershell
 python "E:\Codex_project\obsidian-skillkit\obsidian-clipper\scripts\bootstrap_social_auth.py" --platform douyin
 ```
 
-## 应返回给用户的关键字段
+## Fields to return to the user
 
 ### Clipper
 
 - `note_path`
+- `sidecar_path`
 - `debug_directory`
 - `support_bundle_path`
 - `final_run_status`
 - `failed_step`
 - `final_message_zh`
 
-如果需要刷新登录态，再额外返回：
+If auth refresh is required, also return:
 
 - `auth_action_required`
 - `auth_refresh_command`
@@ -171,35 +183,32 @@ python "E:\Codex_project\obsidian-skillkit\obsidian-clipper\scripts\bootstrap_so
 - `failed_step`
 - `final_message_zh`
 
-## debug 信息如何传给用户
+## Debug handoff
 
-出错时，OpenClaw 默认让用户上传：
+On error, OpenClaw should first ask the user to upload:
 
 - `support-bundle/`
 
-如果 `support-bundle/` 不够，再补充：
+If that is not enough, then ask for:
 
-- 整个 `debug_directory`
+- the whole `debug_directory`
 
-## 推荐中文自然语言用法
+## Recommended natural-language prompts
 
-### 剪藏
+### Clip
 
 ```text
-请使用 Obsidian-Clipper 帮我剪藏这个抖音短视频到 Obsidian：
-https://v.douyin.com/xxxxxxx/
+请使用 Obsidian-Clipper 帮我剪藏这个抖音短视频到 Obsidian：https://v.douyin.com/xxxxxxx/
 ```
 
-### 拆解视频
+### Analyze video
 
 ```text
-请帮我拆解这个抖音短视频。
-如果它还没有被剪藏，请先用 Obsidian-Clipper 剪藏，再用 Obsidian-Analyzer 生成爆款拆解：
-https://v.douyin.com/xxxxxxx/
+请帮我拆解这个抖音短视频。如果它还没有被剪藏，请先使用 Obsidian-Clipper 剪藏，再使用 Obsidian-Analyzer 生成爆款拆解：https://v.douyin.com/xxxxxxx/
 ```
 
-更直接的说法也应该被当成同一个工作流：
+### Share-text style input
 
 ```text
-拆解视频：0.25 复制打开抖音，看看…… https://v.douyin.com/xxxxxxx/ ...
+拆解视频：3.25 复制打开抖音，看看…… https://v.douyin.com/xxxxxxx/ ...
 ```

@@ -20,10 +20,14 @@ description: Quickly clip a URL or share text into an Obsidian vault as a reusab
 
 - User intent like `剪藏`, `保存链接`, `收录视频`, `保存到 Obsidian` should call this skill directly.
 - If the user intent contains `拆解`, `分析`, `爆款拆解`, or `分析视频`, and the input is a raw URL or share text, do not stop after clipping.
-- In that case, this skill should be treated as stage 1 of a two-stage workflow:
+- In that case, this skill is stage 1 of a two-stage workflow:
   - first create the clipping note
-  - then hand the returned `note_path` to `obsidian-analyzer`
+  - then hand the returned `note_path` or `sidecar_path` to `obsidian-analyzer`
 - `拆解视频（链接）` must not end at clipping unless clipping itself failed.
+- OpenClaw must use the exact `note_path` and `sidecar_path` returned by this skill.
+- Do not rewrite the clipping note name into a slug, English alias, pinyin alias, or capture-id file name.
+- Do not manually rename the clipping note inside OpenClaw.
+- If the returned `note_path` contains Chinese or emoji and passing it to the next shell step is unreliable, pass `sidecar_path` forward and let `obsidian-analyzer` run with `-CaptureJsonPath`.
 - If the machine is running this skill for the first time, or the run fails before capture starts, run `scripts/validate_local_config.ps1` first.
 - If `validate_local_config.ps1` reports missing required fields, stop and tell the user:
   - which file to edit
@@ -35,6 +39,7 @@ description: Quickly clip a URL or share text into an Obsidian vault as a reusab
   - `python "E:\Codex_project\obsidian-skillkit\obsidian-clipper\scripts\bootstrap_social_auth.py" --platform douyin`
 - Always return these fields after a run:
   - `note_path`
+  - `sidecar_path`
   - `debug_directory`
   - `support_bundle_path`
   - `final_run_status`
@@ -87,6 +92,7 @@ Every non-trivial run should keep a debug directory and a shareable support bund
 The main fields OpenClaw should surface back to the user are:
 
 - `note_path`
+- `sidecar_path`
 - `debug_directory`
 - `support_bundle_path`
 - `final_run_status`

@@ -8,7 +8,7 @@ description: Read an existing clipping note from Obsidian and turn it into a str
 ## Use this skill when
 
 - the source has already been clipped into Obsidian
-- the user wants to analyze,拆解, summarize, or structurally break down stored content
+- the user wants to analyze, break down, summarize, or structurally extract knowledge from stored content
 - the output should be written back into the vault as a reusable analysis note
 
 ## Do not use this skill when
@@ -19,12 +19,24 @@ description: Read an existing clipping note from Obsidian and turn it into a str
 
 ## OpenClaw behavior rules
 
-- User intent like `拆解视频`, `分析视频`, `分析这条短视频` needs two different behaviors:
+- For requests like `拆解视频`, `分析视频`, `爆款拆解`, or `分析这条短视频`:
   - if the input is an existing clipping note or explicit `note_path`, call this skill directly
-  - if the input is a raw URL or share text, first call `obsidian-clipper`, then call `obsidian-analyzer` with the returned `note_path`
+  - if the input is a raw URL or share text, first call `obsidian-clipper`, then call `obsidian-analyzer`
 - Treat `拆解视频（链接）` as `clip first -> analyze second` by default.
-- If OpenClaw only matched `obsidian-clipper` first, it should still continue into this skill after clipping succeeds.
+- If OpenClaw only matched `obsidian-clipper` first, it must continue into this skill after clipping succeeds.
 - The workflow is not complete until the breakdown note is generated or the analyzer stage fails explicitly.
+- OpenClaw must trust only the structured outputs returned by `obsidian-clipper`.
+- Use the returned `note_path` exactly as-is. Do not reconstruct the clipping file name from:
+  - title
+  - hashtags
+  - platform
+  - capture id
+  - English slug / pinyin slug
+- Do not manually rename clipping notes inside OpenClaw.
+- Do not use wildcard matching, directory listing, time-sorted guessing, or generated names such as `2026-03-20-douyin-yashua.md` to locate the clipping note.
+- If the returned `note_path` contains Chinese, emoji, or other characters that shell argument passing may mishandle, switch to the returned `sidecar_path` and call `run_analyzer.ps1` with `-CaptureJsonPath`.
+- `sidecar_path` is the only supported fallback handoff path when `note_path` cannot be passed safely.
+- After one successful clipping run, OpenClaw must not brute-force multiple analyzer retries with guessed paths or guessed capture ids. If the first analyzer handoff fails, stop and surface the real failure.
 - If the machine is running this skill for the first time, or the run fails before payload build, run `scripts/validate_local_config.ps1` first.
 - If required config is missing, stop and tell the user exactly which file and fields must be updated.
 - Always return these fields after a run:

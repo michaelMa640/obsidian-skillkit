@@ -12,6 +12,16 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+function Initialize-Utf8ProcessEncoding {
+    $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+    [Console]::InputEncoding = $utf8NoBom
+    [Console]::OutputEncoding = $utf8NoBom
+    $script:OutputEncoding = $utf8NoBom
+    $env:PYTHONIOENCODING = 'utf-8'
+}
+
+Initialize-Utf8ProcessEncoding
+
 function Read-Utf8Text { param([string]$Path) [System.IO.File]::ReadAllText($Path, [System.Text.UTF8Encoding]::new($false)) }
 function Write-Utf8Text { param([string]$Path, [string]$Content) [System.IO.File]::WriteAllText($Path, $Content, [System.Text.UTF8Encoding]::new($false)) }
 function Test-HasValue { param($Value) $null -ne $Value -and -not [string]::IsNullOrWhiteSpace([string]$Value) }
