@@ -71,6 +71,36 @@ function Get-CheckMarkedTitle {
     ('{0} {1}' -f ([string][char]0x2713), $value)
 }
 
+function Get-CleanClippingNoteTitle {
+    param([string]$RawTitle)
+    $text = if (Test-HasValue $RawTitle) { [regex]::Replace($RawTitle.Trim(), '\s+', ' ') } else { '' }
+    if (-not (Test-HasValue $text)) { return (Zh '\u672a\u547d\u540d\u526a\u85cf') }
+    $text = [regex]::Replace($text, 'https?://\S+', ' ', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+    $text = [regex]::Replace($text, '@\S+', ' ')
+    $text = [regex]::Replace($text, '#\S+', ' ')
+    $text = $text.Replace((Zh '\u89c6\u9891\u5f88\u957f\uff0c\u5efa\u8bae\u5927\u5bb6\u6536\u85cf'), ' ')
+    $text = $text.Replace((Zh '\u89c6\u9891\u5f88\u957f,\u5efa\u8bae\u5927\u5bb6\u6536\u85cf'), ' ')
+    $text = $text.Replace((Zh '\u5efa\u8bae\u5927\u5bb6\u6536\u85cf'), ' ')
+    $text = $text.Replace((Zh '\u5efa\u8bae\u6536\u85cf'), ' ')
+    $text = $text.Replace((Zh '\u8bb0\u5f97\u6536\u85cf'), ' ')
+    $text = $text.Replace((Zh '\u5148\u6536\u85cf'), ' ')
+    $text = $text.Replace((Zh '\u503c\u5f97\u6536\u85cf'), ' ')
+    $text = [regex]::Replace($text, '\s+', ' ').Trim()
+    $text = [regex]::Replace($text, '^[\s,.;:!?闂佹寧绋戠悮顐﹀焵椤掆偓閸嬪﹦妲愰幒妤佹櫖闁绘梻琛ラ崑?@\-_/]+', '')
+    $text = [regex]::Replace($text, '[\s,.;:!?闂佹寧绋戠悮顐﹀焵椤掆偓閸嬪﹦妲愰幒妤佹櫖闁绘梻琛ラ崑?@\-_/]+$', '')
+    $text = [regex]::Replace($text, '\s+', ' ').Trim()
+    if (Test-HasValue $text) { return $text }
+    (Zh '\u672a\u547d\u540d\u526a\u85cf')
+}
+function Get-SafeFileName {
+    param([string]$Value)
+    $invalidChars = [System.IO.Path]::GetInvalidFileNameChars()
+    $sanitized = -join ($Value.ToCharArray() | ForEach-Object { if ($invalidChars -contains $_) { '_' } else { $_ } })
+    $trimmed = $sanitized.Trim()
+    if (Test-HasValue $trimmed) { return $trimmed }
+    'untitled.md'
+}
+
 function Set-FrontmatterScalarLine {
     param(
         [System.Collections.Generic.List[string]]$Lines,
@@ -116,14 +146,28 @@ function Mark-ClippingNoteAsAnalyzed {
         }
     }
 
+    $frontmatterTitle = ''
+    $frontmatterCapturedAt = ''
+    $frontmatterPublishedAt = ''
     $currentNoteTitle = ''
     if ($frontmatterEndIndex -gt 0) {
         for ($index = 1; $index -lt $frontmatterEndIndex; $index += 1) {
+            if ($lines[$index] -match '^title:\s*''(?<value>.*)''\s*$') {
+                $frontmatterTitle = $Matches['value'].Replace("''", "'")
+            }
+            if ($lines[$index] -match '^captured_at:\s*''(?<value>.*)''\s*$') {
+                $frontmatterCapturedAt = $Matches['value'].Replace("''", "'")
+            }
+            if ($lines[$index] -match '^published_at:\s*''(?<value>.*)''\s*$') {
+                $frontmatterPublishedAt = $Matches['value'].Replace("''", "'")
+            }
             if ($lines[$index] -match '^note_title:\s*''(?<value>.*)''\s*$') {
                 $currentNoteTitle = $Matches['value'].Replace("''", "'")
-                break
             }
         }
+    }
+    if (Test-HasValue $frontmatterTitle) {
+        $currentNoteTitle = $frontmatterTitle
     }
     if (-not (Test-HasValue $currentNoteTitle)) {
         for ($index = 0; $index -lt $lines.Count; $index += 1) {
@@ -137,7 +181,8 @@ function Mark-ClippingNoteAsAnalyzed {
         $currentNoteTitle = [System.IO.Path]::GetFileNameWithoutExtension($NotePath)
     }
 
-    $markedNoteTitle = Get-CheckMarkedTitle -Title $currentNoteTitle
+    $cleanNoteTitle = Get-CleanClippingNoteTitle -RawTitle $currentNoteTitle
+    $markedNoteTitle = Get-CheckMarkedTitle -Title $cleanNoteTitle
     if ($markedNoteTitle -ne $currentNoteTitle) {
         $result.changed = $true
     }
@@ -154,16 +199,30 @@ function Mark-ClippingNoteAsAnalyzed {
         }
     }
     for ($index = 0; $index -lt $lines.Count; $index += 1) {
-        if ($lines[$index] -match '^- Analyzer 状态:') {
+        if ($lines[$index] -match '^- Analyzer ') {
             $lines[$index] = '- Analyzer 状态: analyzed'
             break
         }
     }
 
     $currentFileName = [System.IO.Path]::GetFileName($NotePath)
-    $targetFileName = $currentFileName
-    if ($currentFileName -notmatch '^[\u2713\u2714\u221A\u2705]\s*') {
-        $targetFileName = ('{0} {1}' -f ([string][char]0x2713), $currentFileName)
+    $baseName = [System.IO.Path]::GetFileNameWithoutExtension($NotePath)
+    $prefix = ''
+    if ($baseName -match '^(?<date>\d{4}-\d{2}-\d{2})(?:\s+|-)') {
+        $prefix = $Matches['date'] + ' '
+    }
+    if (-not (Test-HasValue $prefix)) {
+        foreach ($dateCandidate in @($frontmatterCapturedAt, $frontmatterPublishedAt)) {
+            if ([string]::IsNullOrWhiteSpace($dateCandidate)) { continue }
+            if ($dateCandidate -match '^(?<date>\d{4}-\d{2}-\d{2})') {
+                $prefix = $Matches['date'] + ' '
+                break
+            }
+        }
+    }
+    $targetNameCore = if (Test-HasValue $prefix) { $prefix + $cleanNoteTitle } else { $cleanNoteTitle }
+    $targetFileName = Get-SafeFileName -Value ('{0} {1}.md' -f ([string][char]0x2713), $targetNameCore)
+    if ($targetFileName -ne $currentFileName) {
         $result.changed = $true
     }
     $targetPath = Join-Path (Split-Path -Parent $NotePath) $targetFileName
@@ -429,7 +488,7 @@ function Write-AnalyzerSummary {
     foreach ($line in (Get-AnalyzerSummaryLines -Result $Result)) {
         if ($line -eq '=== Analyzer Summary ===') {
             Write-Host $line -ForegroundColor Cyan
-        } elseif ($line -like 'result   : FAILED' -or $line -like '*失败' -or $line -like 'step     :*') {
+        } elseif ($line -like 'result   : FAILED' -or $line -like 'step     :*') {
             Write-Host $line -ForegroundColor Yellow
         } else {
             Write-Host $line

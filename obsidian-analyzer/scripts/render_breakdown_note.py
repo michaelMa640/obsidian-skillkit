@@ -1,5 +1,6 @@
 import argparse
 import json
+import re
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -41,6 +42,25 @@ def safe_file_name(value: str) -> str:
     invalid = set('<>:"/\\|?*')
     sanitized = "".join("_" if ch in invalid else ch for ch in value)
     return sanitized.strip() or "untitled.md"
+
+
+def normalize_inline_spaces(value: str) -> str:
+    return re.sub(r"\s+", " ", string_value(value)).strip()
+
+
+def clean_note_title(raw_title: str) -> str:
+    text = normalize_inline_spaces(raw_title)
+    if not has_value(text):
+        return "未命名拆解"
+
+    text = re.sub(r"https?://\S+", " ", text, flags=re.IGNORECASE)
+    text = re.sub(r"@\S+", " ", text)
+    text = re.sub(r"#\S+", " ", text)
+    text = normalize_inline_spaces(text)
+    text = re.sub(r"^[\s,.;:!?，。！？、#@\-_/]+", "", text)
+    text = re.sub(r"[\s,.;:!?，。！？、#@\-_/]+$", "", text)
+    text = normalize_inline_spaces(text)
+    return text or "未命名拆解"
 
 
 def markdown_title(title: str, fallback: str) -> str:
@@ -213,7 +233,8 @@ def build_note(analysis: dict[str, Any], folder: str, vault_path: str) -> dict[s
     analyzed_at = string_value(analysis.get("analyzed_at"), default=datetime.now().strftime("%Y-%m-%d"))
     output_language = string_value(analysis.get("output_language"), default="zh-CN")
     labels = language_pack(output_language)
-    title = string_value(analysis.get("title"), default=labels["untitled"])
+    raw_title = string_value(analysis.get("title"), default=labels["untitled"])
+    title = clean_note_title(raw_title)
     mode = string_value(analysis.get("analysis_mode"), default="analyze")
     model = string_value(analysis.get("model"), default="mock-analyzer")
     provider = string_value(analysis.get("provider"), default="mock")
@@ -301,6 +322,7 @@ def build_note(analysis: dict[str, Any], folder: str, vault_path: str) -> dict[s
     ]
     return {
         "title": title,
+        "raw_title": raw_title,
         "folder": folder,
         "file_name": file_name,
         "note_body": "\n".join(lines).strip() + "\n",
