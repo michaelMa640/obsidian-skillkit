@@ -33,6 +33,12 @@ See also:
 
 ## Intent mapping
 
+For requests forwarded from iOS Shortcuts through Feishu:
+
+- OpenClaw should prefer explicit prefix routing over general natural-language inference.
+- Standard shortcut prefixes are defined in:
+  - `ios-shortcuts-entry/references/feishu-message-contract.md`
+
 ### 1. Clip only
 
 Examples:

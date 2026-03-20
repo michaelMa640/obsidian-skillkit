@@ -77,3 +77,6 @@ The workflow is not complete after clipping alone.
 
 - [Feishu Message Contract](references/feishu-message-contract.md)
 - [OpenClaw Routing Contract](references/openclaw-routing-contract.md)
+- [iOS Shortcuts 1.0 Design](references/ios-shortcuts-v1-design.md)
+- [Mobile Feedback Contract](references/mobile-feedback-contract.md)
+- [Integration Test Matrix](references/integration-test-matrix.md)
