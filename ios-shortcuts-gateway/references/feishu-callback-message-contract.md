@@ -69,13 +69,13 @@ Do not send a callback for:
 ## Example content block
 
 ```text
-拆解完成
+Task completed
 request_id: 123456
-状态: SUCCESS
-原始链接: https://v.douyin.com/xxxxxxx/
-规范化链接: https://www.douyin.com/video/1234567890
-剪藏笔记: Clippings/2026-03-23 示例.md
-爆款拆解: 爆款拆解/2026-03-23 示例.md
+status: SUCCESS
+source_url: https://v.douyin.com/xxxxxxx/
+normalized_url: https://www.douyin.com/video/1234567890
+clipper_note: Clippings/2026-03-23 example.md
+analyzer_note: 爆款拆解/2026-03-23 example.md
 ```
 
 ## Privacy rule

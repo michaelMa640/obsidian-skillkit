@@ -5,7 +5,7 @@
 Validate the gateway end-to-end in two stages:
 
 1. local Windows smoke test
-2. remote iPhone over Tailscale
+2. remote iPhone over Tailscale with Feishu callback
 
 This phase is complete only when both stages have been exercised.
 
@@ -17,6 +17,8 @@ This phase is complete only when both stages have been exercised.
 - `routing.clipper_script` points to a working `run_clipper.ps1`
 - `routing.analyzer_script` points to a working `run_analyzer.ps1`
 - `obsidian.vault_path` points to the real vault root
+- `feishu.enabled = true`
+- `feishu.webhook_url` is configured
 - `python`, `fastapi`, and `uvicorn` are installed
 - `Clipper` and `Analyzer` already run successfully from PowerShell
 - Tailscale is installed and both devices are in the same tailnet
@@ -118,17 +120,19 @@ or:
 ```
 
 6. read `request_id` from the accepted response
-7. poll `GET http://<tailscale-ip>:8787/short-video/task/<request_id>`
-8. stop polling only when the result changes to:
-   - `SUCCESS`
-   - `PARTIAL`
-   - `FAILED`
-   - `AUTH_REQUIRED`
+7. stop the shortcut immediately
+8. wait for the final Feishu callback
 
 ### Expected remote outcomes
 
 - first response should be `ACCEPTED`
-- follow-up status should become `RUNNING` and then a terminal state
+- gateway request directory should move through `ACCEPTED -> RUNNING -> terminal state`
+- Feishu should receive a final callback with:
+  - `request_id`
+  - `status`
+  - `source_url`
+  - `normalized_url`
+  - `original_source_text`
 - `clip` creates a new note under `Clippings/`
 - `analyze` creates a new note under `Clippings/` and a new note under `爆款拆解/`
 - gateway request artifacts are stored under `.tmp/gateway/runs/<request_id>/`
@@ -149,6 +153,13 @@ or:
 python ".\obsidian-clipper\scripts\bootstrap_social_auth.py" --platform douyin
 ```
 
+### Gateway accepted the task but Feishu did not return
+
+Inspect:
+
+- `.tmp/gateway/runs/<request_id>/status.json`
+- `.tmp/gateway/runs/<request_id>/feishu-callback.json`
+
 ### `FAILED`
 
 - inspect `.tmp/gateway/runs/<request_id>/`
@@ -158,7 +169,7 @@ python ".\obsidian-clipper\scripts\bootstrap_social_auth.py" --platform douyin
 
 - one successful local `clip` request
 - one successful local `analyze` request
-- one successful remote iPhone `clip` request over Tailscale
-- one successful remote iPhone `analyze` request over Tailscale
+- one successful remote iPhone `clip` submission over Tailscale with Feishu callback
+- one successful remote iPhone `analyze` submission over Tailscale with Feishu callback
 - one confirmed `AUTH_REQUIRED` or config-failure path
 - no sensitive auth content returned to the mobile client

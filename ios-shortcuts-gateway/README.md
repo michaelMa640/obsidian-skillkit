@@ -40,12 +40,15 @@ No other action is in scope for the MVP.
 - [Response Schema](references/short-video-task.response.schema.json)
 - [Security Contract](references/security-contract.md)
 - [Local Config Contract](references/local-config-contract.md)
+- [Feishu Notifier Contract](references/feishu-notifier-contract.md)
 - [local-config.example.json](references/local-config.example.json)
 - [Phase 6 Integration Test Plan](references/integration-test-plan.md)
+- [Submit-Only User Guide](references/ios-shortcuts-submit-mode-user-guide.md)
 
-## Entrypoint
+## Entrypoints
 
 - `app.py`
+- `feishu_notifier.py`
 
 ## Setup
 
@@ -59,6 +62,7 @@ No other action is in scope for the MVP.
    - `routing.clipper_script`
    - `routing.analyzer_script`
    - `obsidian.vault_path`
+   - optional `feishu.*` if you want callback delivery to Feishu
 3. Install dependencies:
 
 ```powershell
@@ -133,6 +137,7 @@ Each request creates:
 
 - `request.json`
 - `status.json`
+- `feishu-callback.json` after terminal-state callback handling
 - `clipper-result.json`
 - `analyzer-result.json` when applicable
 - `clipper-stdout.log`
@@ -143,6 +148,63 @@ Each request creates:
 under:
 
 - `.tmp/gateway/runs/<request_id>/`
+
+### `status.json`
+
+The async lifecycle is now persisted through:
+
+- `ACCEPTED`
+- `RUNNING`
+- `SUCCESS`
+- `PARTIAL`
+- `FAILED`
+- `AUTH_REQUIRED`
+
+Each `status.json` keeps:
+
+- `request_id`
+- `action`
+- `status`
+- `message_zh`
+- `created_at`
+- `updated_at`
+- `source_url`
+- `normalized_url`
+- `original_source_text`
+- optional note paths and failure fields
+- optional callback fields:
+  - `callback_attempted_at`
+  - `callback_sent`
+  - `callback_error`
+
+## Feishu notifier module
+
+Phase 4 adds an isolated notifier module:
+
+- `feishu_notifier.py`
+
+Current scope:
+
+- validates Feishu notifier config
+- validates terminal callback payloads
+- renders a standard Feishu text message
+- sends the webhook request through a dedicated helper
+
+From Phase 5 onward, terminal task states are finalized first and then passed through this notifier helper. Callback delivery does not downgrade the task outcome if Feishu delivery fails.
+
+### Recommended Feishu mode
+
+If your OpenClaw environment already has a working Feishu connection, prefer:
+
+- `feishu.mode = openclaw_cli`
+
+This uses:
+
+```text
+openclaw message send --channel feishu --target <open_id or chat_id> --message <text>
+```
+
+`webhook` remains available as a compatibility fallback.
 
 ## iPhone / Tailscale phase
 
@@ -159,20 +221,23 @@ When the local smoke test passes:
      - `client`
      - `wait_for_completion = false`
 4. read `request_id` from the accepted response
-5. poll:
-   - `GET http://<tailscale-ip>:<port>/short-video/task/<request_id>`
-   - until the result becomes `SUCCESS`, `PARTIAL`, `FAILED`, or `AUTH_REQUIRED`
+5. stop the shortcut immediately
+6. wait for the Feishu callback as the primary result channel
 
 ### Recommended shortcut pattern
 
 - request 1:
   - submit task
-- wait:
-  - 3 to 5 seconds
-- request 2:
-  - check task status
-- if still `ACCEPTED` or `RUNNING`
-  - wait again and retry
+- response:
+  - show `request_id`
+  - show `message_zh`
+  - tell the user that the final result will return in Feishu
+
+### Polling rule
+
+`GET /short-video/task/{request_id}` remains available, but only as a debug or operator endpoint.
+
+It is not the recommended primary UX for the iPhone shortcut.
 
 The detailed checklist is in:
 

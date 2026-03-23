@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://obsidian-skillkit.local/ios-shortcuts-gateway/feishu-callback.payload.schema.json",
+  "title": "Feishu Callback Payload",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "request_id",
+    "action",
+    "status",
+    "message_zh"
+  ],
+  "properties": {
+    "request_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "action": {
+      "type": "string",
+      "enum": [
+        "clip",
+        "analyze"
+      ]
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "SUCCESS",
+        "PARTIAL",
+        "FAILED",
+        "AUTH_REQUIRED"
+      ]
+    },
+    "message_zh": {
+      "type": "string",
+      "minLength": 1
+    },
+    "source_url": {
+      "type": "string"
+    },
+    "normalized_url": {
+      "type": "string"
+    },
+    "original_source_text": {
+      "type": "string"
+    },
+    "clipper_note": {
+      "type": "string"
+    },
+    "analyzer_note": {
+      "type": "string"
+    },
+    "failed_step": {
+      "type": "string"
+    },
+    "auth_action_required": {
+      "type": "string",
+      "enum": [
+        "refresh_douyin_auth"
+      ]
+    },
+    "refresh_command": {
+      "type": "string"
+    },
+    "debug_hint": {
+      "type": "string"
+    }
+  }
+}
