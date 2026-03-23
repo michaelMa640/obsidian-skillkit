@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://obsidian-skillkit.local/ios-shortcuts-gateway/short-video-task.response.schema.json",
+  "title": "Short Video Task Response",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "success",
+    "status",
+    "action",
+    "message_zh"
+  ],
+  "properties": {
+    "success": {
+      "type": "boolean"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "SUCCESS",
+        "FAILED",
+        "PARTIAL",
+        "AUTH_REQUIRED",
+        "CONFIG_REQUIRED",
+        "ACCEPTED",
+        "RUNNING"
+      ]
+    },
+    "action": {
+      "type": "string",
+      "enum": [
+        "clip",
+        "analyze"
+      ]
+    },
+    "message_zh": {
+      "type": "string",
+      "minLength": 1
+    },
+    "failed_step": {
+      "type": "string"
+    },
+    "clipper_note": {
+      "type": "string"
+    },
+    "analyzer_note": {
+      "type": "string"
+    },
+    "debug_hint": {
+      "type": "string"
+    },
+    "auth_action_required": {
+      "type": "string",
+      "enum": [
+        "refresh_douyin_auth"
+      ]
+    },
+    "refresh_command": {
+      "type": "string"
+    },
+    "request_id": {
+      "type": "string"
+    }
+  }
+}

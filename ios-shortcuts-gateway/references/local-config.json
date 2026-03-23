@@ -1,0 +1,27 @@
+{
+  "server": {
+    "host": "100.108.235.68",
+    "port": 8787,
+    "bind_mode": "tailscale_only",
+    "allowed_tailscale_cidr": "100.64.0.0/10"
+  },
+  "auth": {
+    "bearer_token": "michael-shortcuts-gateway-2026-secret-abc123"
+  },
+  "routing": {
+    "clipper_script": "E:/Codex_project/obsidian-skillkit/obsidian-clipper/scripts/run_clipper.ps1",
+    "analyzer_script": "E:/Codex_project/obsidian-skillkit/obsidian-analyzer/scripts/run_analyzer.ps1"
+  },
+  "obsidian": {
+    "vault_path": "E:/iCloudDrive/iCloudDrive/iCloud~md~obsidian/michael内容库"
+  },
+  "runtime": {
+    "python_command": "python",
+    "powershell_command": "powershell"
+  },
+  "logging": {
+    "level": "info",
+    "directory": ".tmp/gateway",
+    "redact_source_text": true
+  }
+}

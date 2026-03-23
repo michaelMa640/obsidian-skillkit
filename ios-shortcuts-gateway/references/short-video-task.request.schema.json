@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://obsidian-skillkit.local/ios-shortcuts-gateway/short-video-task.request.schema.json",
+  "title": "Short Video Task Request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "action",
+    "source_text"
+  ],
+  "properties": {
+    "action": {
+      "type": "string",
+      "enum": [
+        "clip",
+        "analyze"
+      ]
+    },
+    "source_text": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 5000
+    },
+    "client": {
+      "type": "string",
+      "default": "ios_shortcuts"
+    },
+    "request_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "wait_for_completion": {
+      "type": "boolean",
+      "default": false
+    }
+  }
+}

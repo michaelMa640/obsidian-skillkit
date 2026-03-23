@@ -1,0 +1,27 @@
+{
+  "server": {
+    "host": "100.100.100.100",
+    "port": 8787,
+    "bind_mode": "tailscale_only",
+    "allowed_tailscale_cidr": "100.64.0.0/10"
+  },
+  "auth": {
+    "bearer_token": "replace-with-a-long-random-secret"
+  },
+  "routing": {
+    "clipper_script": "E:/Codex_project/obsidian-skillkit/obsidian-clipper/scripts/run_clipper.ps1",
+    "analyzer_script": "E:/Codex_project/obsidian-skillkit/obsidian-analyzer/scripts/run_analyzer.ps1"
+  },
+  "obsidian": {
+    "vault_path": "E:/path/to/your/obsidian-vault"
+  },
+  "runtime": {
+    "python_command": "python",
+    "powershell_command": "powershell"
+  },
+  "logging": {
+    "level": "info",
+    "directory": ".tmp/gateway",
+    "redact_source_text": true
+  }
+}
