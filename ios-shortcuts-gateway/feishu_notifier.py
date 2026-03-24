@@ -37,7 +37,7 @@ class FeishuCallbackPayload(BaseModel):
 TERMINAL_STATUSES = {"SUCCESS", "PARTIAL", "FAILED", "AUTH_REQUIRED"}
 
 
-def render_feishu_text(config: FeishuConfig, payload: FeishuCallbackPayload) -> str:
+def render_feishu_lines(config: FeishuConfig, payload: FeishuCallbackPayload) -> list[str]:
     lines = [
         config.message_prefix,
         f"request_id: {payload.request_id}",
@@ -63,6 +63,13 @@ def render_feishu_text(config: FeishuConfig, payload: FeishuCallbackPayload) -> 
         lines.append(f"refresh_command: {payload.refresh_command}")
     if payload.debug_hint:
         lines.append(f"debug_hint: {payload.debug_hint}")
+    return lines
+
+
+def render_feishu_text(config: FeishuConfig, payload: FeishuCallbackPayload, *, single_line: bool = False) -> str:
+    lines = render_feishu_lines(config, payload)
+    if single_line:
+        return " | ".join(lines)
     return "\n".join(lines)
 
 
@@ -140,7 +147,9 @@ def send_feishu_callback(config_dict: dict[str, Any], payload_dict: dict[str, An
     if not config.enabled:
         return {"sent": False, "reason": "disabled"}
 
-    text = render_feishu_text(config, payload)
     if config.mode == "openclaw_cli":
+        text = render_feishu_text(config, payload, single_line=True)
         return send_via_openclaw_cli(config, text)
+
+    text = render_feishu_text(config, payload, single_line=False)
     return send_via_webhook(config, text)

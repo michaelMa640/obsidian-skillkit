@@ -85,6 +85,7 @@ class ShortVideoTaskResponse(BaseModel):
     auth_action_required: Literal["refresh_douyin_auth"] | None = None
     refresh_command: str | None = None
     request_id: str | None = None
+    display_text: str | None = None
 
 
 class TaskStatusRecord(BaseModel):
@@ -173,6 +174,7 @@ def save_status(path: Path, record: TaskStatusRecord) -> None:
 
 
 def status_to_response(record: TaskStatusRecord) -> ShortVideoTaskResponse:
+    display_text = f"{record.message_zh}\nrequest_id: {record.request_id}"
     return ShortVideoTaskResponse(
         success=record.status in {"SUCCESS", "PARTIAL", "ACCEPTED", "RUNNING"},
         status=record.status,
@@ -185,6 +187,7 @@ def status_to_response(record: TaskStatusRecord) -> ShortVideoTaskResponse:
         auth_action_required=record.auth_action_required,
         refresh_command=record.refresh_command,
         request_id=record.request_id,
+        display_text=display_text,
     )
 
 

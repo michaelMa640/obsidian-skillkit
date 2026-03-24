@@ -19,6 +19,16 @@
     "python_command": "python",
     "powershell_command": "powershell"
   },
+  "feishu": {
+    "enabled": true,
+    "mode": "openclaw_cli",
+    "target": "ou_252983aa8f6e4d6b657da150c89e71a2",
+    "openclaw_command": "C:/Users/VBTvisitor/AppData/Roaming/npm/openclaw.cmd",
+    "webhook_url": "",
+    "timeout_seconds": 10,
+    "message_prefix": "Gateway 任务结果"
+  },
+
   "logging": {
     "level": "info",
     "directory": ".tmp/gateway",
