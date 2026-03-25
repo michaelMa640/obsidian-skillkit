@@ -2,11 +2,11 @@
 
 ## Purpose
 
-`ios-shortcuts-entry` is an entry-layer module for the existing `OpenClaw + Obsidian SkillKit` workflow.
+`ios-shortcuts-entry` is the older Feishu-forwarding entry design for the short-video workflow.
 
 It does not download media or analyze content by itself.
 
-Its job is to define how iPhone shortcuts should hand off short-video tasks into the existing system through:
+Its job is to define how iPhone shortcuts can hand off tasks into the existing system through:
 
 - iOS Shortcuts
 - Feishu bot
@@ -14,69 +14,30 @@ Its job is to define how iPhone shortcuts should hand off short-video tasks into
 - `obsidian-clipper`
 - `obsidian-analyzer`
 
-This keeps the mobile entry flow separate from the core skill implementations.
+## Current status
 
-## Current recommended path
+This module is now a reference design, not the primary recommended mobile route.
 
-Phase 1 and Phase 2 standardize the following path:
+Current recommended mobile route:
 
-`iOS Shortcuts -> Feishu bot -> OpenClaw -> Clipper / Analyzer`
+`iPhone Shortcut -> Tailscale -> ios-shortcuts-gateway -> Clipper / Analyzer`
 
-This path is preferred over:
+This module remains useful if you explicitly want the shortcut to send text into Feishu/OpenClaw instead of calling the local Gateway.
 
-- direct local HTTP entry
-- direct cloud webhook entry
-
-for the current MVP stage.
-
-## Module scope
-
-This module defines:
-
-- the mobile-entry boundary
-- the Feishu message contract
-- the OpenClaw intent-routing contract
-- expected result fields returned back to the user
-
-This module does not define:
-
-- video downloading internals
-- analyzer prompt internals
-- LLM provider internals
-
-## User intents
-
-Only two mobile intents are first-class:
-
-### 1. Clip only
-
-Examples:
+## Supported intents
 
 - `剪藏视频：<share text>`
-- `帮我剪藏这个视频`
-
-Expected routing:
-
-- `obsidian-clipper` only
-
-### 2. Analyze video
-
-Examples:
-
 - `拆解视频：<share text>`
-- `帮我拆解这个视频`
 
 Expected routing:
 
-- `obsidian-clipper` first
-- `obsidian-analyzer` second
-
-The workflow is not complete after clipping alone.
+- `剪藏视频` -> `obsidian-clipper`
+- `拆解视频` -> `obsidian-clipper -> obsidian-analyzer`
 
 ## References
 
-- [Feishu Message Contract](references/feishu-message-contract.md)
-- [OpenClaw Routing Contract](references/openclaw-routing-contract.md)
-- [iOS Shortcuts 1.0 Design](references/ios-shortcuts-v1-design.md)
-- [Mobile Feedback Contract](references/mobile-feedback-contract.md)
-- [Integration Test Matrix](references/integration-test-matrix.md)
+- [Feishu Message Contract](E:\Codex_project\obsidian-skillkit\ios-shortcuts-entry\references\feishu-message-contract.md)
+- [OpenClaw Routing Contract](E:\Codex_project\obsidian-skillkit\ios-shortcuts-entry\references\openclaw-routing-contract.md)
+- [iOS Shortcuts 1.0 Design](E:\Codex_project\obsidian-skillkit\ios-shortcuts-entry\references\ios-shortcuts-v1-design.md)
+- [Mobile Feedback Contract](E:\Codex_project\obsidian-skillkit\ios-shortcuts-entry\references\mobile-feedback-contract.md)
+- [Integration Test Matrix](E:\Codex_project\obsidian-skillkit\ios-shortcuts-entry\references\integration-test-matrix.md)

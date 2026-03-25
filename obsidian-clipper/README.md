@@ -79,7 +79,7 @@ Phase 1 to Phase 3 now assume:
 Recommended local layout:
 - `Clippings/`
 - `Attachments/ShortVideos/{platform}/{capture_id}/`
-- `Breakdowns/`
+- `爆款拆解/`
 
 ### Files In This Skill
 
@@ -225,4 +225,4 @@ Obsidian Clipper 闁哄嫷鍨电换鏍ㄧ附濡炴崘鈷堥梻鍐煐椤斿苯
 闁规亽鍔忓畷姗€鎯勯鑲╃Э缂備焦鎸婚悗顖炴晬?
 - `Clippings/`
 - `Attachments/ShortVideos/{platform}/{capture_id}/`
-- `Breakdowns/`
+- `爆款拆解/`

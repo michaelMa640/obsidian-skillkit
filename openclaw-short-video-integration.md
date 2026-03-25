@@ -2,191 +2,108 @@
 
 ## Goal
 
-Use two skills to complete the short-video workflow:
+Use the short-video workflow with:
 
 - `obsidian-clipper`
 - `obsidian-analyzer`
+- optionally `ios-shortcuts-gateway` for iPhone remote submission
 
-Supported user intents:
+## Supported intents
 
-- `剪藏（链接）`
-- `拆解视频（链接）`
-- `剪藏视频：<share text>`
-- `拆解视频：<share text>`
+- `剪藏视频：<share text or url>`
+- `拆解视频：<share text or url>`
+- direct clipping note analysis from `note_path`
 
-## Entry modules
+## Current entry layers
 
-Current entry layers may coexist:
+- Feishu bot -> OpenClaw -> skills
+- iPhone Shortcut -> `ios-shortcuts-gateway` -> skills
 
-- Feishu bot entry
-- iOS Shortcuts entry
+The iPhone path is no longer “shortcut -> Feishu bot -> OpenClaw” as the primary route.
+The current recommended mobile route is:
 
-For iOS mobile usage, the current recommended route is:
+`iPhone Shortcut -> Tailscale -> ios-shortcuts-gateway -> Clipper / Analyzer`
 
-`iOS Shortcuts -> Feishu bot -> OpenClaw -> skills`
-
-See also:
-
-- `ios-shortcuts-entry/README.md`
-- `ios-shortcuts-entry/references/feishu-message-contract.md`
-- `ios-shortcuts-entry/references/openclaw-routing-contract.md`
+Final result delivery for the iPhone route goes back to Feishu asynchronously.
 
 ## Intent mapping
 
-For requests forwarded from iOS Shortcuts through Feishu:
+### Clip only
 
-- OpenClaw should prefer explicit prefix routing over general natural-language inference.
-- Standard shortcut prefixes are defined in:
-  - `ios-shortcuts-entry/references/feishu-message-contract.md`
+Input examples:
 
-### 1. Clip only
+- `剪藏视频：https://v.douyin.com/...`
+- `剪藏视频：6.43 复制打开抖音，看看…… https://v.douyin.com/...`
 
-Examples:
-
-- 帮我剪藏这个视频
-- 请帮我保存这个抖音链接到 Obsidian
-- 帮我收录这个短视频
-
-OpenClaw should:
+Expected behavior:
 
 - call only `obsidian-clipper`
 
-Shortcut-style prefixes that should map here:
+### Analyze video
 
-- `剪藏视频：`
-- `剪藏：`
+Input examples:
 
-### 2. Analyze video
+- `拆解视频：https://v.douyin.com/...`
+- `拆解视频：6.43 复制打开抖音，看看…… https://v.douyin.com/...`
 
-Examples:
+Expected behavior:
 
-- 帮我拆解这个视频
-- 分析这个抖音短视频
-- 拆解视频：https://...
+- if the input is raw share text or URL:
+  1. run `obsidian-clipper`
+  2. run `obsidian-analyzer`
+- if the input is already a clipping note path:
+  - run `obsidian-analyzer` directly
 
-OpenClaw should:
+Completion rule:
 
-- if the input is already a clipping note or explicit `note_path`, call `obsidian-analyzer`
-- if the input is a raw URL or share text, call `obsidian-clipper` first
-- then call `obsidian-analyzer`
+- the job is complete only after the breakdown note exists in `爆款拆解/`
 
-Shortcut-style prefixes that should map here:
+## Handoff rules
 
-- `拆解视频：`
-- `分析视频：`
-- `爆款拆解：`
+- always use the structured result returned by `obsidian-clipper`
+- never reconstruct clipping filenames manually
+- if shell argument passing is unreliable for a clipping note with Chinese or emoji:
+  - use `sidecar_path`
+  - call analyzer with `-CaptureJsonPath`
+- analyzer now resolves the matching clipping note from the vault when running from `-CaptureJsonPath`
 
-Workflow:
+## Config checks
 
-1. clip first
-2. analyze second
+Before formal execution, validate local config if capture/analyze cannot start.
 
-The task is complete only when:
-
-1. the clipping note exists
-2. analyzer has run
-3. a breakdown note exists in `爆款拆解/`
-
-If only step 1 completed, the workflow is not complete.
-
-## Handoff rules that OpenClaw must follow
-
-- After `obsidian-clipper` succeeds, OpenClaw must read the structured result JSON and use the returned `note_path`.
-- OpenClaw must not reconstruct a clipping file name from:
-  - title
-  - hashtags
-  - platform
-  - capture id
-  - guessed English slug or pinyin slug
-- OpenClaw must never invent names like `2026-03-20-douyin-yashua.md`.
-- If the returned `note_path` includes Chinese or emoji and shell argument passing is unreliable, OpenClaw must switch to the returned `sidecar_path` and invoke analyzer with `-CaptureJsonPath`.
-- OpenClaw must not use wildcard matching, manual renaming, or repeated file-system guessing to locate the clipping note.
-- If the first analyzer handoff fails, OpenClaw should stop and return the real failure plus `support-bundle/`, not brute-force multiple retries.
-
-## First-run config checks
-
-Before formal execution, or whenever the workflow fails before capture/analyze starts, OpenClaw should run local config validation.
-
-### Clipper config check
+### Clipper config
 
 Script:
 
 - `obsidian-clipper/scripts/validate_local_config.ps1`
 
-Required fields:
+Required:
 
 - `obsidian.vault_path`
 - `routes.social.script`
 - `routes.social.auth.storage_state_path`
 - `routes.social.auth.cookies_file`
 
-Config file:
-
-- `obsidian-clipper/references/local-config.json`
-
-If required fields are missing, OpenClaw should:
-
-- stop the workflow
-- tell the user which file to edit
-- list the missing fields
-
-### Analyzer config check
+### Analyzer config
 
 Script:
 
 - `obsidian-analyzer/scripts/validate_local_config.ps1`
 
-Required fields:
+Required:
 
 - `obsidian.vault_path`
 - `analyzer.default_analyze_folder`
 - `llm.provider`
 - `llm.model`
-- `llm.api_key` or environment variable
-
-Config file:
-
-- `obsidian-analyzer/references/local-config.json`
+- `llm.api_key` or configured env fallback
 
 ## Douyin auth handling
 
-OpenClaw does not log in to Douyin itself. It reuses locally generated auth state.
+OpenClaw and Gateway do not log in to Douyin directly.
+They reuse locally generated auth files.
 
 Refresh command:
-
-```powershell
-python "E:\Codex_project\obsidian-skillkit\obsidian-clipper\scripts\bootstrap_social_auth.py" --platform douyin
-```
-
-Generated files:
-
-- `obsidian-clipper/.local-auth/douyin-storage-state.json`
-- `obsidian-clipper/.local-auth/douyin-cookies.txt`
-
-Configured in:
-
-- `obsidian-clipper/references/local-config.json`
-
-Required fields:
-
-- `routes.social.auth.storage_state_path`
-- `routes.social.auth.cookies_file`
-
-## Handling expired cookies
-
-If the result contains:
-
-- `auth_action_required = refresh_douyin_auth`
-
-or the error contains:
-
-- `Fresh cookies are needed`
-
-OpenClaw should tell the user:
-
-- local Douyin auth is expired or missing
-- they need to refresh local auth
-- the refresh command is:
 
 ```powershell
 python "E:\Codex_project\obsidian-skillkit\obsidian-clipper\scripts\bootstrap_social_auth.py" --platform douyin
@@ -204,12 +121,6 @@ python "E:\Codex_project\obsidian-skillkit\obsidian-clipper\scripts\bootstrap_so
 - `failed_step`
 - `final_message_zh`
 
-If auth refresh is required, also return:
-
-- `auth_action_required`
-- `auth_refresh_command`
-- `auth_guidance_zh`
-
 ### Analyzer
 
 - `note_path`
@@ -219,32 +130,48 @@ If auth refresh is required, also return:
 - `failed_step`
 - `final_message_zh`
 
+### Gateway accepted response
+
+- `status = ACCEPTED`
+- `request_id`
+- `message_zh`
+- `display_text`
+
 ## Debug handoff
 
-On error, OpenClaw should first ask the user to upload:
+Ask for these in this order:
 
-- `support-bundle/`
+1. `support-bundle/`
+2. if needed, the full `debug_directory`
 
-If that is not enough, then ask for:
+## Recommended examples
 
-- the whole `debug_directory`
-
-## Recommended natural-language prompts
-
-### Clip
+### Feishu / OpenClaw
 
 ```text
-请使用 Obsidian-Clipper 帮我剪藏这个抖音短视频到 Obsidian：https://v.douyin.com/xxxxxxx/
+剪藏视频：6.43 复制打开抖音，看看…… https://v.douyin.com/xxxxxxx/ ...
 ```
 
-### Analyze video
-
 ```text
-请帮我拆解这个抖音短视频。如果它还没有被剪藏，请先使用 Obsidian-Clipper 剪藏，再使用 Obsidian-Analyzer 生成爆款拆解：https://v.douyin.com/xxxxxxx/
+拆解视频：6.43 复制打开抖音，看看…… https://v.douyin.com/xxxxxxx/ ...
 ```
 
-### Share-text style input
+### iPhone shortcut -> Gateway
 
-```text
-拆解视频：3.25 复制打开抖音，看看…… https://v.douyin.com/xxxxxxx/ ...
+```json
+{
+  "action": "clip",
+  "source_text": "6.43 复制打开抖音，看看…… https://v.douyin.com/xxxxxxx/ ...",
+  "client": "ios_shortcuts",
+  "wait_for_completion": false
+}
+```
+
+```json
+{
+  "action": "analyze",
+  "source_text": "6.43 复制打开抖音，看看…… https://v.douyin.com/xxxxxxx/ ...",
+  "client": "ios_shortcuts",
+  "wait_for_completion": false
+}
 ```

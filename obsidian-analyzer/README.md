@@ -1,13 +1,17 @@
 # Obsidian Analyzer
 
 `obsidian-analyzer` is the second stage of the workflow.
-It reads an existing clipping note plus sidecar files from Obsidian and writes a structured analysis note back into the vault.
+It reads an existing clipping note plus sidecar files from Obsidian and writes a structured breakdown note back into the vault.
 
 ## Scope
 
-- Input: a clipping note from `Clippings/` and its sidecars such as `capture.json`
-- Output: a knowledge note written to `爆款拆解/` for `analyze` mode
-- Current priority: `analyze` for Douyin / Xiaohongshu short video content
+- Input:
+  - a clipping note from `Clippings/`
+  - or a `capture.json` path that belongs to an existing clipping
+- Output:
+  - a breakdown note written to `爆款拆解/`
+- Current priority:
+  - `analyze` mode for Douyin / Xiaohongshu short video content
 
 It does not:
 
@@ -17,12 +21,21 @@ It does not:
 
 ## Main entrypoint
 
-Run with only a note path after `references/local-config.json` is configured:
+### Note-path mode
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File "E:\Codex_project\obsidian-skillkit\obsidian-analyzer\scripts\run_analyzer.ps1" `
   -NotePath "E:\iCloudDrive\iCloudDrive\iCloud~md~obsidian\michael内容库\Clippings\example.md"
 ```
+
+### Capture-json mode
+
+```powershell
+powershell -ExecutionPolicy Bypass -File "E:\Codex_project\obsidian-skillkit\obsidian-analyzer\scripts\run_analyzer.ps1" `
+  -CaptureJsonPath "E:\iCloudDrive\iCloudDrive\iCloud~md~obsidian\michael内容库\Attachments\ShortVideos\douyin\example\capture.json"
+```
+
+When running from `-CaptureJsonPath`, Analyzer now resolves the matching clipping note from the vault and uses it as the source note.
 
 Optional overrides:
 
@@ -36,15 +49,14 @@ Optional overrides:
 1. Copy `references/local-config.example.json` to `references/local-config.json`
 2. Set `obsidian.vault_path`
 3. Set `analyzer.default_analyze_folder` if your vault uses a different folder name
-4. Configure the model provider in `llm`
-5. Put the API key in either:
-   - `llm.api_key` in `local-config.json`
+4. Configure the model provider under `llm`
+5. Put the API key in:
+   - `llm.api_key`
    - or the environment variable named by `llm.api_key_env`
 
 Key local settings:
 
 - `obsidian.vault_path`
-- `analyzer.default_learn_folder`
 - `analyzer.default_analyze_folder`
 - `analyzer.output_language`
 - `analyzer.default_debug_directory`
@@ -56,15 +68,32 @@ Key local settings:
 ## Current pipeline
 
 - `scripts/build_analyzer_payload.py`
-  reads the clipping note and sidecars and produces `analyzer-payload.json`
+  - loads clipping/frontmatter/sidecars
+  - resolves the source clipping note when only `capture.json` is provided
 - `scripts/invoke_analyzer_llm.py`
-  calls the configured model provider for `analyze` mode
+  - calls the configured provider
+  - normalizes defaults
 - `scripts/render_breakdown_note.py`
-  renders the final note into the vault
+  - renders the final breakdown note into the vault
 - `scripts/run_analyzer.ps1`
-  orchestrates the full run and writes debug artifacts
+  - orchestrates the full run
+  - writes debug artifacts
+  - marks the clipping note as analyzed on successful runs
 
-If no real provider is configured, the pipeline falls back to deterministic mock output instead of crashing the full run.
+If no real provider is configured, the run falls back to deterministic mock output instead of crashing.
+
+## Output behavior
+
+- `analyze` mode writes to `爆款拆解/` by default
+- output language defaults to `zh-CN`
+- breakdown title now follows the clipping note title
+- breakdown file date uses the actual analysis run date
+- source links point back to the resolved clipping note
+- the final note includes:
+  - clipping note link
+  - capture JSON link
+  - local video link
+  - embedded local video when available
 
 ## Debug and support
 
@@ -81,31 +110,17 @@ Typical artifacts:
 - `run-analyzer-summary.txt`
 - `support-bundle/`
 
-`support-bundle/` is the shareable package for issue reporting.
-It contains sanitized copies of the main debug artifacts so another machine can be diagnosed without exposing the local vault path.
-
-When asking for help, upload either:
+Preferred share target for issue reporting:
 
 - `support-bundle/`
-- or the full debug directory if more detail is needed
 
-## Output behavior
-
-- `analyze` mode writes to `爆款拆解/` by default
-- output language defaults to `zh-CN`
-- the final note includes:
-  - source links
-  - capture JSON link
-  - local video link
-  - embedded local video when available
+Use the full debug directory only when the support bundle is not enough.
 
 ## Related files
 
 - `SKILL.md`
 - `references/local-config.example.json`
 - `references/analyzer-data-model.md`
-- `references/analyzer-record.schema.json`
-- `references/analyze-output.schema.json`
 - `references/output-note-contract.md`
 - `references/prompts/analyze.md`
 - `scripts/run_analyzer.ps1`

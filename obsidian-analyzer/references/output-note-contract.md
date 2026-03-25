@@ -4,19 +4,12 @@
 
 This document defines the note contract emitted by `obsidian-analyzer`.
 
-Phase 6 stabilizes the final renderer so the output note is:
-
-- readable in Obsidian
-- source-linked
-- language-aware
-- consistent across `DryRun` and real model execution
-
-## Target Folders
+## Target folders
 
 - `爆款拆解/` for `analyze`
 - `Insights/` for `learn`
 
-## Required Frontmatter
+## Required frontmatter
 
 - `title`
 - `source_url`
@@ -37,7 +30,7 @@ Phase 6 stabilizes the final renderer so the output note is:
 - `output_contract_version`
 - `output_language`
 
-## Analyze Note Sections
+## Analyze note sections
 
 Required section order:
 
@@ -54,14 +47,18 @@ Required section order:
 - `## 原文证据`
 - `## 来源`
 
-## Renderer Requirements
+## Renderer rules
 
 - Source note, capture JSON, and local video should render as Obsidian links when the files are inside the vault.
 - If the local video is inside the vault, the renderer should include an Obsidian embed in the `来源` section.
-- The renderer should preserve the model output title, but the output file name is derived from `analyzed_at + title`.
-- The renderer must support `output_language` with `zh-CN` as the default.
+- Breakdown title should follow the resolved clipping note title when `source_note_path` is available.
+- Output file name is derived from:
+  - actual analysis run date
+  - plus the cleaned breakdown title
+- `analyzed_at` should reflect the actual analysis run date, not a model-supplied historical date.
+- Default `output_language` is `zh-CN`.
 
-## Analyze Result Contract
+## Analyze result contract
 
 The renderer expects these semantic fields from the analysis result:
 

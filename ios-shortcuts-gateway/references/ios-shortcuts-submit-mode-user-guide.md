@@ -2,17 +2,17 @@
 
 ## Goal
 
-Use an iPhone shortcut to submit a short-video task to the local Gateway and receive the final result in Feishu.
+Use an iPhone shortcut to submit a short-video task to the local Gateway and receive the final result later in Feishu.
 
 ## What this mode does
 
-The iPhone shortcut does not wait for the final business result.
+The iPhone shortcut does not wait for the full business result.
 
 It only:
 
 1. sends the task
 2. receives `request_id`
-3. shows a short accepted message
+3. shows a short accepted message from `display_text`
 
 The computer then continues in the background and sends the final result to Feishu.
 
@@ -22,7 +22,9 @@ The computer then continues in the background and sends the final result to Feis
 - Tailscale is connected on both devices
 - Gateway is running
 - `feishu.enabled = true`
-- `feishu.webhook_url` is configured
+- one of these is configured:
+  - `feishu.mode = openclaw_cli` with valid `target`
+  - or `feishu.mode = webhook` with valid `webhook_url`
 - `obsidian-clipper` and `obsidian-analyzer` already work from PowerShell
 
 ## Gateway startup
@@ -77,12 +79,12 @@ POST
 
 The shortcut should display:
 
-- `request_id`
-- `message_zh`
+- `display_text`
 
-Expected accepted message:
+Typical accepted message:
 
 - `任务已提交，正在后台执行。结果将稍后通过飞书返回。`
+- `request_id: ...`
 
 ## What Feishu should show
 
@@ -95,7 +97,7 @@ The final Feishu message should contain:
 - `original_source_text`
 - clipping note path when available
 - breakdown note path when available
-- refresh guidance when auth is required
+- refresh instruction when auth is required
 
 ## Failure handling
 

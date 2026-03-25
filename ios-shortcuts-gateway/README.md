@@ -2,11 +2,11 @@
 
 ## Purpose
 
-`ios-shortcuts-gateway` is a local entry-layer module for remote iPhone-triggered tasks over a Tailscale private network.
+`ios-shortcuts-gateway` is the local HTTP entry layer for iPhone-triggered short-video tasks over Tailscale.
 
 It bridges:
 
-- iOS Shortcuts
+- iPhone Shortcuts
 - Tailscale private connectivity
 - local HTTP requests
 - `obsidian-clipper`
@@ -16,34 +16,24 @@ This module is not a new clipping or analysis engine.
 
 ## Recommended topology
 
-`iPhone Shortcuts -> Tailscale -> local HTTP gateway -> Clipper / Analyzer`
-
-## Responsibilities
-
-- authenticate incoming requests
-- validate request payloads
-- allow only approved actions
-- call fixed internal workflows
-- return mobile-safe structured results
+`iPhone Shortcut -> Tailscale -> local HTTP gateway -> Clipper / Analyzer -> Feishu callback`
 
 ## Allowed actions
 
 - `clip`
 - `analyze`
 
-No other action is in scope for the MVP.
+No other action is in scope for the current implementation.
 
 ## References
 
-- [Module Boundary](references/module-boundary.md)
-- [Request Schema](references/short-video-task.request.schema.json)
-- [Response Schema](references/short-video-task.response.schema.json)
-- [Security Contract](references/security-contract.md)
-- [Local Config Contract](references/local-config-contract.md)
-- [Feishu Notifier Contract](references/feishu-notifier-contract.md)
-- [local-config.example.json](references/local-config.example.json)
-- [Phase 6 Integration Test Plan](references/integration-test-plan.md)
-- [Submit-Only User Guide](references/ios-shortcuts-submit-mode-user-guide.md)
+- [Module Boundary](E:\Codex_project\obsidian-skillkit\ios-shortcuts-gateway\references\module-boundary.md)
+- [Request Schema](E:\Codex_project\obsidian-skillkit\ios-shortcuts-gateway\references\short-video-task.request.schema.json)
+- [Response Schema](E:\Codex_project\obsidian-skillkit\ios-shortcuts-gateway\references\short-video-task.response.schema.json)
+- [Security Contract](E:\Codex_project\obsidian-skillkit\ios-shortcuts-gateway\references\security-contract.md)
+- [Local Config Contract](E:\Codex_project\obsidian-skillkit\ios-shortcuts-gateway\references\local-config-contract.md)
+- [Feishu Notifier Contract](E:\Codex_project\obsidian-skillkit\ios-shortcuts-gateway\references\feishu-notifier-contract.md)
+- [Submit-Only User Guide](E:\Codex_project\obsidian-skillkit\ios-shortcuts-gateway\references\ios-shortcuts-submit-mode-user-guide.md)
 
 ## Entrypoints
 
@@ -62,7 +52,7 @@ No other action is in scope for the MVP.
    - `routing.clipper_script`
    - `routing.analyzer_script`
    - `obsidian.vault_path`
-   - optional `feishu.*` if you want callback delivery to Feishu
+   - `feishu.*` if you want async callback delivery
 3. Install dependencies:
 
 ```powershell
@@ -83,7 +73,7 @@ Tailscale bind mode:
 powershell -ExecutionPolicy Bypass -File ".\ios-shortcuts-gateway\scripts\start_gateway.ps1" -UseConfigHost
 ```
 
-## Local smoke test
+## Local smoke tests
 
 Health:
 
@@ -116,20 +106,24 @@ powershell -ExecutionPolicy Bypass -File ".\ios-shortcuts-gateway\scripts\test_g
 - returns immediately with:
   - `status = ACCEPTED`
   - `request_id`
+  - `display_text`
 - runs `clip` or `analyze` in the background by default
 
-If the caller explicitly sets `wait_for_completion = true`, the gateway waits for the full workflow and returns the final result. This is suitable for local PowerShell smoke tests, but not recommended for iPhone shortcuts.
+If the caller explicitly sets `wait_for_completion = true`, the gateway waits for the full workflow and returns the final result. This mode is suitable for local PowerShell smoke tests, not for iPhone shortcut UX.
 
 ### `GET /short-video/task/{request_id}`
 
 - returns the current task state
-- possible states:
-  - `ACCEPTED`
-  - `RUNNING`
-  - `SUCCESS`
-  - `PARTIAL`
-  - `FAILED`
-  - `AUTH_REQUIRED`
+- intended for debugging/operator lookup
+
+Possible states:
+
+- `ACCEPTED`
+- `RUNNING`
+- `SUCCESS`
+- `PARTIAL`
+- `FAILED`
+- `AUTH_REQUIRED`
 
 ## Request-local artifacts
 
@@ -149,9 +143,9 @@ under:
 
 - `.tmp/gateway/runs/<request_id>/`
 
-### `status.json`
+## `status.json`
 
-The async lifecycle is now persisted through:
+The async lifecycle is persisted through:
 
 - `ACCEPTED`
 - `RUNNING`
@@ -166,6 +160,7 @@ Each `status.json` keeps:
 - `action`
 - `status`
 - `message_zh`
+- `display_text`
 - `created_at`
 - `updated_at`
 - `source_url`
@@ -177,22 +172,12 @@ Each `status.json` keeps:
   - `callback_sent`
   - `callback_error`
 
-## Feishu notifier module
+## Feishu notifier
 
-Phase 4 adds an isolated notifier module:
+Terminal task states are finalized first and then passed through `feishu_notifier.py`.
+Callback delivery never downgrades the underlying task outcome.
 
-- `feishu_notifier.py`
-
-Current scope:
-
-- validates Feishu notifier config
-- validates terminal callback payloads
-- renders a standard Feishu text message
-- sends the webhook request through a dedicated helper
-
-From Phase 5 onward, terminal task states are finalized first and then passed through this notifier helper. Callback delivery does not downgrade the task outcome if Feishu delivery fails.
-
-### Recommended Feishu mode
+### Recommended mode
 
 If your OpenClaw environment already has a working Feishu connection, prefer:
 
@@ -206,39 +191,35 @@ openclaw message send --channel feishu --target <open_id or chat_id> --message <
 
 `webhook` remains available as a compatibility fallback.
 
-## iPhone / Tailscale phase
+## iPhone shortcut behavior
 
-When the local smoke test passes:
+Recommended request body:
 
-1. set `server.host` to the Windows Tailscale IP
-2. restart the gateway with `-UseConfigHost`
-3. configure the iPhone shortcut to:
-   - `POST http://<tailscale-ip>:<port>/short-video/task`
-   - send header `Authorization: Bearer <token>`
-   - send JSON body with:
-     - `action`
-     - `source_text`
-     - `client`
-     - `wait_for_completion = false`
-4. read `request_id` from the accepted response
-5. stop the shortcut immediately
-6. wait for the Feishu callback as the primary result channel
+```json
+{
+  "action": "clip",
+  "source_text": "<raw share text>",
+  "client": "ios_shortcuts",
+  "wait_for_completion": false
+}
+```
 
-### Recommended shortcut pattern
+or:
 
-- request 1:
-  - submit task
-- response:
-  - show `request_id`
-  - show `message_zh`
-  - tell the user that the final result will return in Feishu
+```json
+{
+  "action": "analyze",
+  "source_text": "<raw share text>",
+  "client": "ios_shortcuts",
+  "wait_for_completion": false
+}
+```
 
-### Polling rule
+Recommended response handling:
+
+- read `display_text`
+- show the accepted message
+- stop immediately
+- wait for Feishu as the primary result channel
 
 `GET /short-video/task/{request_id}` remains available, but only as a debug or operator endpoint.
-
-It is not the recommended primary UX for the iPhone shortcut.
-
-The detailed checklist is in:
-
-- [Phase 6 Integration Test Plan](references/integration-test-plan.md)
