@@ -141,6 +141,15 @@ def parse_note_sections(note_body: str) -> dict[str, str]:
     return sections
 
 
+def title_from_note_path(note_path: str) -> str:
+    if not has_value(note_path):
+        return ""
+    stem = Path(note_path).stem
+    stem = re.sub(r"^[\u2713\u2714\u221A\u2705]\s*", "", stem)
+    stem = re.sub(r"^\d{4}-\d{2}-\d{2}\s+", "", stem)
+    return stem.strip()
+
+
 def resolve_path(vault_path: str, path_value: str) -> str:
     if not has_value(path_value):
         return ""
@@ -214,6 +223,40 @@ def load_note(note_path: str, warnings: list[str]) -> tuple[dict[str, Any], str,
     return frontmatter, body, sections
 
 
+def find_matching_note_path(vault_path: str, capture_json_path: str, capture: dict[str, Any]) -> str:
+    if not has_value(vault_path) or not has_value(capture_json_path):
+        return ""
+
+    vault_root = Path(vault_path)
+    clippings_root = vault_root / "Clippings"
+    if not clippings_root.exists():
+        return ""
+
+    expected_capture_id = string_value(capture.get("capture_id"))
+    expected_sidecar = ""
+    try:
+        expected_sidecar = Path(capture_json_path).resolve().as_posix().lower()
+    except OSError:
+        expected_sidecar = Path(capture_json_path).as_posix().lower()
+
+    for note_file in clippings_root.rglob("*.md"):
+        frontmatter, _, _ = load_note(str(note_file), [])
+        candidate_capture_id = string_value(frontmatter.get("capture_id"))
+        candidate_sidecar = string_value(frontmatter.get("sidecar_path"))
+        candidate_sidecar_abs = resolve_path(vault_path, candidate_sidecar)
+        try:
+            candidate_sidecar_abs = Path(candidate_sidecar_abs).resolve().as_posix().lower() if has_value(candidate_sidecar_abs) else ""
+        except OSError:
+            candidate_sidecar_abs = Path(candidate_sidecar_abs).as_posix().lower() if has_value(candidate_sidecar_abs) else ""
+
+        if has_value(expected_capture_id) and candidate_capture_id == expected_capture_id:
+            return str(note_file)
+        if has_value(expected_sidecar) and candidate_sidecar_abs == expected_sidecar:
+            return str(note_file)
+
+    return ""
+
+
 def derive_capture_path(note_frontmatter: dict[str, Any], capture_json_path: str, vault_path: str) -> str:
     if has_value(capture_json_path):
         return capture_json_path
@@ -225,24 +268,33 @@ def build_payload(note_path: str, capture_json_path: str, vault_path: str, analy
     frontmatter, note_body, note_sections = load_note(note_path, warnings)
     resolved_capture_path = derive_capture_path(frontmatter, capture_json_path, vault_path)
     capture = load_json_file(Path(resolved_capture_path), warnings, "capture_json") if has_value(resolved_capture_path) else None
+    capture = capture or {}
+
+    resolved_note_path = note_path
+    if not has_value(resolved_note_path) and has_value(resolved_capture_path):
+        resolved_note_path = find_matching_note_path(vault_path, resolved_capture_path, capture)
+        if has_value(resolved_note_path):
+            frontmatter, note_body, note_sections = load_note(resolved_note_path, warnings)
+        else:
+            warnings.append(f"source_note_not_found:{resolved_capture_path}")
+
     metadata_path = resolve_path(
         vault_path,
         string_value(
-            (capture or {}).get("metadata_path"),
+            capture.get("metadata_path"),
             frontmatter.get("metadata_path"),
         ),
     )
     comments_path = resolve_path(
         vault_path,
         string_value(
-            (capture or {}).get("comments_path"),
+            capture.get("comments_path"),
             frontmatter.get("comments_path"),
         ),
     )
     metadata = load_json_file(Path(metadata_path), warnings, "metadata_json") if has_value(metadata_path) else None
     comments_raw = load_json_file(Path(comments_path), warnings, "comments_json") if has_value(comments_path) else None
 
-    capture = capture or {}
     metadata = metadata or {}
     comments = to_comment_list(comments_raw if comments_raw is not None else capture.get("comments"))
     top_comments = [
@@ -272,7 +324,13 @@ def build_payload(note_path: str, capture_json_path: str, vault_path: str, analy
     metrics_share = string_value(capture.get("metrics_share"), metadata.get("share_count"))
     metrics_collect = string_value(capture.get("metrics_collect"), metadata.get("collect_count"))
 
-    title = string_value(frontmatter.get("title"), capture.get("title"), default="Untitled analysis source")
+    title = string_value(
+        frontmatter.get("note_title"),
+        title_from_note_path(resolved_note_path),
+        frontmatter.get("title"),
+        capture.get("title"),
+        default="Untitled analysis source",
+    )
     comments_count_value = capture.get("comments_count")
     if not has_value(comments_count_value):
         comments_count_value = metadata.get("comment_count_visible")
@@ -281,7 +339,7 @@ def build_payload(note_path: str, capture_json_path: str, vault_path: str, analy
 
     payload = {
         "analysis_mode": analysis_mode,
-        "source_note_path": note_path,
+        "source_note_path": resolved_note_path,
         "capture_json_path": resolved_capture_path,
         "source_url": string_value(frontmatter.get("source_url"), capture.get("source_url")),
         "normalized_url": string_value(frontmatter.get("normalized_url"), capture.get("normalized_url"), metadata.get("normalized_url")),

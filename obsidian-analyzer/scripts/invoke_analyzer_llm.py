@@ -209,8 +209,9 @@ def resolve_api_key(llm: dict[str, Any]) -> tuple[str, str]:
 
 
 def ensure_defaults(result: dict[str, Any], payload: dict[str, Any], model: str, output_language: str) -> dict[str, Any]:
+    analysis_run_date = datetime.now().strftime("%Y-%m-%d")
     return {
-        "title": string_value(result.get("title"), default=default_analysis_title(payload, output_language, "analyze")),
+        "title": string_value(payload.get("title"), result.get("title"), default=default_analysis_title(payload, output_language, "analyze")),
         "analysis_mode": "analyze",
         "source_note_path": string_value(payload.get("source_note_path"), result.get("source_note_path")),
         "capture_json_path": string_value(payload.get("capture_json_path"), result.get("capture_json_path")),
@@ -219,7 +220,7 @@ def ensure_defaults(result: dict[str, Any], payload: dict[str, Any], model: str,
         "platform": string_value(payload.get("platform"), result.get("platform")),
         "content_type": string_value(payload.get("content_type"), result.get("content_type")),
         "capture_id": string_value(payload.get("capture_id"), result.get("capture_id")),
-        "analyzed_at": string_value(result.get("analyzed_at"), default=datetime.now().strftime("%Y-%m-%d")),
+        "analyzed_at": analysis_run_date,
         "model": string_value(model),
         "provider_reported_model": string_value(result.get("model")),
         "analysis_status": string_value(result.get("analysis_status"), default="success"),

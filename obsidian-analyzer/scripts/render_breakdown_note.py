@@ -52,15 +52,23 @@ def clean_note_title(raw_title: str) -> str:
     text = normalize_inline_spaces(raw_title)
     if not has_value(text):
         return "未命名拆解"
-
     text = re.sub(r"https?://\S+", " ", text, flags=re.IGNORECASE)
     text = re.sub(r"@\S+", " ", text)
     text = re.sub(r"#\S+", " ", text)
     text = normalize_inline_spaces(text)
-    text = re.sub(r"^[\s,.;:!?，。！？、#@\-_/]+", "", text)
-    text = re.sub(r"[\s,.;:!?，。！？、#@\-_/]+$", "", text)
+    text = re.sub(r"^[\s,.;:!?，。！？@\-_/]+", "", text)
+    text = re.sub(r"[\s,.;:!?，。！？@\-_/]+$", "", text)
     text = normalize_inline_spaces(text)
     return text or "未命名拆解"
+
+
+def title_from_source_note_path(note_path: str) -> str:
+    if not has_value(note_path):
+        return ""
+    stem = Path(note_path).stem
+    stem = re.sub(r"^[\u2713\u2714\u221A\u2705]\s*", "", stem)
+    stem = re.sub(r"^\d{4}-\d{2}-\d{2}\s+", "", stem)
+    return normalize_inline_spaces(stem)
 
 
 def markdown_title(title: str, fallback: str) -> str:
@@ -71,10 +79,7 @@ def markdown_title(title: str, fallback: str) -> str:
 def normalize_list(values: Any) -> list[str]:
     if values is None:
         return []
-    if isinstance(values, list):
-        items = values
-    else:
-        items = [values]
+    items = values if isinstance(values, list) else [values]
     return [string_value(item) for item in items if has_value(item)]
 
 
@@ -218,7 +223,6 @@ def build_source_lines(analysis: dict[str, Any], labels: dict[str, str], vault_p
     source_note_path = string_value(analysis.get("source_note_path"))
     capture_json_path = string_value(analysis.get("capture_json_path"))
     video_path = string_value(analysis.get("video_path"))
-
     lines = [
         f"- {labels['sources.clipping']}: {obsidian_link(source_note_path, vault_path)}",
         f"- {labels['sources.capture']}: {obsidian_link(capture_json_path, vault_path)}",
@@ -230,11 +234,16 @@ def build_source_lines(analysis: dict[str, Any], labels: dict[str, str], vault_p
 
 
 def build_note(analysis: dict[str, Any], folder: str, vault_path: str) -> dict[str, Any]:
-    analyzed_at = string_value(analysis.get("analyzed_at"), default=datetime.now().strftime("%Y-%m-%d"))
     output_language = string_value(analysis.get("output_language"), default="zh-CN")
     labels = language_pack(output_language)
-    raw_title = string_value(analysis.get("title"), default=labels["untitled"])
+    source_note_path = string_value(analysis.get("source_note_path"))
+    raw_title = string_value(
+        title_from_source_note_path(source_note_path),
+        analysis.get("title"),
+        default=labels["untitled"],
+    )
     title = clean_note_title(raw_title)
+    analyzed_at = datetime.now().strftime("%Y-%m-%d")
     mode = string_value(analysis.get("analysis_mode"), default="analyze")
     model = string_value(analysis.get("model"), default="mock-analyzer")
     provider = string_value(analysis.get("provider"), default="mock")
@@ -242,7 +251,6 @@ def build_note(analysis: dict[str, Any], folder: str, vault_path: str) -> dict[s
     analysis_status = string_value(analysis.get("analysis_status"), default="mock_generated")
     capture_json_path = string_value(analysis.get("capture_json_path"))
     video_path = string_value(analysis.get("video_path"))
-    source_note_path = string_value(analysis.get("source_note_path"))
     file_name = safe_file_name(f"{analyzed_at} {title}.md")
 
     lines = [
