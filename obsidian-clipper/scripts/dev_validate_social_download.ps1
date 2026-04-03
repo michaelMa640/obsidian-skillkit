@@ -103,6 +103,21 @@ function Get-ConfiguredPathValue {
     $value
 }
 
+function Get-SocialPlatformAuthConfig {
+    param($Config, [string]$Platform)
+    if ($null -eq $Config.routes -or $null -eq $Config.routes.social) { return $null }
+    $authConfig = $Config.routes.social.auth
+    if ($null -eq $authConfig) { return $null }
+    $platformConfig = Get-DataValue -Data $authConfig -Name $Platform
+    if ($null -ne $platformConfig) { return $platformConfig }
+    $defaultConfig = Get-DataValue -Data $authConfig -Name 'default'
+    if ($null -ne $defaultConfig) { return $defaultConfig }
+    $legacyStorageState = Get-DataValue -Data $authConfig -Name 'storage_state_path'
+    $legacyCookiesFile = Get-DataValue -Data $authConfig -Name 'cookies_file'
+    if ($null -ne $legacyStorageState -or $null -ne $legacyCookiesFile) { return $authConfig }
+    $null
+}
+
 function Invoke-LoggedCommand {
     param(
         [Parameter(Mandatory = $true)]
@@ -685,11 +700,10 @@ $socialScriptPath = Resolve-SocialScriptPath -Config $config
 $timeoutMs = if ($null -ne $config.routes -and $null -ne $config.routes.social -and (Test-HasValue $config.routes.social.timeout_ms)) { [string]$config.routes.social.timeout_ms } else { '25000' }
 $downloadCommand = if ($null -ne $config.routes -and $null -ne $config.routes.social -and (Test-HasValue $config.routes.social.download_command)) { [string]$config.routes.social.download_command } else { 'yt-dlp' }
 $attachmentsRoot = if ($null -ne $config.clipper -and (Test-HasValue $config.clipper.attachments_root)) { [string]$config.clipper.attachments_root } else { 'Attachments/ShortVideos' }
-$authConfig = if ($null -ne $config.routes -and $null -ne $config.routes.social) { $config.routes.social.auth } else { $null }
-$storageStatePath = Get-ConfiguredPathValue -Object $authConfig -PropertyName 'storage_state_path'
-$cookiesFile = Get-ConfiguredPathValue -Object $authConfig -PropertyName 'cookies_file'
-$storageStateExists = ((Test-HasValue $storageStatePath) -and (Test-Path $storageStatePath))
-$cookiesFileExists = ((Test-HasValue $cookiesFile) -and (Test-Path $cookiesFile))
+$storageStatePath = ''
+$cookiesFile = ''
+$storageStateExists = $false
+$cookiesFileExists = $false
 
 $tooling = @(
     Get-ToolVersionRecord -Name 'python' -Command $pythonCommand -Arguments @('--version') -RunDirectory $runDirectory
@@ -715,6 +729,11 @@ Write-StepStatus -Step 'detect' -Success $detectSuccess -Details $detectDetails 
 if ($null -eq $detection -or [string]$detection.route -ne 'social') {
     throw "This validation helper is only for the social route. Detection result route: $([string]$detection.route)"
 }
+$authConfig = Get-SocialPlatformAuthConfig -Config $config -Platform ([string]$detection.platform)
+$storageStatePath = Get-ConfiguredPathValue -Object $authConfig -PropertyName 'storage_state_path'
+$cookiesFile = Get-ConfiguredPathValue -Object $authConfig -PropertyName 'cookies_file'
+$storageStateExists = ((Test-HasValue $storageStatePath) -and (Test-Path $storageStatePath))
+$cookiesFileExists = ((Test-HasValue $cookiesFile) -and (Test-Path $cookiesFile))
 
 $captureJsonPath = Join-Path $runDirectory 'capture-social.json'
 $captureLogPath = Join-Path $runDirectory 'capture-social.log'
@@ -757,9 +776,10 @@ if ($null -ne $capturePayload -and [string]$capturePayload.status -ne 'capture_f
     }
     Write-Utf8Text -Path $downloadJsonPath -Content ($downloadPayload | ConvertTo-Json -Depth 100)
 }
-$downloadSuccess = ($null -ne $downloadPayload -and [string]$downloadPayload.download_status -eq 'success')
-$downloadDetails = if ($null -ne $downloadPayload) { "status=$([string]$downloadPayload.download_status) method=$([string]$downloadPayload.download_method) video=$([string]$downloadPayload.video_path)" } else { 'download json missing' }
-$downloadHint = if ($null -ne $downloadPayload -and $null -ne $downloadPayload.errors -and @($downloadPayload.errors).Count -gt 0) { Get-PreviewLine -Text ((@($downloadPayload.errors) -join '; ')) -MaxLength 220 } else { '' }
+$downloadErrors = if ($null -ne $downloadPayload) { @(Get-DataValue -Data $downloadPayload -Name 'errors') } else { @() }
+$downloadSuccess = ($null -ne $downloadPayload -and (Get-StringValue -Data $downloadPayload -Name 'download_status') -eq 'success')
+$downloadDetails = if ($null -ne $downloadPayload) { "status=$(Get-StringValue -Data $downloadPayload -Name 'download_status') method=$(Get-StringValue -Data $downloadPayload -Name 'download_method') video=$(Get-StringValue -Data $downloadPayload -Name 'video_path')" } else { 'download json missing' }
+$downloadHint = if (@($downloadErrors).Count -gt 0) { Get-PreviewLine -Text ((@($downloadErrors) -join '; ')) -MaxLength 220 } else { '' }
 Write-StepStatus -Step 'download' -Success $downloadSuccess -Details $downloadDetails -Hint $downloadHint
 
 $runClipperJsonPath = Join-Path $runDirectory 'run-clipper.json'
@@ -787,8 +807,12 @@ if ($null -eq $runClipperPayload) {
 }
 $clipperStatus = if ($null -ne $runClipperPayload) { Get-StringValue -Data $runClipperPayload -Name 'status' } else { '' }
 $clipperSuccess = ($null -ne $runClipperPayload -and $clipperStatus -ne 'failed')
-$clipperDetails = if ($null -ne $runClipperPayload) { "note=$([string]$runClipperPayload.note_path) download=$([string]$runClipperPayload.download_status)/$([string]$runClipperPayload.download_method)" } else { 'run-clipper json missing' }
-$clipperHint = if ($null -ne $runClipperPayload -and $null -ne $runClipperPayload.errors -and @($runClipperPayload.errors).Count -gt 0) { Get-PreviewLine -Text ((@($runClipperPayload.errors) -join '; ')) -MaxLength 220 } elseif (Test-Path $runClipperLogPath) { Get-PreviewLine -Text (Read-Utf8Text -Path $runClipperLogPath) } else { '' }
+$clipperNotePath = if ($null -ne $runClipperPayload) { Get-StringValue -Data $runClipperPayload -Name 'note_path' } else { '' }
+$clipperDownloadStatus = if ($null -ne $runClipperPayload) { Get-StringValue -Data $runClipperPayload -Name 'download_status' } else { '' }
+$clipperDownloadMethod = if ($null -ne $runClipperPayload) { Get-StringValue -Data $runClipperPayload -Name 'download_method' } else { '' }
+$clipperDetails = if ($null -ne $runClipperPayload) { "note=$clipperNotePath download=$clipperDownloadStatus/$clipperDownloadMethod" } else { 'run-clipper json missing' }
+$clipperErrors = if ($null -ne $runClipperPayload) { @(Get-DataValue -Data $runClipperPayload -Name 'errors') } else { @() }
+$clipperHint = if (@($clipperErrors).Count -gt 0) { Get-PreviewLine -Text ((@($clipperErrors) -join '; ')) -MaxLength 220 } elseif (Test-Path $runClipperLogPath) { Get-PreviewLine -Text (Read-Utf8Text -Path $runClipperLogPath) } else { '' }
 Write-StepStatus -Step 'clipper' -Success $clipperSuccess -Details $clipperDetails -Hint $clipperHint
 
 $treePath = Join-Path $runDirectory 'validation-vault-tree.txt'
@@ -857,21 +881,21 @@ $report = [ordered]@{
     }
     download = [ordered]@{
         success = [bool]($null -ne $downloadPayload)
-        download_status = if ($null -ne $downloadPayload) { [string]$downloadPayload.download_status } else { '' }
-        download_method = if ($null -ne $downloadPayload) { [string]$downloadPayload.download_method } else { '' }
-        video_path = if ($null -ne $downloadPayload) { [string]$downloadPayload.video_path } else { '' }
+        download_status = if ($null -ne $downloadPayload) { Get-StringValue -Data $downloadPayload -Name 'download_status' } else { '' }
+        download_method = if ($null -ne $downloadPayload) { Get-StringValue -Data $downloadPayload -Name 'download_method' } else { '' }
+        video_path = if ($null -ne $downloadPayload) { Get-StringValue -Data $downloadPayload -Name 'video_path' } else { '' }
         sidecar_path = if ($null -ne $downloadPayload) { [string]$downloadPayload.sidecar_path } else { '' }
         yt_dlp_auth_mode = if ($null -ne $downloadPayload) { [string]$downloadPayload.yt_dlp_auth_mode } else { '' }
         yt_dlp_cookies_file_used = if ($null -ne $downloadPayload) { [string]$downloadPayload.yt_dlp_cookies_file_used } else { '' }
         yt_dlp_cookie_file_generated = if ($null -ne $downloadPayload) { [bool]$downloadPayload.yt_dlp_cookie_file_generated } else { $false }
         json_path = if (Test-Path $downloadJsonPath) { Get-RelativePath -BasePath $runDirectory -TargetPath $downloadJsonPath } else { '' }
         log_path = Get-RelativePath -BasePath $runDirectory -TargetPath $downloadLogPath
-        errors = if ($null -ne $downloadPayload) { @($downloadPayload.errors) } else { @() }
+        errors = if ($null -ne $downloadPayload) { @(Get-DataValue -Data $downloadPayload -Name 'errors') } else { @() }
         fallbacks = if ($null -ne $downloadPayload) { @($downloadPayload.fallbacks) } else { @() }
     }
     end_to_end = [ordered]@{
         success = [bool]$clipperSuccess
-        note_path = if ($null -ne $runClipperPayload -and (Test-HasValue $runClipperPayload.note_path)) { [string]$runClipperPayload.note_path } else { '' }
+        note_path = if ($null -ne $runClipperPayload) { Get-StringValue -Data $runClipperPayload -Name 'note_path' } else { '' }
         json_path = if (Test-Path $runClipperJsonPath) { Get-RelativePath -BasePath $runDirectory -TargetPath $runClipperJsonPath } else { '' }
         log_path = Get-RelativePath -BasePath $runDirectory -TargetPath $runClipperLogPath
     }

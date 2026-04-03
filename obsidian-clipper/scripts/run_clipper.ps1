@@ -225,6 +225,25 @@ function Get-ConfiguredPathValue {
     $value
 }
 
+function Get-SocialPlatformAuthConfig {
+    param($Config, [string]$Platform)
+    if ($null -eq $Config.routes -or $null -eq $Config.routes.social) { return $null }
+    $authConfig = Get-DataValue -Data $Config.routes.social -Name 'auth'
+    if ($null -eq $authConfig) { return $null }
+
+    $platformConfig = Get-DataValue -Data $authConfig -Name $Platform
+    if ($null -ne $platformConfig) { return $platformConfig }
+
+    $defaultConfig = Get-DataValue -Data $authConfig -Name 'default'
+    if ($null -ne $defaultConfig) { return $defaultConfig }
+
+    $legacyStorageState = Get-DataValue -Data $authConfig -Name 'storage_state_path'
+    $legacyCookiesFile = Get-DataValue -Data $authConfig -Name 'cookies_file'
+    if ($null -ne $legacyStorageState -or $null -ne $legacyCookiesFile) { return $authConfig }
+
+    $null
+}
+
 function Get-MetaContent {
     param([string]$Html, [string]$Key, [string]$Attr = 'property')
     $pattern = '<meta\s+' + $Attr + '="' + [regex]::Escape($Key) + '"[^>]*content="(?<value>[^"]+)"'
@@ -574,10 +593,7 @@ function Invoke-SocialCapture {
     $scriptPath = Get-RouteConfigValue -Config $Config -RouteName 'social' -PropertyName 'script' -DefaultValue ''
     if (-not (Test-HasValue $scriptPath) -or $scriptPath -like '*REPLACE/WITH/YOUR*' -or $scriptPath -like '*REPLACE\WITH\YOUR*' -or -not (Test-Path $scriptPath)) { $scriptPath = Join-Path $PSScriptRoot 'capture_social_playwright.py' }
     $timeoutMs = Get-RouteConfigValue -Config $Config -RouteName 'social' -PropertyName 'timeout_ms' -DefaultValue '25000'
-    $authConfig = $null
-    if ($null -ne $Config.routes -and $null -ne $Config.routes.social) {
-        $authConfig = Get-DataValue -Data $Config.routes.social -Name 'auth'
-    }
+    $authConfig = Get-SocialPlatformAuthConfig -Config $Config -Platform $Platform
     $storageStatePath = Get-ConfiguredPathValue -Object $authConfig -PropertyName 'storage_state_path'
     $cookiesFile = Get-ConfiguredPathValue -Object $authConfig -PropertyName 'cookies_file'
     $tempDir = New-LocalTempDirectory
@@ -986,7 +1002,8 @@ function Build-ClippingNote {
     foreach ($tag in $tags) {
         $lines.Add("  - $(ConvertTo-YamlScalar $tag)")
     }
-    $lines.Add('status: clipped')
+    $captureStatus = Get-StringValue -Data $Capture -Name 'status' -DefaultValue 'clipped'
+    $lines.Add("status: $captureStatus")
     $lines.Add('---')
     $lines.Add('')
     $lines.Add("# $displayTitle")
@@ -1080,13 +1097,16 @@ function Add-RunFinalStatusFields {
         return $Result
     }
 
-    if ($downloadStatus -eq 'failed') {
+    if ($downloadStatus -in @('failed', 'blocked')) {
         Set-ObjectField -Object $Result -Name 'final_run_status' -Value 'FAILED' | Out-Null
         Set-ObjectField -Object $Result -Name 'final_run_status_zh' -Value (Zh '\u5931\u8d25') | Out-Null
         if (Test-HasValue $authActionRequired) {
-            Set-ObjectField -Object $Result -Name 'failed_step' -Value 'auth_refresh_required' | Out-Null
-            Set-ObjectField -Object $Result -Name 'final_message_en' -Value (if (Test-HasValue $authGuidanceEn) { $authGuidanceEn } else { 'Douyin auth appears expired or missing. Refresh local auth and retry.' }) | Out-Null
-            Set-ObjectField -Object $Result -Name 'final_message_zh' -Value (if (Test-HasValue $authGuidanceZh) { $authGuidanceZh } else { Zh '\u6296\u97f3\u767b\u5f55\u6001\u7591\u4f3c\u5df2\u8fc7\u671f\u6216\u7f3a\u5931\u3002\u8bf7\u5148\u5237\u65b0\u672c\u5730\u767b\u5f55\u6001\uff0c\u518d\u91cd\u65b0\u8fd0\u884c\u3002' }) | Out-Null
+            $failedStepName = if ($authActionRequired -eq 'refresh_douyin_auth') { 'auth_refresh_required' } else { 'access_blocked' }
+            $finalMessageEn = if (Test-HasValue $authGuidanceEn) { $authGuidanceEn } else { 'Platform access is blocked. Retry in a trusted environment.' }
+            $finalMessageZh = if (Test-HasValue $authGuidanceZh) { $authGuidanceZh } else { Zh '\u5e73\u53f0\u62e6\u622a\u4e86\u8fd9\u6b21\u8bf7\u6c42\uff0c\u8bf7\u5728\u53ef\u4fe1\u73af\u5883\u4e2d\u91cd\u8bd5\u3002' }
+            Set-ObjectField -Object $Result -Name 'failed_step' -Value $failedStepName | Out-Null
+            Set-ObjectField -Object $Result -Name 'final_message_en' -Value $finalMessageEn | Out-Null
+            Set-ObjectField -Object $Result -Name 'final_message_zh' -Value $finalMessageZh | Out-Null
         } else {
             if (-not (Test-HasValue $failedStep)) { Set-ObjectField -Object $Result -Name 'failed_step' -Value 'download' | Out-Null }
             $firstError = if ($errors.Count -gt 0) { [string]$errors[0] } else { 'Video download failed.' }

@@ -37,6 +37,19 @@ function Is-PlaceholderValue {
     return ($text -match 'REPLACE/WITH/YOUR' -or $text -match 'REPLACE\\WITH\\YOUR')
 }
 
+function Get-AuthConfigForPlatform {
+    param($AuthConfig, [string]$Platform)
+    if ($null -eq $AuthConfig) { return $null }
+    $platformConfig = $AuthConfig.PSObject.Properties[$Platform]
+    if ($null -ne $platformConfig) { return $platformConfig.Value }
+    $defaultConfig = $AuthConfig.PSObject.Properties['default']
+    if ($null -ne $defaultConfig) { return $defaultConfig.Value }
+    if ($null -ne $AuthConfig.PSObject.Properties['storage_state_path'] -or $null -ne $AuthConfig.PSObject.Properties['cookies_file']) {
+        return $AuthConfig
+    }
+    $null
+}
+
 $resolvedConfigPath = Resolve-ConfigPath -RequestedPath $ConfigPath
 if (-not (Test-Path $resolvedConfigPath)) {
     throw "Config not found: $resolvedConfigPath"
@@ -70,23 +83,23 @@ if (Is-PlaceholderValue $socialScript) {
     }) | Out-Null
 }
 
-$storageStatePath = ''
-$cookiesFile = ''
-if ($null -ne $config.routes -and $null -ne $config.routes.social -and $null -ne $config.routes.social.auth) {
-    $storageStatePath = [string]$config.routes.social.auth.storage_state_path
-    $cookiesFile = [string]$config.routes.social.auth.cookies_file
-}
+$socialAuth = if ($null -ne $config.routes -and $null -ne $config.routes.social) { $config.routes.social.auth } else { $null }
+foreach ($platform in @('douyin', 'xiaohongshu')) {
+    $platformAuth = Get-AuthConfigForPlatform -AuthConfig $socialAuth -Platform $platform
+    $storageStatePath = if ($null -ne $platformAuth) { [string]$platformAuth.storage_state_path } else { '' }
+    $cookiesFile = if ($null -ne $platformAuth) { [string]$platformAuth.cookies_file } else { '' }
 
-if (Is-PlaceholderValue $storageStatePath) {
-    $warnings.Add('routes.social.auth.storage_state_path is not configured. Logged-in Playwright capture will not be available.') | Out-Null
-} elseif (-not (Test-Path $storageStatePath)) {
-    $warnings.Add("Configured storage_state_path does not exist: $storageStatePath") | Out-Null
-}
+    if (Is-PlaceholderValue $storageStatePath) {
+        $warnings.Add("routes.social.auth.$platform.storage_state_path is not configured. Logged-in Playwright capture will not be available for $platform.") | Out-Null
+    } elseif (-not (Test-Path $storageStatePath)) {
+        $warnings.Add("Configured $platform storage_state_path does not exist: $storageStatePath") | Out-Null
+    }
 
-if (Is-PlaceholderValue $cookiesFile) {
-    $warnings.Add('routes.social.auth.cookies_file is not configured. yt-dlp may fail on Douyin when fresh cookies are required.') | Out-Null
-} elseif (-not (Test-Path $cookiesFile)) {
-    $warnings.Add("Configured cookies_file does not exist: $cookiesFile") | Out-Null
+    if (Is-PlaceholderValue $cookiesFile) {
+        $warnings.Add("routes.social.auth.$platform.cookies_file is not configured. yt-dlp may fail when fresh cookies are required for $platform.") | Out-Null
+    } elseif (-not (Test-Path $cookiesFile)) {
+        $warnings.Add("Configured $platform cookies_file does not exist: $cookiesFile") | Out-Null
+    }
 }
 
 $result = [pscustomobject]@{
@@ -96,6 +109,7 @@ $result = [pscustomobject]@{
     warnings = @($warnings.ToArray())
     recommended_next_steps = @(
         'If auth warnings exist, refresh Douyin login state with scripts/bootstrap_social_auth.py --platform douyin.',
+        'If Xiaohongshu auth warnings exist, refresh Xiaohongshu login state with scripts/bootstrap_social_auth.py --platform xiaohongshu.',
         'After config is valid, run scripts/run_clipper.ps1 or let OpenClaw call the skill normally.'
     )
 }

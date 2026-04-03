@@ -58,8 +58,13 @@ function Get-CanonicalShareUrl {
         return "https://v.douyin.com/$($Matches[1])/"
     }
 
-    if ($hostName -eq 'xhslink.com' -and $path -match '^/([A-Za-z0-9_-]+)/?') {
-        return "https://xhslink.com/$($Matches[1])"
+    if ($hostName -eq 'xhslink.com') {
+        if ($path -match '^/o/([A-Za-z0-9_-]+)/?') {
+            return "https://xhslink.com/o/$($Matches[1])"
+        }
+        if ($path -match '^/([A-Za-z0-9_-]+)/?') {
+            return "https://xhslink.com/$($Matches[1])"
+        }
     }
 
     $builder = [System.UriBuilder]::new($uri)

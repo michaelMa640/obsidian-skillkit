@@ -204,7 +204,11 @@ def status_lines(capture: dict[str, Any]) -> list[str]:
     analyzer_status = string_value(capture.get("analyzer_status"), default="pending")
     bitable_sync_status = string_value(capture.get("bitable_sync_status"), default="pending")
     analysis_ready = bool_value(capture.get("analysis_ready"), bool_value(metadata.get("analysis_ready"), True))
-    return [
+    access_blocked = bool_value(capture.get("access_blocked"), bool_value(metadata.get("access_blocked")))
+    access_block_type = string_value(capture.get("access_block_type"), metadata.get("access_block_type"))
+    access_block_error_code = string_value(capture.get("access_block_error_code"), metadata.get("access_block_error_code"))
+    auth_guidance_zh = string_value(capture.get("auth_guidance_zh"), metadata.get("auth_guidance_zh"))
+    lines = [
         f"- 下载状态: {download_status}",
         f"- 下载方式: {download_method}",
         f"- 视频已落盘: {'是' if media_downloaded else '否'}",
@@ -213,6 +217,14 @@ def status_lines(capture: dict[str, Any]) -> list[str]:
         f"- 多维表格同步: {bitable_sync_status}",
         f"- 分析就绪: {'是' if analysis_ready else '否'}",
     ]
+    if access_blocked:
+        block_label = "IP 风险拦截" if access_block_type == "ip_risk" else "站点访问受限"
+        lines.insert(0, f"- 访问状态: {block_label}")
+        if has_value(access_block_error_code):
+            lines.insert(1, f"- 拦截错误码: {access_block_error_code}")
+        if has_value(auth_guidance_zh):
+            lines.append(f"- 处理建议: {auth_guidance_zh}")
+    return lines
 
 
 def engagement_lines(capture: dict[str, Any], top_comments: list[str]) -> list[str]:
@@ -304,7 +316,7 @@ def render_note(config: dict[str, Any], detection: dict[str, Any], capture: dict
     ]
     lines.extend([f"  - {yaml_scalar(tag)}" for tag in tags])
     lines.extend([
-        "status: clipped",
+        f"status: {string_value(capture.get('status'), default='clipped')}",
         "---",
         "",
         f"# {display_title}",

@@ -6,7 +6,7 @@
       "obsidian.vault_path unless your workflow always passes a vault path at runtime",
       "routes.article.command if you wire a custom extractor instead of the built-in web article route",
       "clipper.default_folder if your vault does not use Clippings",
-      "routes.social.auth.storage_state_path and routes.social.auth.cookies_file if you want Douyin/Xiaohongshu login-state reuse"
+      "routes.social.auth.<platform>.storage_state_path and routes.social.auth.<platform>.cookies_file if you want separate login-state reuse for Douyin and Xiaohongshu"
     ],
     "notes": [
       "article uses the built-in web article route inside run_clipper.ps1 by default",
@@ -36,8 +36,14 @@
       "timeout_ms": 25000,
       "download_command": "yt-dlp",
       "auth": {
-        "storage_state_path": "E:/REPLACE/WITH/YOUR/obsidian-clipper/.local-auth/douyin-storage-state.json",
-        "cookies_file": "E:/REPLACE/WITH/YOUR/obsidian-clipper/.local-auth/douyin-cookies.txt"
+        "douyin": {
+          "storage_state_path": "E:/REPLACE/WITH/YOUR/obsidian-clipper/.local-auth/douyin-storage-state.json",
+          "cookies_file": "E:/REPLACE/WITH/YOUR/obsidian-clipper/.local-auth/douyin-cookies.txt"
+        },
+        "xiaohongshu": {
+          "storage_state_path": "E:/REPLACE/WITH/YOUR/obsidian-clipper/.local-auth/xiaohongshu-storage-state.json",
+          "cookies_file": "E:/REPLACE/WITH/YOUR/obsidian-clipper/.local-auth/xiaohongshu-cookies.txt"
+        }
       }
     },
     "video_metadata": {

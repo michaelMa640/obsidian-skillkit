@@ -105,6 +105,17 @@ function Get-StringArrayValue {
     @()
 }
 
+function Get-NestedStringValue {
+    param($Data, [string]$PropertyName, [string]$DefaultValue = '')
+    $value = Get-StringValue -Data $Data -Name $PropertyName -DefaultValue ''
+    if (Test-HasValue $value) { return $value }
+    $metadata = Get-DataValue -Data $Data -Name 'metadata'
+    if ($null -ne $metadata) {
+        return (Get-StringValue -Data $metadata -Name $PropertyName -DefaultValue $DefaultValue)
+    }
+    $DefaultValue
+}
+
 function Get-CollectionCount {
     param($Value)
     if ($null -eq $Value) { return 0 }
@@ -380,33 +391,64 @@ try {
 } catch {
     $downloadOrigin = ''
 }
-$ytMetadata = Get-YtDlpMetadata -Command $YtDlpCommand -Url $downloadUrl -ExtraArgs $ytDlpAuthArgs
+$accessBlockType = Get-NestedStringValue -Data $record -PropertyName 'access_block_type'
+$accessBlockCode = Get-NestedStringValue -Data $record -PropertyName 'access_block_error_code'
+$accessBlockMessage = Get-NestedStringValue -Data $record -PropertyName 'access_block_error_message'
+$accessBlocked = ((Test-HasValue $accessBlockType) -or ((Get-NestedStringValue -Data $record -PropertyName 'auth_failure_reason') -like 'xiaohongshu_*'))
+$shouldSkipDownload = $false
+$ytMetadata = $null
 
-try {
-    $videoTemplate = Join-Path $attachmentDir 'video.%(ext)s'
-    $downloadArguments = @('--no-playlist', '--no-warnings')
-    if ($null -ne $ytDlpAuthArgs -and @($ytDlpAuthArgs).Count -gt 0) {
-        $downloadArguments += $ytDlpAuthArgs
-    }
-    $downloadArguments += @('-o', $videoTemplate, $downloadUrl)
-    $downloadOutput = (& $YtDlpCommand @downloadArguments 2>&1 | Out-String)
-    if ($LASTEXITCODE -eq 0) {
-        $videoFile = Get-VideoFile -Directory $attachmentDir
-        if ($null -ne $videoFile) {
-            $downloadMethod = 'yt-dlp'
-            $downloadStatus = 'success'
-        } else {
-            throw 'yt-dlp completed but no downloaded video file was found.'
-        }
+if ($Platform -eq 'xiaohongshu' -and $accessBlocked) {
+    $downloadStatus = 'blocked'
+    $downloadMethod = 'none'
+    $authActionRequired = 'switch_xiaohongshu_network'
+    $authFailureReason = if ($accessBlockType -eq 'ip_risk') { 'xiaohongshu_ip_risk_blocked' } else { 'xiaohongshu_website_error' }
+    $authGuidanceEn = if ($accessBlockType -eq 'ip_risk') {
+        'Xiaohongshu blocked this request with an IP risk page. Switch to a trusted network environment and retry.'
     } else {
-        throw "yt-dlp download failed with exit code $LASTEXITCODE."
+        'Xiaohongshu redirected this request to a website error page before the real note loaded.'
     }
-} catch {
-    $errors.Add($_.Exception.Message)
-    $fallbacks.Add('yt-dlp_failed')
+    $authGuidanceZh = if ($accessBlockType -eq 'ip_risk') {
+        Zh '\u5c0f\u7ea2\u4e66\u5c06\u8fd9\u6b21\u8bf7\u6c42\u62e6\u622a\u4e3a IP \u98ce\u9669\uff0c\u8bf7\u5207\u6362\u5230\u53ef\u4fe1\u7f51\u7edc\u73af\u5883\u540e\u91cd\u8bd5\u3002'
+    } else {
+        Zh '\u5c0f\u7ea2\u4e66\u5728\u771f\u5b9e\u7b14\u8bb0\u9875\u52a0\u8f7d\u524d\u8df3\u8f6c\u5230\u4e86\u7ad9\u70b9\u9519\u8bef\u9875\uff0c\u8bf7\u7a0d\u540e\u91cd\u8bd5\u3002'
+    }
+    $reasonParts = @($authGuidanceZh)
+    if (Test-HasValue $accessBlockCode) { $reasonParts += "error_code=$accessBlockCode" }
+    if (Test-HasValue $accessBlockMessage) { $reasonParts += $accessBlockMessage }
+    $errors.Add(($reasonParts -join ' | '))
+    $fallbacks.Add('xiaohongshu_access_blocked')
+    $shouldSkipDownload = $true
 }
 
-if ($null -eq $videoFile) {
+if (-not $shouldSkipDownload) {
+    $ytMetadata = Get-YtDlpMetadata -Command $YtDlpCommand -Url $downloadUrl -ExtraArgs $ytDlpAuthArgs
+    try {
+        $videoTemplate = Join-Path $attachmentDir 'video.%(ext)s'
+        $downloadArguments = @('--no-playlist', '--no-warnings')
+        if ($null -ne $ytDlpAuthArgs -and @($ytDlpAuthArgs).Count -gt 0) {
+            $downloadArguments += $ytDlpAuthArgs
+        }
+        $downloadArguments += @('-o', $videoTemplate, $downloadUrl)
+        $downloadOutput = (& $YtDlpCommand @downloadArguments 2>&1 | Out-String)
+        if ($LASTEXITCODE -eq 0) {
+            $videoFile = Get-VideoFile -Directory $attachmentDir
+            if ($null -ne $videoFile) {
+                $downloadMethod = 'yt-dlp'
+                $downloadStatus = 'success'
+            } else {
+                throw 'yt-dlp completed but no downloaded video file was found.'
+            }
+        } else {
+            throw "yt-dlp download failed with exit code $LASTEXITCODE."
+        }
+    } catch {
+        $errors.Add($_.Exception.Message)
+        $fallbacks.Add('yt-dlp_failed')
+    }
+}
+
+if ($null -eq $videoFile -and -not $shouldSkipDownload) {
     $candidateRefs = @()
     $candidateRefs += Get-StringArrayValue -Data $record -Name 'candidate_video_refs'
     if (@($candidateRefs).Count -eq 0) {
@@ -440,7 +482,7 @@ if ($null -eq $videoFile) {
     }
 }
 
-if ($null -eq $videoFile -and $null -ne $existingVideoFile -and $existingVideoFile.Length -gt 0) {
+if ($null -eq $videoFile -and -not $shouldSkipDownload -and $null -ne $existingVideoFile -and $existingVideoFile.Length -gt 0) {
     $videoFile = $existingVideoFile
     $existingDownloadMethod = if ($null -ne $existingCaptureRecord) { Get-StringValue -Data $existingCaptureRecord -Name 'download_method' -DefaultValue '' } else { '' }
     if (-not (Test-HasValue $existingDownloadMethod) -or $existingDownloadMethod -eq 'none') { $existingDownloadMethod = 'existing' }
@@ -449,12 +491,12 @@ if ($null -eq $videoFile -and $null -ne $existingVideoFile -and $existingVideoFi
     $fallbacks.Add('existing_video_reused')
 }
 
-if ($null -eq $videoFile) {
+if ($null -eq $videoFile -and -not $shouldSkipDownload) {
     $downloadStatus = 'failed'
     $downloadMethod = 'none'
 }
 
-if (Test-IsAuthRefreshRequired -Errors @($errors)) {
+if (-not $shouldSkipDownload -and (Test-IsAuthRefreshRequired -Errors @($errors))) {
     $authActionRequired = 'refresh_douyin_auth'
     $authFailureReason = 'cookies_expired_or_missing'
     $authRefreshCommand = ('python "{0}" --platform douyin' -f (Join-Path $PSScriptRoot 'bootstrap_social_auth.py'))
@@ -525,7 +567,8 @@ Set-DataValue -Data $record -Name 'video_sha256' -Value $videoSha256
 Set-DataValue -Data $record -Name 'video_duration_seconds' -Value $videoTechnical.video_duration_seconds
 Set-DataValue -Data $record -Name 'video_width' -Value $videoTechnical.video_width
 Set-DataValue -Data $record -Name 'video_height' -Value $videoTechnical.video_height
-Set-DataValue -Data $record -Name 'status' -Value 'clipped'
+$recordStatus = if ($downloadStatus -eq 'blocked') { 'blocked' } else { 'clipped' }
+Set-DataValue -Data $record -Name 'status' -Value $recordStatus
 Set-DataValue -Data $record -Name 'yt_dlp_auth_mode' -Value $ytDlpAuthMode
 Set-DataValue -Data $record -Name 'yt_dlp_cookies_file_used' -Value $effectiveCookiesFile
 Set-DataValue -Data $record -Name 'yt_dlp_cookie_file_generated' -Value ([bool](Test-HasValue $generatedCookiesFile))

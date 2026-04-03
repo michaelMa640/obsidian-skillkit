@@ -164,6 +164,12 @@ AUTH_INVALID_PATTERNS = {
         "扫码登录",
     ),
 }
+XIAOHONGSHU_INTERSTITIAL_PATHS = {
+    "/website-login/error",
+}
+XIAOHONGSHU_IP_RISK_ERROR_CODES = {
+    "300012",
+}
 LIKELY_STATIC_IMAGE_MARKERS = (
     "douyinstatic.com/obj/douyin-pc-web",
     "byteimg.com/tos-cn-i-9r5gewecjs/emblem",
@@ -321,6 +327,9 @@ def normalize_identity_url(url: str) -> str:
         if short_match:
             return f"{parts.scheme.lower()}://{host}/{short_match.group(1)}/"
     if host == "xhslink.com":
+        short_match = re.match(r"^/o/([A-Za-z0-9_-]+)/?", parts.path or "")
+        if short_match:
+            return f"{parts.scheme.lower()}://{host}/o/{short_match.group(1)}"
         short_match = re.match(r"^/([A-Za-z0-9_-]+)/?", parts.path or "")
         if short_match:
             return f"{parts.scheme.lower()}://{host}/{short_match.group(1)}"
@@ -345,6 +354,37 @@ def normalize_identity_url(url: str) -> str:
             "",
         )
     )
+
+
+def detect_xiaohongshu_interstitial(page_url: str) -> dict[str, Any]:
+    try:
+        parts = urlsplit(page_url or "")
+    except Exception:
+        return {"is_interstitial": False}
+
+    host = (parts.netloc or "").lower()
+    path = parts.path or ""
+    if not host.endswith("xiaohongshu.com") or path not in XIAOHONGSHU_INTERSTITIAL_PATHS:
+        return {"is_interstitial": False}
+
+    query = {key: value for key, value in parse_qsl(parts.query, keep_blank_values=True)}
+    error_code = first_non_empty(query.get("error_code", ""))
+    error_message = normalize_ws(query.get("error_msg", ""))
+    redirect_path = first_non_empty(query.get("redirectPath", ""))
+    redirect_path_normalized = normalize_identity_url(redirect_path) if redirect_path else ""
+    block_type = "ip_risk" if (
+        error_code in XIAOHONGSHU_IP_RISK_ERROR_CODES or "IP存在风险" in error_message
+    ) else "website_error"
+
+    return {
+        "is_interstitial": True,
+        "block_type": block_type,
+        "error_code": error_code,
+        "error_message": error_message,
+        "redirect_path": redirect_path,
+        "redirect_path_normalized": redirect_path_normalized,
+        "page_url": page_url,
+    }
 
 
 def extract_source_item_id(url: str, platform: str) -> str:
@@ -847,13 +887,21 @@ def extract_social_payload(page, source_url: str, platform: str, timeout_ms: int
     rules = PLATFORM_RULES.get(platform, {})
     requested_url = build_navigation_url(source_url, platform)
     page_url = normalize_identity_url(page.url)
+    interstitial = detect_xiaohongshu_interstitial(page.url) if platform == "xiaohongshu" else {"is_interstitial": False}
+    identity_url = first_non_empty(
+        interstitial.get("redirect_path_normalized", ""),
+        page_url,
+        requested_url,
+        normalize_identity_url(source_url),
+    )
     source_item_id = first_non_empty(
+        extract_source_item_id(identity_url, platform),
         extract_source_item_id(page_url, platform),
         extract_source_item_id(requested_url, platform),
         extract_source_item_id(source_url, platform),
     )
     final_url = requested_url if (platform == "douyin" and source_item_id) else first_non_empty(
-        page_url,
+        identity_url,
         requested_url,
         normalize_identity_url(source_url),
     )
@@ -866,6 +914,148 @@ def extract_social_payload(page, source_url: str, platform: str, timeout_ms: int
     page_title = normalize_ws(page.title().strip())
     if looks_like_interstitial_text(page_title):
         page_title = ""
+    try:
+        body_text = normalize_ws(page.locator("body").inner_text(timeout=timeout_ms))
+    except Exception:
+        body_text = ""
+
+    if interstitial.get("is_interstitial"):
+        auth_debug = auth_debug or {}
+        block_type = first_non_empty(interstitial.get("block_type"), "website_error")
+        error_code = first_non_empty(interstitial.get("error_code"))
+        error_message = first_non_empty(interstitial.get("error_message"))
+        guidance_en = (
+            "Xiaohongshu blocked this request with an IP risk page. Switch to a trusted network environment and retry."
+            if block_type == "ip_risk"
+            else "Xiaohongshu redirected this request to a website error page before the real note loaded."
+        )
+        guidance_zh = (
+            "小红书将这次请求拦截为 IP 风险，请切换到可信网络环境后重试。"
+            if block_type == "ip_risk"
+            else "小红书在真实笔记页加载前跳转到了站点错误页，请稍后重试。"
+        )
+        title = "小红书 IP 风险拦截" if block_type == "ip_risk" else "小红书访问受限"
+        raw_lines = [
+            title,
+            f"错误码: {error_code}" if error_code else "",
+            f"错误信息: {error_message}" if error_message else "",
+            f"原始目标: {interstitial.get('redirect_path_normalized')}" if interstitial.get("redirect_path_normalized") else "",
+            f"拦截页面: {page.url}",
+        ]
+        raw_text = "\n".join(line for line in raw_lines if line)
+        metadata: dict[str, Any] = {
+            "capture_level": "blocked",
+            "transcript_status": "missing",
+            "media_downloaded": False,
+            "analysis_ready": False,
+            "extractor": "playwright",
+            "route": "social",
+            "platform": platform,
+            "content_type": "short_video",
+            "source_url": source_url,
+            "normalized_url": final_url,
+            "source_item_id": source_item_id,
+            "capture_key": capture_key,
+            "capture_id": capture_id,
+            "final_url": page.url,
+            "download_status": "blocked",
+            "download_method": "none",
+            "image_count": 0,
+            "candidate_video_ref_count": 0,
+            "text_length": len(raw_text),
+            "comment_count_visible": 0,
+            "platform_comment_count": "",
+            "comments_capture_status": "none",
+            "comments_login_required": False,
+            "metrics_source": "none",
+            "comments_source": "none",
+            "detail_api_status": 0,
+            "comments_api_status": 0,
+            "detail_api_ok": False,
+            "comments_api_ok": False,
+            "auth_applied": bool(auth_debug.get("auth_applied")),
+            "auth_mode": first_non_empty(auth_debug.get("auth_mode"), "none"),
+            "auth_cookie_count": int(auth_debug.get("auth_cookie_count", 0)),
+            "auth_session_state": first_non_empty(auth_debug.get("auth_session_state"), "unknown"),
+            "auth_session_likely_valid": bool(auth_debug.get("auth_session_likely_valid")),
+            "auth_visible_login_prompt": bool(auth_debug.get("auth_visible_login_prompt")),
+            "auth_context_cookie_count": int(auth_debug.get("auth_context_cookie_count", 0)),
+            "auth_storage_state_configured": bool(auth_debug.get("auth_storage_state_configured")),
+            "auth_cookies_file_configured": bool(auth_debug.get("auth_cookies_file_configured")),
+            "access_blocked": True,
+            "access_block_type": block_type,
+            "access_block_error_code": error_code,
+            "access_block_error_message": error_message,
+            "access_block_page_url": page.url,
+            "access_block_target_url": first_non_empty(interstitial.get("redirect_path_normalized")),
+            "auth_action_required": "switch_xiaohongshu_network",
+            "auth_failure_reason": "xiaohongshu_ip_risk_blocked" if block_type == "ip_risk" else "xiaohongshu_website_error",
+            "auth_guidance_en": guidance_en,
+            "auth_guidance_zh": guidance_zh,
+        }
+        if auth_debug.get("auth_error"):
+            metadata["auth_error"] = first_non_empty(auth_debug.get("auth_error"))
+        if auth_debug.get("auth_session_reason"):
+            metadata["auth_session_reason"] = first_non_empty(auth_debug.get("auth_session_reason"))
+        if auth_debug.get("auth_session_cookie_names"):
+            metadata["auth_session_cookie_names"] = auth_debug.get("auth_session_cookie_names")
+        return {
+            "capture_version": "phase3-social-v2",
+            "capture_id": capture_id,
+            "capture_key": capture_key,
+            "source_url": source_url,
+            "normalized_url": final_url,
+            "platform": platform,
+            "content_type": "short_video",
+            "route": "social",
+            "source_item_id": source_item_id,
+            "title": title,
+            "author": "unknown",
+            "published_at": "unknown",
+            "summary": guidance_zh,
+            "description": guidance_zh,
+            "raw_text": raw_text,
+            "transcript": "",
+            "tags": ["clipped", "social", platform, "access_blocked"],
+            "images": [],
+            "videos": [],
+            "candidate_video_refs": [],
+            "cover_url": "",
+            "top_comments": [],
+            "comments": [],
+            "comments_count": 0,
+            "comments_capture_status": "none",
+            "comments_login_required": False,
+            "auth_applied": bool(auth_debug.get("auth_applied")),
+            "auth_mode": first_non_empty(auth_debug.get("auth_mode"), "none"),
+            "auth_cookie_count": int(auth_debug.get("auth_cookie_count", 0)),
+            "auth_session_state": first_non_empty(auth_debug.get("auth_session_state"), "unknown"),
+            "auth_session_likely_valid": bool(auth_debug.get("auth_session_likely_valid")),
+            "engagement": {"like": "", "comment": "", "share": "", "collect": ""},
+            "metrics_like": "",
+            "metrics_comment": "",
+            "metrics_share": "",
+            "metrics_collect": "",
+            "status": "blocked",
+            "download_status": "blocked",
+            "download_method": "none",
+            "media_downloaded": False,
+            "analysis_ready": False,
+            "analyzer_status": "pending",
+            "bitable_sync_status": "pending",
+            "access_blocked": True,
+            "access_block_type": block_type,
+            "access_block_error_code": error_code,
+            "access_block_error_message": error_message,
+            "access_block_page_url": page.url,
+            "access_block_target_url": first_non_empty(interstitial.get("redirect_path_normalized")),
+            "auth_action_required": "switch_xiaohongshu_network",
+            "auth_failure_reason": "xiaohongshu_ip_risk_blocked" if block_type == "ip_risk" else "xiaohongshu_website_error",
+            "auth_guidance_en": guidance_en,
+            "auth_guidance_zh": guidance_zh,
+            "errors": [guidance_zh],
+            "metadata": metadata,
+        }
 
     title = first_non_empty(
         structured_payload.get("title", ""),
@@ -909,7 +1099,7 @@ def extract_social_payload(page, source_url: str, platform: str, timeout_ms: int
     else:
         visible_text = first_non_empty(
             pick_text_by_selectors(page, rules.get("text_selectors", []), timeout_ms=timeout_ms),
-            normalize_ws(page.locator("body").inner_text(timeout=timeout_ms)),
+            body_text,
         )
     visible_text = normalize_ws(visible_text)
     if looks_like_interstitial_text(visible_text):
