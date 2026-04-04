@@ -83,6 +83,16 @@ if (Is-PlaceholderValue $socialScript) {
     }) | Out-Null
 }
 
+$xiaohongshuAdapter = if ($null -ne $config.routes -and $null -ne $config.routes.social) { $config.routes.social.xiaohongshu_adapter } else { $null }
+if ($null -ne $xiaohongshuAdapter) {
+    $adapterScript = [string]$xiaohongshuAdapter.script
+    if (Is-PlaceholderValue $adapterScript) {
+        $warnings.Add('routes.social.xiaohongshu_adapter.script is not configured. The dedicated Xiaohongshu adapter will not run.') | Out-Null
+    } elseif (-not (Test-Path $adapterScript)) {
+        $warnings.Add("Configured Xiaohongshu adapter script does not exist: $adapterScript") | Out-Null
+    }
+}
+
 $socialAuth = if ($null -ne $config.routes -and $null -ne $config.routes.social) { $config.routes.social.auth } else { $null }
 foreach ($platform in @('douyin', 'xiaohongshu')) {
     $platformAuth = Get-AuthConfigForPlatform -AuthConfig $socialAuth -Platform $platform

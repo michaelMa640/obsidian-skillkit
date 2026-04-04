@@ -625,6 +625,28 @@ function Invoke-SocialCapture {
                 }
                 if (Test-HasValue $cookiesFile) { $downloadParameters.CookiesFile = $cookiesFile }
                 if (Test-HasValue $storageStatePath) { $downloadParameters.StorageStatePath = $storageStatePath }
+                if ($Platform -eq 'xiaohongshu') {
+                    $socialRouteConfig = Get-DataValue -Data $Config.routes -Name 'social'
+                    $adapterConfig = if ($null -ne $socialRouteConfig) { Get-DataValue -Data $socialRouteConfig -Name 'xiaohongshu_adapter' } else { $null }
+                    $adapterCommand = if ($null -ne $adapterConfig) { Get-ConfiguredPathValue -Object $adapterConfig -PropertyName 'command' } else { '' }
+                    $adapterScript = if ($null -ne $adapterConfig) { Get-ConfiguredPathValue -Object $adapterConfig -PropertyName 'script' } else { '' }
+                    $adapterServerUrl = if ($null -ne $adapterConfig) { Get-StringValue -Data $adapterConfig -Name 'server_url' -DefaultValue 'http://127.0.0.1:5556/xhs/detail' } else { 'http://127.0.0.1:5556/xhs/detail' }
+                    $adapterTimeoutValue = if ($null -ne $adapterConfig) { Get-StringValue -Data $adapterConfig -Name 'timeout_ms' -DefaultValue '30000' } else { '30000' }
+                    $adapterSaveBackendPayload = $true
+                    if ($null -ne $adapterConfig) {
+                        $savePayloadRaw = Get-DataValue -Data $adapterConfig -Name 'save_backend_payload'
+                        if ($null -ne $savePayloadRaw) { $adapterSaveBackendPayload = [bool]$savePayloadRaw }
+                    }
+                    if (-not (Test-HasValue $adapterCommand)) { $adapterCommand = $pythonCommand }
+                    if (-not (Test-HasValue $adapterScript) -or $adapterScript -like '*REPLACE/WITH/YOUR*' -or $adapterScript -like '*REPLACE\WITH\YOUR*' -or -not (Test-Path $adapterScript)) {
+                        $adapterScript = Join-Path $PSScriptRoot 'xiaohongshu_downloader_adapter.py'
+                    }
+                    $downloadParameters.XiaohongshuAdapterCommand = $adapterCommand
+                    $downloadParameters.XiaohongshuAdapterScriptPath = $adapterScript
+                    $downloadParameters.XiaohongshuAdapterServerUrl = $adapterServerUrl
+                    $downloadParameters.XiaohongshuAdapterTimeoutMs = [int]$adapterTimeoutValue
+                    $downloadParameters.XiaohongshuAdapterSaveBackendPayload = [bool]$adapterSaveBackendPayload
+                }
                 try {
                     & $downloadScriptPath @downloadParameters | Out-Null
                 } catch {
@@ -1079,6 +1101,7 @@ function Add-RunFinalStatusFields {
     $errors = @()
     $resultErrors = Get-DataValue -Data $Result -Name 'errors'
     if ($null -ne $resultErrors) { $errors = @($resultErrors) }
+    $platform = Get-StringValue -Data $Result -Name 'platform' -DefaultValue ''
 
     if (-not [bool]$Result.success) {
         Set-ObjectField -Object $Result -Name 'final_run_status' -Value 'FAILED' | Out-Null
@@ -1110,8 +1133,20 @@ function Add-RunFinalStatusFields {
         } else {
             if (-not (Test-HasValue $failedStep)) { Set-ObjectField -Object $Result -Name 'failed_step' -Value 'download' | Out-Null }
             $firstError = if ($errors.Count -gt 0) { [string]$errors[0] } else { 'Video download failed.' }
-            Set-ObjectField -Object $Result -Name 'final_message_en' -Value $firstError | Out-Null
-            Set-ObjectField -Object $Result -Name 'final_message_zh' -Value ('{0}{1}' -f (Zh '\u89c6\u9891\u4e0b\u8f7d\u5931\u8d25\uff1a'), $firstError) | Out-Null
+            $downloadMessageEn = $firstError
+            $downloadMessageZh = ('{0}{1}' -f (Zh '\u89c6\u9891\u4e0b\u8f7d\u5931\u8d25\uff1a'), $firstError)
+            if ($platform -eq 'xiaohongshu') {
+                $downloadMessageEn = 'Xiaohongshu content capture succeeded, but the video file was not downloaded. Retry the downloader path or continue with the note-only result.'
+                if ($errors.Count -gt 0) {
+                    $downloadMessageEn = '{0} Error: {1}' -f $downloadMessageEn, $firstError
+                }
+                $downloadMessageZh = Zh '\u5c0f\u7ea2\u4e66\u5185\u5bb9\u5df2\u6293\u53d6\u6210\u529f\uff0c\u4f46\u89c6\u9891\u6587\u4ef6\u4ecd\u672a\u843d\u76d8\u3002\u53ef\u4ee5\u7ee7\u7eed\u4f7f\u7528\u5f53\u524d\u7b14\u8bb0\u7ed3\u679c\uff0c\u6216\u91cd\u8bd5\u4e0b\u8f7d\u540e\u7aef\u3002'
+                if ($errors.Count -gt 0) {
+                    $downloadMessageZh = '{0} {1}{2}' -f $downloadMessageZh, (Zh '\u9519\u8bef\uff1a'), $firstError
+                }
+            }
+            Set-ObjectField -Object $Result -Name 'final_message_en' -Value $downloadMessageEn | Out-Null
+            Set-ObjectField -Object $Result -Name 'final_message_zh' -Value $downloadMessageZh | Out-Null
         }
         return $Result
     }
@@ -1127,11 +1162,23 @@ function Get-RunSummaryLines {
     param($Result)
     $lines = New-Object System.Collections.Generic.List[string]
     $failedStep = Get-StringValue -Data $Result -Name 'failed_step' -DefaultValue ''
+    $authActionRequired = Get-StringValue -Data $Result -Name 'auth_action_required' -DefaultValue ''
+    $flowLabel = 'clip'
+    $flowLabelZh = Zh '\u666e\u901a\u526a\u85cf'
+    if ($authActionRequired -eq 'refresh_douyin_auth') {
+        $flowLabel = 'auth_refresh'
+        $flowLabelZh = Zh '\u5237\u65b0\u767b\u5f55\u6001'
+    } elseif ($authActionRequired -eq 'switch_xiaohongshu_network') {
+        $flowLabel = 'network_retry'
+        $flowLabelZh = Zh '\u5207\u6362\u7f51\u7edc\u540e\u91cd\u8bd5'
+    }
     $lines.Add('=== Clipper Summary ===')
     $lines.Add("route    : $($Result.route)")
     $lines.Add("platform : $($Result.platform)")
     $lines.Add("title    : $($Result.title)")
     $lines.Add("capture  : $($Result.capture_id)")
+    $lines.Add("flow     : $flowLabel")
+    $lines.Add(("{0}     : {1}" -f (Zh '\u6d41\u7a0b'), $flowLabelZh))
     $lines.Add("download : $($Result.download_status) / $($Result.download_method)")
     $lines.Add("video    : $($Result.video_path)")
     if ($null -ne $Result.PSObject.Properties['final_run_status']) { $lines.Add("result   : $($Result.final_run_status)") }
@@ -1154,6 +1201,7 @@ function Get-RunSummaryLines {
     }
     if ($null -ne $Result.PSObject.Properties['auth_refresh_command'] -and (Test-HasValue ([string]$Result.auth_refresh_command))) {
         $lines.Add("refresh  : $($Result.auth_refresh_command)")
+        $lines.Add(("{0}     : {1}" -f (Zh '\u63d0\u793a'), (Zh '\u6267\u884c\u8be5\u5237\u65b0\u547d\u4ee4\u65f6\uff0c\u5c06\u6253\u5f00\u6d4f\u89c8\u5668\u5237\u65b0\u767b\u5f55\u6001\u3002')))
     }
     if ($null -ne $Result.PSObject.Properties['errors'] -and @($Result.errors).Count -gt 0) {
         $lines.Add("error    : $((@($Result.errors) | Select-Object -First 1))")

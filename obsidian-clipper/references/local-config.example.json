@@ -35,6 +35,13 @@
       "script": "E:/REPLACE/WITH/YOUR/obsidian-clipper/scripts/capture_social_playwright.py",
       "timeout_ms": 25000,
       "download_command": "yt-dlp",
+      "xiaohongshu_adapter": {
+        "command": "python",
+        "script": "E:/REPLACE/WITH/YOUR/obsidian-clipper/scripts/xiaohongshu_downloader_adapter.py",
+        "server_url": "http://127.0.0.1:5556/xhs/detail",
+        "timeout_ms": 30000,
+        "save_backend_payload": true
+      },
       "auth": {
         "douyin": {
           "storage_state_path": "E:/REPLACE/WITH/YOUR/obsidian-clipper/.local-auth/douyin-storage-state.json",

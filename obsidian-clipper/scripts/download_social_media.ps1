@@ -11,6 +11,11 @@ param(
     [string]$YtDlpCommand = 'yt-dlp',
     [string]$CookiesFile,
     [string]$StorageStatePath,
+    [string]$XiaohongshuAdapterCommand = 'python',
+    [string]$XiaohongshuAdapterScriptPath,
+    [string]$XiaohongshuAdapterServerUrl = 'http://127.0.0.1:5556/xhs/detail',
+    [int]$XiaohongshuAdapterTimeoutMs = 30000,
+    [bool]$XiaohongshuAdapterSaveBackendPayload = $true,
     [string]$OutputJsonPath
 )
 
@@ -263,6 +268,80 @@ function Get-YtDlpAuthArguments {
     @()
 }
 
+function Invoke-XiaohongshuAdapter {
+    param(
+        [string]$Command,
+        [string]$ScriptPath,
+        [string]$SourceUrl,
+        [string]$NormalizedUrl,
+        [string]$CaptureId,
+        [string]$AttachmentDirectory,
+        [string]$CookiesPath,
+        [string]$StorageState,
+        [string]$ServerUrl,
+        [int]$TimeoutMs,
+        [bool]$SaveBackendPayload
+    )
+    if (-not (Test-HasValue $ScriptPath) -or -not (Test-Path $ScriptPath)) {
+        return [ordered]@{
+            success = $false
+            download_status = 'failed'
+            download_method = 'none'
+            video_path = ''
+            backend_error_code = 'backend_script_missing'
+            backend_error_message = "Xiaohongshu adapter script was not found: $ScriptPath"
+            backend_payload_path = ''
+            backend_status_code = 0
+            errors = @("Xiaohongshu adapter script was not found: $ScriptPath")
+            fallbacks = @('xhs_adapter_missing')
+        }
+    }
+
+    $outputPath = Join-Path $AttachmentDirectory 'xhs-downloader-result.json'
+    $backendPayloadPath = if ($SaveBackendPayload) { Join-Path $AttachmentDirectory 'xhs-downloader-response.json' } else { '' }
+    $arguments = @(
+        $ScriptPath,
+        '--source-url', $SourceUrl,
+        '--normalized-url', $NormalizedUrl,
+        '--capture-id', $CaptureId,
+        '--attachment-dir', $AttachmentDirectory,
+        '--server-url', $ServerUrl,
+        '--timeout-ms', ([string]$TimeoutMs),
+        '--output-json', $outputPath
+    )
+    if (Test-HasValue $CookiesPath) { $arguments += @('--cookies-file', $CookiesPath) }
+    if (Test-HasValue $StorageState) { $arguments += @('--storage-state-path', $StorageState) }
+    if (Test-HasValue $backendPayloadPath) { $arguments += @('--backend-payload-path', $backendPayloadPath) }
+
+    try {
+        & $Command @arguments 2>&1 | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            throw "Xiaohongshu adapter exited with code $LASTEXITCODE."
+        }
+        if (-not (Test-Path $outputPath)) {
+            throw 'Xiaohongshu adapter did not write its JSON output.'
+        }
+        $payload = Read-Utf8Text -Path $outputPath
+        if (-not (Test-HasValue $payload)) {
+            throw 'Xiaohongshu adapter returned an empty payload.'
+        }
+        return (ConvertFrom-JsonCompat -Json $payload -Depth 100)
+    } catch {
+        return [ordered]@{
+            success = $false
+            download_status = 'failed'
+            download_method = 'none'
+            video_path = ''
+            backend_error_code = 'backend_invoke_failed'
+            backend_error_message = $_.Exception.Message
+            backend_payload_path = $backendPayloadPath
+            backend_status_code = 0
+            errors = @($_.Exception.Message)
+            fallbacks = @('xhs_adapter_invoke_failed')
+        }
+    }
+}
+
 function Test-IsAuthRefreshRequired {
     param([string[]]$Errors)
     foreach ($entry in @($Errors)) {
@@ -357,6 +436,12 @@ $authFailureReason = ''
 $authRefreshCommand = ''
 $authGuidanceEn = ''
 $authGuidanceZh = ''
+$xiaohongshuAdapterAttempted = $false
+$xiaohongshuAdapterStatus = ''
+$xiaohongshuAdapterErrorCode = ''
+$xiaohongshuAdapterErrorMessage = ''
+$xiaohongshuAdapterPayloadPath = ''
+$xiaohongshuAdapterStatusCode = 0
 
 $storageStateAvailable = ((Test-HasValue $StorageStatePath) -and (Test-Path $StorageStatePath))
 $cookiesFileAvailable = ((Test-HasValue $CookiesFile) -and (Test-Path $CookiesFile))
@@ -398,6 +483,36 @@ $accessBlocked = ((Test-HasValue $accessBlockType) -or ((Get-NestedStringValue -
 $shouldSkipDownload = $false
 $ytMetadata = $null
 
+function Invoke-YtDlpVideoDownload {
+    param(
+        [string]$Command,
+        [string]$Url,
+        [string]$AttachmentDirectory,
+        [string[]]$AuthArgs = @()
+    )
+    $videoTemplate = Join-Path $AttachmentDirectory 'video.%(ext)s'
+    $downloadArguments = @('--no-playlist', '--no-warnings')
+    if ($null -ne $AuthArgs -and @($AuthArgs).Count -gt 0) {
+        $downloadArguments += $AuthArgs
+    }
+    $downloadArguments += @('-o', $videoTemplate, $Url)
+    $downloadOutputText = (& $Command @downloadArguments 2>&1 | Out-String)
+    $downloadedVideoFile = $null
+    if ($LASTEXITCODE -eq 0) {
+        $downloadedVideoFile = Get-VideoFile -Directory $AttachmentDirectory
+        if ($null -eq $downloadedVideoFile) {
+            throw 'yt-dlp completed but no downloaded video file was found.'
+        }
+    } else {
+        throw "yt-dlp download failed with exit code $LASTEXITCODE."
+    }
+
+    [ordered]@{
+        output_text = $downloadOutputText
+        video_file = $downloadedVideoFile
+    }
+}
+
 if ($Platform -eq 'xiaohongshu' -and $accessBlocked) {
     $downloadStatus = 'blocked'
     $downloadMethod = 'none'
@@ -423,24 +538,93 @@ if ($Platform -eq 'xiaohongshu' -and $accessBlocked) {
 
 if (-not $shouldSkipDownload) {
     $ytMetadata = Get-YtDlpMetadata -Command $YtDlpCommand -Url $downloadUrl -ExtraArgs $ytDlpAuthArgs
+}
+
+if ($null -eq $videoFile -and -not $shouldSkipDownload -and $Platform -eq 'xiaohongshu') {
+    $xiaohongshuAdapterAttempted = $true
+    if (-not (Test-HasValue $XiaohongshuAdapterScriptPath)) {
+        $XiaohongshuAdapterScriptPath = Join-Path $PSScriptRoot 'xiaohongshu_downloader_adapter.py'
+    }
+    $adapterResult = Invoke-XiaohongshuAdapter `
+        -Command $XiaohongshuAdapterCommand `
+        -ScriptPath $XiaohongshuAdapterScriptPath `
+        -SourceUrl $SourceUrl `
+        -NormalizedUrl $downloadUrl `
+        -CaptureId $captureId `
+        -AttachmentDirectory $attachmentDir `
+        -CookiesPath $CookiesFile `
+        -StorageState $StorageStatePath `
+        -ServerUrl $XiaohongshuAdapterServerUrl `
+        -TimeoutMs $XiaohongshuAdapterTimeoutMs `
+        -SaveBackendPayload $XiaohongshuAdapterSaveBackendPayload
+
+    $xiaohongshuAdapterStatus = Get-StringValue -Data $adapterResult -Name 'download_status' -DefaultValue ''
+    $xiaohongshuAdapterErrorCode = Get-StringValue -Data $adapterResult -Name 'backend_error_code' -DefaultValue ''
+    $xiaohongshuAdapterErrorMessage = Get-StringValue -Data $adapterResult -Name 'backend_error_message' -DefaultValue ''
+    $xiaohongshuAdapterPayloadPath = Get-StringValue -Data $adapterResult -Name 'backend_payload_path' -DefaultValue ''
     try {
-        $videoTemplate = Join-Path $attachmentDir 'video.%(ext)s'
-        $downloadArguments = @('--no-playlist', '--no-warnings')
-        if ($null -ne $ytDlpAuthArgs -and @($ytDlpAuthArgs).Count -gt 0) {
-            $downloadArguments += $ytDlpAuthArgs
-        }
-        $downloadArguments += @('-o', $videoTemplate, $downloadUrl)
-        $downloadOutput = (& $YtDlpCommand @downloadArguments 2>&1 | Out-String)
-        if ($LASTEXITCODE -eq 0) {
-            $videoFile = Get-VideoFile -Directory $attachmentDir
-            if ($null -ne $videoFile) {
-                $downloadMethod = 'yt-dlp'
-                $downloadStatus = 'success'
-            } else {
-                throw 'yt-dlp completed but no downloaded video file was found.'
+        $xiaohongshuAdapterStatusCode = [int](Get-DataValue -Data $adapterResult -Name 'backend_status_code')
+    } catch {
+        $xiaohongshuAdapterStatusCode = 0
+    }
+
+    foreach ($adapterError in @(Get-DataValue -Data $adapterResult -Name 'errors')) {
+        if (Test-HasValue ([string]$adapterError)) { $errors.Add([string]$adapterError) }
+    }
+    foreach ($adapterFallback in @(Get-DataValue -Data $adapterResult -Name 'fallbacks')) {
+        if (Test-HasValue ([string]$adapterFallback)) { $fallbacks.Add([string]$adapterFallback) }
+    }
+
+    $adapterVideoPath = Get-StringValue -Data $adapterResult -Name 'video_path' -DefaultValue ''
+    if ((Get-StringValue -Data $adapterResult -Name 'download_method' -DefaultValue '') -eq 'xhs-downloader' -and (Test-HasValue $adapterVideoPath) -and (Test-Path $adapterVideoPath)) {
+        $videoFile = Get-Item -LiteralPath $adapterVideoPath
+        $downloadMethod = 'xhs-downloader'
+        $downloadStatus = 'success'
+    }
+}
+
+if ($null -eq $videoFile -and -not $shouldSkipDownload -and $Platform -eq 'xiaohongshu') {
+    $candidateRefs = @()
+    $candidateRefs += Get-StringArrayValue -Data $record -Name 'candidate_video_refs'
+    if (@($candidateRefs).Count -eq 0) {
+        $candidateRefs += Get-StringArrayValue -Data $record -Name 'videos'
+    }
+    foreach ($candidate in $candidateRefs) {
+        if (-not (Test-HasValue $candidate)) { continue }
+        if ($candidate.StartsWith('blob:')) { continue }
+        if (-not $candidate.StartsWith('http')) { continue }
+        try {
+            $extension = Get-DownloadFileExtension -Url $candidate
+            $fallbackVideoPath = Join-Path $attachmentDir ("video-playwright" + $extension)
+            $headers = @{
+                'Referer' = $downloadReferer
+                'User-Agent' = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
             }
-        } else {
-            throw "yt-dlp download failed with exit code $LASTEXITCODE."
+            if (Test-HasValue $downloadOrigin) {
+                $headers['Origin'] = $downloadOrigin
+            }
+            Invoke-WebRequest -Uri $candidate -OutFile $fallbackVideoPath -Headers $headers -UseBasicParsing
+            if ((Test-Path $fallbackVideoPath) -and ((Get-Item -LiteralPath $fallbackVideoPath).Length -gt 0)) {
+                $videoFile = Get-Item -LiteralPath $fallbackVideoPath
+                $downloadMethod = 'playwright'
+                $downloadStatus = 'success'
+                $fallbacks.Add('playwright_candidate_ref')
+                break
+            }
+        } catch {
+            $errors.Add("Playwright fallback failed for candidate ref: $candidate")
+        }
+    }
+}
+
+if ($null -eq $videoFile -and -not $shouldSkipDownload) {
+    try {
+        $ytDlpResult = Invoke-YtDlpVideoDownload -Command $YtDlpCommand -Url $downloadUrl -AttachmentDirectory $attachmentDir -AuthArgs $ytDlpAuthArgs
+        $downloadOutput = [string]$ytDlpResult.output_text
+        $videoFile = $ytDlpResult.video_file
+        if ($null -ne $videoFile) {
+            $downloadMethod = 'yt-dlp'
+            $downloadStatus = 'success'
         }
     } catch {
         $errors.Add($_.Exception.Message)
@@ -448,7 +632,7 @@ if (-not $shouldSkipDownload) {
     }
 }
 
-if ($null -eq $videoFile -and -not $shouldSkipDownload) {
+if ($null -eq $videoFile -and -not $shouldSkipDownload -and $Platform -ne 'xiaohongshu') {
     $candidateRefs = @()
     $candidateRefs += Get-StringArrayValue -Data $record -Name 'candidate_video_refs'
     if (@($candidateRefs).Count -eq 0) {
@@ -500,8 +684,8 @@ if (-not $shouldSkipDownload -and (Test-IsAuthRefreshRequired -Errors @($errors)
     $authActionRequired = 'refresh_douyin_auth'
     $authFailureReason = 'cookies_expired_or_missing'
     $authRefreshCommand = ('python "{0}" --platform douyin' -f (Join-Path $PSScriptRoot 'bootstrap_social_auth.py'))
-    $authGuidanceEn = 'Douyin auth appears expired or missing. Refresh local auth and retry.'
-    $authGuidanceZh = Zh '\u6296\u97f3\u767b\u5f55\u6001\u7591\u4f3c\u5df2\u8fc7\u671f\u6216\u7f3a\u5931\u3002\u8bf7\u5148\u5237\u65b0\u672c\u5730\u767b\u5f55\u6001\uff0c\u518d\u91cd\u65b0\u8fd0\u884c\u3002'
+    $authGuidanceEn = 'Douyin auth appears expired or missing. Refresh local auth and retry. Running the refresh command will open a browser window for login.'
+    $authGuidanceZh = Zh '\u6296\u97f3\u767b\u5f55\u6001\u7591\u4f3c\u5df2\u8fc7\u671f\u6216\u7f3a\u5931\u3002\u8bf7\u5148\u5237\u65b0\u672c\u5730\u767b\u5f55\u6001\uff0c\u518d\u91cd\u65b0\u8fd0\u884c\u3002\u6267\u884c\u5237\u65b0\u547d\u4ee4\u65f6\u4f1a\u6253\u5f00\u6d4f\u89c8\u5668\u7528\u4e8e\u767b\u5f55\u3002'
 }
 
 $coverUrl = Get-StringValue -Data $record -Name 'cover_url' -DefaultValue ''
@@ -552,6 +736,7 @@ $sidecarMetadataPath = Join-Path $attachmentDir 'metadata.json'
 $sidecarCaptureRelative = Get-NormalizedRelativePath -BasePath $VaultPath -TargetPath $sidecarCapturePath
 $sidecarCommentsRelative = Get-NormalizedRelativePath -BasePath $VaultPath -TargetPath $sidecarCommentsPath
 $sidecarMetadataRelative = Get-NormalizedRelativePath -BasePath $VaultPath -TargetPath $sidecarMetadataPath
+$xiaohongshuAdapterPayloadRelative = if (Test-HasValue $xiaohongshuAdapterPayloadPath) { Get-NormalizedRelativePath -BasePath $VaultPath -TargetPath $xiaohongshuAdapterPayloadPath } else { '' }
 
 Set-DataValue -Data $record -Name 'download_status' -Value $downloadStatus
 Set-DataValue -Data $record -Name 'download_method' -Value $downloadMethod
@@ -577,6 +762,12 @@ Set-DataValue -Data $record -Name 'auth_failure_reason' -Value $authFailureReaso
 Set-DataValue -Data $record -Name 'auth_refresh_command' -Value $authRefreshCommand
 Set-DataValue -Data $record -Name 'auth_guidance_en' -Value $authGuidanceEn
 Set-DataValue -Data $record -Name 'auth_guidance_zh' -Value $authGuidanceZh
+Set-DataValue -Data $record -Name 'xiaohongshu_adapter_attempted' -Value $xiaohongshuAdapterAttempted
+Set-DataValue -Data $record -Name 'xiaohongshu_adapter_status' -Value $xiaohongshuAdapterStatus
+Set-DataValue -Data $record -Name 'xiaohongshu_adapter_error_code' -Value $xiaohongshuAdapterErrorCode
+Set-DataValue -Data $record -Name 'xiaohongshu_adapter_error_message' -Value $xiaohongshuAdapterErrorMessage
+Set-DataValue -Data $record -Name 'xiaohongshu_adapter_payload_path' -Value $xiaohongshuAdapterPayloadRelative
+Set-DataValue -Data $record -Name 'xiaohongshu_adapter_status_code' -Value $xiaohongshuAdapterStatusCode
 if (-not (Test-HasValue (Get-StringValue -Data $record -Name 'analyzer_status'))) {
     Set-DataValue -Data $record -Name 'analyzer_status' -Value 'pending'
 }
@@ -613,7 +804,13 @@ foreach ($pair in @(
     @{ Name = 'auth_failure_reason'; Value = $authFailureReason },
     @{ Name = 'auth_refresh_command'; Value = $authRefreshCommand },
     @{ Name = 'auth_guidance_en'; Value = $authGuidanceEn },
-    @{ Name = 'auth_guidance_zh'; Value = $authGuidanceZh }
+    @{ Name = 'auth_guidance_zh'; Value = $authGuidanceZh },
+    @{ Name = 'xiaohongshu_adapter_attempted'; Value = $xiaohongshuAdapterAttempted },
+    @{ Name = 'xiaohongshu_adapter_status'; Value = $xiaohongshuAdapterStatus },
+    @{ Name = 'xiaohongshu_adapter_error_code'; Value = $xiaohongshuAdapterErrorCode },
+    @{ Name = 'xiaohongshu_adapter_error_message'; Value = $xiaohongshuAdapterErrorMessage },
+    @{ Name = 'xiaohongshu_adapter_payload_path'; Value = $xiaohongshuAdapterPayloadRelative },
+    @{ Name = 'xiaohongshu_adapter_status_code'; Value = $xiaohongshuAdapterStatusCode }
 )) {
     Set-DataValue -Data $metadataObject -Name $pair.Name -Value $pair.Value
 }
@@ -640,6 +837,12 @@ $metadataPayload = [ordered]@{
     auth_refresh_command = $authRefreshCommand
     auth_guidance_en = $authGuidanceEn
     auth_guidance_zh = $authGuidanceZh
+    xiaohongshu_adapter_attempted = $xiaohongshuAdapterAttempted
+    xiaohongshu_adapter_status = $xiaohongshuAdapterStatus
+    xiaohongshu_adapter_error_code = $xiaohongshuAdapterErrorCode
+    xiaohongshu_adapter_error_message = $xiaohongshuAdapterErrorMessage
+    xiaohongshu_adapter_payload_path = $xiaohongshuAdapterPayloadRelative
+    xiaohongshu_adapter_status_code = $xiaohongshuAdapterStatusCode
     yt_dlp_output = $downloadOutput.Trim()
     errors = @($errors)
     fallbacks = @($fallbacks)
