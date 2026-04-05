@@ -48,6 +48,11 @@ def bool_value(value: Any, default: bool = False) -> bool:
     return default
 
 
+def use_category_hint_folder(config: dict[str, Any]) -> bool:
+    clipper_config = config.get("clipper") or {}
+    return bool_value(clipper_config.get("allow_category_hint_folder_override"), False)
+
+
 def yaml_scalar(value: Any) -> str:
     if value is None:
         return "''"
@@ -263,7 +268,11 @@ def join_vault_path(vault_path: str, folder: str) -> Path:
 def render_note(config: dict[str, Any], detection: dict[str, Any], capture: dict[str, Any], source_url: str, category_hint: str | None) -> dict[str, Any]:
     clipper_config = config.get("clipper") or {}
     captured_at = datetime.now().strftime("%Y-%m-%d")
-    folder = string_value(category_hint, clipper_config.get("default_folder"), default="Clippings")
+    folder = string_value(
+        category_hint if use_category_hint_folder(config) else "",
+        clipper_config.get("default_folder"),
+        default="Clippings",
+    )
     title = string_value(capture.get("title"), default="未命名剪藏")
     note_title = clean_note_title(title)
     file_prefix = f"{captured_at} " if bool_value(clipper_config.get("prefix_date"), True) else ""

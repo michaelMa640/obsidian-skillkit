@@ -847,11 +847,20 @@ function Test-LooksLikeLoginPrompt {
     return ($lower.Contains('login'))
 }
 
+function Use-CategoryHintAsFolder {
+    param($Config)
+    if ($null -eq $Config -or $null -eq $Config.clipper) { return $false }
+    $rawValue = Get-DataValue -Data $Config.clipper -Name 'allow_category_hint_folder_override'
+    if ($null -eq $rawValue) { return $false }
+    return [bool]$rawValue
+}
+
 function Build-ClippingNote {
     param($Config,$Detection,$Capture,[string]$SourceUrl,[string]$CategoryHint)
 
     $captured = Get-Date -Format 'yyyy-MM-dd'
-    $folder = if (Test-HasValue $CategoryHint) { $CategoryHint } elseif (Test-HasValue $Config.clipper.default_folder) { [string]$Config.clipper.default_folder } else { 'Clippings' }
+    $useCategoryHintFolder = (Use-CategoryHintAsFolder -Config $Config)
+    $folder = if ($useCategoryHintFolder -and (Test-HasValue $CategoryHint)) { $CategoryHint } elseif (Test-HasValue $Config.clipper.default_folder) { [string]$Config.clipper.default_folder } else { 'Clippings' }
     $title = [string]$Capture.title
     $noteTitle = Get-CleanNoteTitle -Title $title
     $displayTitle = Get-MarkdownDisplayTitle -Title $noteTitle
@@ -1102,6 +1111,8 @@ function Add-RunFinalStatusFields {
     $resultErrors = Get-DataValue -Data $Result -Name 'errors'
     if ($null -ne $resultErrors) { $errors = @($resultErrors) }
     $platform = Get-StringValue -Data $Result -Name 'platform' -DefaultValue ''
+    $captureLevel = Get-StringValue -Data $Result -Name 'capture_level' -DefaultValue ''
+    $fallbackReason = Get-StringValue -Data $Result -Name 'fallback_reason' -DefaultValue ''
 
     if (-not [bool]$Result.success) {
         Set-ObjectField -Object $Result -Name 'final_run_status' -Value 'FAILED' | Out-Null
@@ -1117,6 +1128,21 @@ function Add-RunFinalStatusFields {
         Set-ObjectField -Object $Result -Name 'final_run_status_zh' -Value (Zh '\u6210\u529f') | Out-Null
         Set-ObjectField -Object $Result -Name 'final_message_en' -Value 'Dry run completed successfully.' | Out-Null
         Set-ObjectField -Object $Result -Name 'final_message_zh' -Value (Zh 'DryRun \u5df2\u6210\u529f\u5b8c\u6210\u3002') | Out-Null
+        return $Result
+    }
+
+    if ($captureLevel -eq 'fallback') {
+        Set-ObjectField -Object $Result -Name 'final_run_status' -Value 'FAILED' | Out-Null
+        Set-ObjectField -Object $Result -Name 'final_run_status_zh' -Value (Zh '\u5931\u8d25') | Out-Null
+        if (-not (Test-HasValue $failedStep)) { Set-ObjectField -Object $Result -Name 'failed_step' -Value 'capture' | Out-Null }
+        $captureFallbackMessageEn = if (Test-HasValue $fallbackReason) { $fallbackReason } else { 'Capture fell back to a minimal note because the source could not be parsed or fetched.' }
+        $captureFallbackMessageZh = if (Test-HasValue $fallbackReason) {
+            '{0}{1}' -f (Zh '\u6293\u53d6\u5931\u8d25\uff0c\u5df2\u964d\u7ea7\u4e3a\u6700\u5c0f\u7b14\u8bb0\uff1a'), $fallbackReason
+        } else {
+            Zh '\u6293\u53d6\u5931\u8d25\uff0c\u5df2\u964d\u7ea7\u4e3a\u6700\u5c0f\u7b14\u8bb0\u3002'
+        }
+        Set-ObjectField -Object $Result -Name 'final_message_en' -Value $captureFallbackMessageEn | Out-Null
+        Set-ObjectField -Object $Result -Name 'final_message_zh' -Value $captureFallbackMessageZh | Out-Null
         return $Result
     }
 
@@ -1296,6 +1322,8 @@ try {
     if (-not (Test-HasValue $authGuidanceZhForResult) -and $null -ne $captureMetadata) { $authGuidanceZhForResult = Get-StringValue -Data $captureMetadata -Name 'auth_guidance_zh' -DefaultValue '' }
     $authSessionStateForResult = Get-StringValue -Data $capture -Name 'auth_session_state' -DefaultValue ''
     $authSessionLikelyValidForResult = Get-DataValue -Data $capture -Name 'auth_session_likely_valid'
+    $captureLevelForResult = if ($null -ne $captureMetadata) { Get-StringValue -Data $captureMetadata -Name 'capture_level' -DefaultValue '' } else { '' }
+    $fallbackReasonForResult = if ($null -ne $captureMetadata) { Get-StringValue -Data $captureMetadata -Name 'fallback_reason' -DefaultValue '' } else { '' }
 
     $result = [ordered]@{
         success = $true
@@ -1318,6 +1346,8 @@ try {
         auth_guidance_zh = $authGuidanceZhForResult
         auth_session_state = $authSessionStateForResult
         auth_session_likely_valid = if ($null -ne $authSessionLikelyValidForResult) { [bool]$authSessionLikelyValidForResult } else { $null }
+        capture_level = $captureLevelForResult
+        fallback_reason = $fallbackReasonForResult
         tags = $note.tags
         note_preview = $note.note_body
         vault_path = $resolvedVaultPath

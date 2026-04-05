@@ -80,6 +80,16 @@ function Get-FirstUrlFromSourceInput {
     param([string]$InputText)
     if (-not (Test-SourceInputHasValue $InputText)) { return '' }
 
+    $xhsFullMatch = [regex]::Match($InputText, '(?i)(https?://)?xhslink\.com/o/([A-Za-z0-9_-]+)')
+    if ($xhsFullMatch.Success) {
+        return "https://xhslink.com/o/$($xhsFullMatch.Groups[2].Value)"
+    }
+
+    $xhsShortMatch = [regex]::Match($InputText, '(?i)(https?://)?xhslink\.com/([A-Za-z0-9_-]+)')
+    if ($xhsShortMatch.Success -and $xhsShortMatch.Groups[2].Value -ne 'o') {
+        return "https://xhslink.com/$($xhsShortMatch.Groups[2].Value)"
+    }
+
     $candidate = ''
     try {
         $uri = [System.Uri]$InputText.Trim()

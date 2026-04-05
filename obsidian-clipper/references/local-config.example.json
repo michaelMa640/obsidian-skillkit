@@ -24,6 +24,7 @@
     "prefix_date": true,
     "default_tag": "clipped",
     "attachments_root": "Attachments/ShortVideos",
+    "allow_category_hint_folder_override": false,
     "default_debug_directory": ".tmp/run-clipper"
   },
   "routes": {
