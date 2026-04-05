@@ -1,5 +1,14 @@
 # Obsidian Analyzer
 
+## Document Status
+
+- Last Updated: `2026-04-05`
+
+## Change Log
+
+- `2026-04-05`
+  - added document status metadata so future analyzer behavior changes can be tracked in-place
+
 `obsidian-analyzer` is the second stage of the workflow.
 It reads an existing clipping note plus sidecar files from Obsidian and writes a structured breakdown note back into the vault.
 

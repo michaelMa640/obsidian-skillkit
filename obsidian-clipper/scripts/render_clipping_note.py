@@ -79,6 +79,19 @@ def normalize_inline_spaces(value: str) -> str:
     return re.sub(r"\s+", " ", string_value(value)).strip()
 
 
+def metric_value(*values: Any, default: str = "") -> str:
+    for value in values:
+        text = normalize_inline_spaces(value)
+        if not has_value(text):
+            continue
+        text = re.sub(r"^(点赞|获赞|赞|评论|收藏|分享)[\s:：]*", "", text)
+        if not has_value(text):
+            continue
+        if re.search(r"\d", text):
+            return text
+    return default
+
+
 def clean_note_title(raw_title: str) -> str:
     text = normalize_inline_spaces(raw_title)
     if not has_value(text):
@@ -154,10 +167,10 @@ def build_summary(capture: dict[str, Any], detection: dict[str, Any], top_commen
         if has_value(fallback_summary):
             parts.append(fallback_summary)
 
-    metrics_like = string_value(capture.get("metrics_like"), nested_value(capture, "metadata", "like_count"))
-    metrics_comment = string_value(capture.get("metrics_comment"), nested_value(capture, "metadata", "comment_count"))
-    metrics_collect = string_value(capture.get("metrics_collect"), nested_value(capture, "metadata", "collect_count"))
-    metrics_share = string_value(capture.get("metrics_share"), nested_value(capture, "metadata", "share_count"))
+    metrics_like = metric_value(capture.get("metrics_like"), nested_value(capture, "metadata", "like_count"))
+    metrics_comment = metric_value(capture.get("metrics_comment"), nested_value(capture, "metadata", "comment_count"))
+    metrics_collect = metric_value(capture.get("metrics_collect"), nested_value(capture, "metadata", "collect_count"))
+    metrics_share = metric_value(capture.get("metrics_share"), nested_value(capture, "metadata", "share_count"))
 
     metric_parts = []
     if has_value(metrics_like):
@@ -234,10 +247,10 @@ def status_lines(capture: dict[str, Any]) -> list[str]:
 
 def engagement_lines(capture: dict[str, Any], top_comments: list[str]) -> list[str]:
     metadata = capture.get("metadata") or {}
-    metrics_like = string_value(capture.get("metrics_like"), metadata.get("like_count"), default="未获取")
-    metrics_comment = string_value(capture.get("metrics_comment"), metadata.get("comment_count"), default="未获取")
-    metrics_collect = string_value(capture.get("metrics_collect"), metadata.get("collect_count"), default="未获取")
-    metrics_share = string_value(capture.get("metrics_share"), metadata.get("share_count"), default="未获取")
+    metrics_like = metric_value(capture.get("metrics_like"), metadata.get("like_count"), default="未获取")
+    metrics_comment = metric_value(capture.get("metrics_comment"), metadata.get("comment_count"), default="未获取")
+    metrics_collect = metric_value(capture.get("metrics_collect"), metadata.get("collect_count"), default="未获取")
+    metrics_share = metric_value(capture.get("metrics_share"), metadata.get("share_count"), default="未获取")
     comments_count = string_value(capture.get("comments_count"), metadata.get("comment_count_visible"), default=str(len(top_comments)))
     comments_capture_status = string_value(capture.get("comments_capture_status"), metadata.get("comments_capture_status"), default="none")
     return [
@@ -341,6 +354,15 @@ def render_note(config: dict[str, Any], detection: dict[str, Any], capture: dict
         "",
     ])
 
+    lines.extend([
+        "## 内容摘要",
+        build_summary(capture, detection, top_comments),
+        "",
+        "## 原始文案",
+        raw_text,
+        "",
+    ])
+
     if is_social_short_video(detection):
         lines.extend(["## 视频内容", f"![[{video_path}]]" if has_value(video_path) else "- 当前未落到本地 mp4 文件。"])
         if has_value(video_path):
@@ -353,12 +375,6 @@ def render_note(config: dict[str, Any], detection: dict[str, Any], capture: dict
         lines.append("")
 
     lines.extend([
-        "## 内容摘要",
-        build_summary(capture, detection, top_comments),
-        "",
-        "## 原始文案",
-        raw_text,
-        "",
         "## 转录文本",
         transcript,
         "",

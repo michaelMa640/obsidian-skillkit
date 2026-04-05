@@ -193,6 +193,43 @@ function Get-DownloadFileExtension {
     $DefaultExtension
 }
 
+function Get-CookieHeaderFromNetscapeFile {
+    param([string]$EffectiveCookiesFile)
+    if (-not (Test-HasValue $EffectiveCookiesFile) -or -not (Test-Path $EffectiveCookiesFile)) { return '' }
+    $pairs = New-Object System.Collections.Generic.List[string]
+    foreach ($rawLine in Get-Content -LiteralPath $EffectiveCookiesFile -ErrorAction SilentlyContinue) {
+        $line = [string]$rawLine
+        if (-not (Test-HasValue $line) -or $line.StartsWith('#')) { continue }
+        $parts = $line -split "`t"
+        if ($parts.Length -lt 7) { continue }
+        $name = [string]$parts[$parts.Length - 2]
+        $value = [string]$parts[$parts.Length - 1]
+        if (Test-HasValue $name) { $pairs.Add("$name=$value") | Out-Null }
+    }
+    return ($pairs -join '; ')
+}
+
+function Invoke-DirectMediaDownload {
+    param(
+        [string]$Url,
+        [string]$DestinationPath,
+        [string]$Referer,
+        [string]$Origin,
+        [string]$CookieHeader
+    )
+    $headers = @{
+        'Referer' = $Referer
+        'User-Agent' = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+    }
+    if (Test-HasValue $Origin) {
+        $headers['Origin'] = $Origin
+    }
+    if (Test-HasValue $CookieHeader) {
+        $headers['Cookie'] = $CookieHeader
+    }
+    Invoke-WebRequest -Uri $Url -OutFile $DestinationPath -Headers $headers -UseBasicParsing
+}
+
 function Get-VideoFile {
     param([string]$Directory)
     Get-ChildItem -LiteralPath $Directory -File -ErrorAction SilentlyContinue |
@@ -462,6 +499,7 @@ if ((Test-HasValue $StorageStatePath) -and -not $storageStateAvailable) {
     $errors.Add("Configured storage state file was not found: $StorageStatePath")
 }
 $ytDlpAuthArgs = Get-YtDlpAuthArguments -EffectiveCookiesFile $effectiveCookiesFile
+$cookieHeader = Get-CookieHeaderFromNetscapeFile -EffectiveCookiesFile $effectiveCookiesFile
 $downloadUrl = Get-StringValue -Data $record -Name 'normalized_url' -DefaultValue ''
 if (-not (Test-HasValue $downloadUrl)) {
     $downloadUrl = Get-StringValue -Data $record -Name 'source_url' -DefaultValue $SourceUrl
@@ -538,6 +576,35 @@ if ($Platform -eq 'xiaohongshu' -and $accessBlocked) {
 
 if (-not $shouldSkipDownload) {
     $ytMetadata = Get-YtDlpMetadata -Command $YtDlpCommand -Url $downloadUrl -ExtraArgs $ytDlpAuthArgs
+}
+
+if ($null -eq $videoFile -and -not $shouldSkipDownload -and $Platform -eq 'xiaohongshu') {
+    $preferredCandidates = @()
+    $canonicalVideoUrl = Get-StringValue -Data $record -Name 'canonical_video_url' -DefaultValue ''
+    if (Test-HasValue $canonicalVideoUrl) { $preferredCandidates += $canonicalVideoUrl }
+    $preferredCandidates += Get-StringArrayValue -Data $record -Name 'candidate_video_refs'
+    if (@($preferredCandidates).Count -eq 0) {
+        $preferredCandidates += Get-StringArrayValue -Data $record -Name 'videos'
+    }
+    foreach ($candidate in $preferredCandidates) {
+        if (-not (Test-HasValue $candidate)) { continue }
+        if ($candidate.StartsWith('blob:')) { continue }
+        if (-not $candidate.StartsWith('http')) { continue }
+        try {
+            $extension = Get-DownloadFileExtension -Url $candidate
+            $directVideoPath = Join-Path $attachmentDir ("video-xiaohongshu-extractor" + $extension)
+            Invoke-DirectMediaDownload -Url $candidate -DestinationPath $directVideoPath -Referer $downloadReferer -Origin $downloadOrigin -CookieHeader $cookieHeader
+            if ((Test-Path $directVideoPath) -and ((Get-Item -LiteralPath $directVideoPath).Length -gt 0)) {
+                $videoFile = Get-Item -LiteralPath $directVideoPath
+                $downloadMethod = 'xiaohongshu-extractor'
+                $downloadStatus = 'success'
+                $fallbacks.Add('xiaohongshu_extractor_media')
+                break
+            }
+        } catch {
+            $errors.Add("Xiaohongshu extractor media download failed for candidate ref: $candidate")
+        }
+    }
 }
 
 if ($null -eq $videoFile -and -not $shouldSkipDownload -and $Platform -eq 'xiaohongshu') {
@@ -645,14 +712,7 @@ if ($null -eq $videoFile -and -not $shouldSkipDownload -and $Platform -ne 'xiaoh
         try {
             $extension = Get-DownloadFileExtension -Url $candidate
             $fallbackVideoPath = Join-Path $attachmentDir ("video-playwright" + $extension)
-            $headers = @{
-                'Referer' = $downloadReferer
-                'User-Agent' = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
-            }
-            if (Test-HasValue $downloadOrigin) {
-                $headers['Origin'] = $downloadOrigin
-            }
-            Invoke-WebRequest -Uri $candidate -OutFile $fallbackVideoPath -Headers $headers -UseBasicParsing
+            Invoke-DirectMediaDownload -Url $candidate -DestinationPath $fallbackVideoPath -Referer $downloadReferer -Origin $downloadOrigin -CookieHeader $cookieHeader
             if ((Test-Path $fallbackVideoPath) -and ((Get-Item -LiteralPath $fallbackVideoPath).Length -gt 0)) {
                 $videoFile = Get-Item -LiteralPath $fallbackVideoPath
                 $downloadMethod = 'playwright'

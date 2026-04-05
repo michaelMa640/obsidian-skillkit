@@ -1,5 +1,14 @@
 # iOS Shortcuts Gateway
 
+## Document Status
+
+- Last Updated: `2026-04-05`
+
+## Change Log
+
+- `2026-04-05`
+  - added document status metadata so gateway changes can be tracked directly in the README
+
 ## Purpose
 
 `ios-shortcuts-gateway` is the local HTTP entry layer for iPhone-triggered short-video tasks over Tailscale.

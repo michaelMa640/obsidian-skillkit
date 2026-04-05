@@ -229,6 +229,18 @@ def is_zero_like(value: str) -> bool:
     return normalized in {"0", "0.0", "0.00"}
 
 
+def normalize_metric_value(value: Any) -> str:
+    normalized = normalize_ws(str(value))
+    if not normalized:
+        return ""
+    normalized = re.sub(r"^(点赞|获赞|赞|评论|收藏|分享)[\s:：]*", "", normalized)
+    if not normalized:
+        return ""
+    if not re.search(r"\d", normalized):
+        return ""
+    return normalized
+
+
 def looks_like_login_prompt(text: str) -> bool:
     normalized = normalize_ws(text)
     if not normalized:
@@ -495,7 +507,7 @@ def collect_metric_values(page, metric_map: dict[str, list[str]]) -> dict[str, s
     metrics: dict[str, str] = {}
     for key, selectors in metric_map.items():
         for selector in selectors:
-            value = safe_locator_text(page, selector, timeout_ms=1200)
+            value = normalize_metric_value(safe_locator_text(page, selector, timeout_ms=1200))
             if value:
                 metrics[key] = value
                 break
@@ -1155,7 +1167,7 @@ def extract_social_payload(page, source_url: str, platform: str, timeout_ms: int
 
     metrics = collect_metric_values(page, rules.get("metric_map", {}))
     for key, value in (structured_payload.get("metrics") or {}).items():
-        normalized_value = normalize_ws(str(value))
+        normalized_value = normalize_metric_value(value)
         if not normalized_value:
             continue
         existing_value = normalize_ws(metrics.get(key, ""))

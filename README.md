@@ -1,95 +1,112 @@
 # Obsidian Skillkit
 
-## Overview
+## Document Status
 
-This repository is the local skill and gateway workspace for the Obsidian-based short-video workflow.
+- Last Updated: `2026-04-05`
 
-Current primary modules:
+## Change Log
+
+- `2026-04-05`
+  - rewrote the root overview to match the current Feishu / OpenClaw workflow
+  - documented the Xiaohongshu short-link fix, blocked-access detection, and local video embedding status
+  - documented the optional `XHS-Downloader` role and the split between development repo and OpenClaw runtime copy
+
+This repository is the local workspace for the Obsidian-based short-video workflow used by OpenClaw, Feishu, and the optional iPhone gateway.
+
+## Current Status
+
+Verified on `2026-04-05`:
+
+- `obsidian-clipper/` can capture Douyin and Xiaohongshu share text into `Clippings/`
+- Xiaohongshu share text now preserves the full `xhslink.com/o/<id>` short link instead of truncating to `/o`
+- Xiaohongshu notes now:
+  - keep platform-specific auth separate from Douyin
+  - detect `website-login/error` and `300012` as blocked access instead of pretending the clip succeeded
+  - embed the downloaded local `.mp4` after `## 原始文案`
+  - clean malformed interaction labels such as `赞` so they render as `未获取`
+- `obsidian-analyzer/` can read an existing clipping plus sidecars and write structured notes into `爆款拆解/`
+- `ios-shortcuts-gateway/` still supports the remote iPhone path, but Feishu -> OpenClaw is the main day-to-day entry
+
+Important Xiaohongshu nuance:
+
+- content capture does not require `XHS-Downloader`
+- local video landing currently benefits from the optional `XHS-Downloader` adapter
+- if that API is not running, the clipping note is still created, but the Xiaohongshu video file may not land locally
+
+## Main Modules
 
 - `obsidian-clipper/`
-  - captures raw records into `Clippings/`
-  - downloads media and writes sidecars under `Attachments/ShortVideos/...`
+  - raw capture into `Clippings/`
+  - sidecars and media under `Attachments/ShortVideos/...`
 - `obsidian-analyzer/`
-  - reads an existing clipping plus sidecars
-  - writes structured analysis notes into `爆款拆解/`
+  - structured analysis output into `爆款拆解/`
 - `ios-shortcuts-gateway/`
-  - receives remote iPhone shortcut requests over local HTTP + Tailscale
-  - runs `clip` or `analyze` asynchronously
-  - returns an immediate accepted response and sends final status back through Feishu via OpenClaw CLI or webhook
+  - optional local HTTP gateway for iPhone Shortcut submission
 - `obsidian/`
   - direct Obsidian vault operations through the official CLI
+- `tools/`
+  - local helper tools, including the bundled `XHS-Downloader` launcher
 
-Legacy reference module:
+## Runtime Paths
 
-- `obsidian-archiver/`
-  - older one-step archive flow retained only for compatibility/reference
+There are usually two relevant copies of the clipper code on a machine:
 
-## Recommended architecture
+1. Development repo:
+   - `E:\Codex_project\obsidian-skillkit\obsidian-clipper`
+2. OpenClaw runtime copy:
+   - `C:\Users\<user>\.openclaw\workspace\skills\obsidian-clipper`
 
-### Local / OpenClaw workflow
+If Feishu / OpenClaw behavior does not match the repo, check whether the runtime copy has been synced.
 
-1. OpenClaw receives a URL or share text
-2. `obsidian-clipper` writes a clipping note into `Clippings/`
-3. `obsidian-analyzer` reads that clipping and writes a breakdown note into `爆款拆解/`
+## Recommended Flow
 
-### iPhone workflow
+### Feishu / OpenClaw
 
-1. iPhone Shortcut sends `clip` or `analyze` to `ios-shortcuts-gateway`
-2. Gateway returns immediately with `ACCEPTED` and `request_id`
-3. Gateway runs `obsidian-clipper` or `obsidian-clipper -> obsidian-analyzer` in the background
-4. Final status is sent back to Feishu
+1. OpenClaw receives `剪藏视频：<share text or url>` or `拆解视频：<share text or url>`
+2. `obsidian-clipper` creates a clipping note in `Clippings/`
+3. `obsidian-analyzer` optionally reads that clipping and writes a breakdown note into `爆款拆解/`
 
-## Repository layout
+### iPhone Shortcut
 
-- `README.md`
-- `openclaw-short-video-integration.md`
-- `obsidian/SKILL.md`
-- `obsidian-clipper/SKILL.md`
-- `obsidian-analyzer/SKILL.md`
-- `ios-shortcuts-gateway/README.md`
-- `*/references/`
-- `*/scripts/`
+1. iPhone Shortcut sends a request to `ios-shortcuts-gateway`
+2. Gateway returns immediately with `ACCEPTED`
+3. Gateway runs `obsidian-clipper` or `obsidian-clipper -> obsidian-analyzer`
+4. Final status goes back to Feishu asynchronously
 
-## Runtime notes
+## Xiaohongshu Video Download
 
-### Clipper
+Current download order for Xiaohongshu short video:
 
-- accepts either a clean URL or raw share text
-- clipping file names are cleaned for Obsidian-safe note names
-- frontmatter keeps the original full title
+1. `XHS-Downloader` adapter
+2. Playwright-discovered candidate media refs
+3. `yt-dlp` fallback
 
-### Analyzer
+The local helper scripts in `tools/` start and stop the bundled API:
 
-- can run from `-NotePath` or `-CaptureJsonPath`
-- when only `capture.json` is provided, it now resolves the matching clipping note from the vault
-- breakdown note title follows the clipping note title
-- breakdown note file date uses the actual analysis run date
-- breakdown note source link points back to the resolved clipping note
+- `tools/start_xhs_downloader.cmd`
+- `tools/start_xhs_downloader.ps1`
+- `tools/stop_xhs_downloader.ps1`
 
-### Gateway
+Default adapter endpoint:
 
-- `POST /short-video/task`
-  - default behavior is asynchronous
-  - returns `ACCEPTED`
-- `GET /short-video/task/{request_id}`
-  - debug/operator status lookup
-- Feishu callback
-  - recommended mode is `openclaw_cli`
-  - `webhook` is still supported as a fallback
+- `http://127.0.0.1:5556/xhs/detail`
 
-## Debug policy
+## Debugging
 
-Each runtime module keeps local debug artifacts and a shareable support bundle.
-
-Preferred share target for troubleshooting:
+Preferred artifacts for troubleshooting:
 
 - `support-bundle/`
+- `run-clipper.json`
+- `capture.json`
+- `download-social.json`
 
-Use raw local debug files only when the support bundle is not enough.
+For social validation runs:
 
-## Main docs
+- `obsidian-clipper/.tmp/social-download-validation/<timestamp>/`
 
-- [OpenClaw Short-Video Integration](E:\Codex_project\obsidian-skillkit\openclaw-short-video-integration.md)
+## Main Docs
+
 - [Clipper README](E:\Codex_project\obsidian-skillkit\obsidian-clipper\README.md)
 - [Analyzer README](E:\Codex_project\obsidian-skillkit\obsidian-analyzer\README.md)
+- [OpenClaw Short-Video Integration](E:\Codex_project\obsidian-skillkit\openclaw-short-video-integration.md)
 - [iOS Shortcuts Gateway README](E:\Codex_project\obsidian-skillkit\ios-shortcuts-gateway\README.md)

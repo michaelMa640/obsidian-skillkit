@@ -1,5 +1,15 @@
 # OpenClaw Short-Video Integration
 
+## Document Status
+
+- Last Updated: `2026-04-05`
+
+## Change Log
+
+- `2026-04-05`
+  - added document status metadata
+  - kept the integration guide aligned with the current Feishu / OpenClaw and gateway handoff model
+
 ## Goal
 
 Use the short-video workflow with:

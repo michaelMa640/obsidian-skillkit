@@ -80,6 +80,29 @@ def parse_cookie_file(cookies_file: Path) -> str:
     return "; ".join(cookie_pairs)
 
 
+def build_request_candidates(source_url: str, normalized_url: str) -> list[str]:
+    candidates: list[str] = []
+
+    def add_candidate(url: str) -> None:
+        if not has_value(url):
+            return
+        candidate = str(url).strip()
+        if candidate and candidate not in candidates:
+            candidates.append(candidate)
+
+    add_candidate(source_url)
+    add_candidate(normalized_url)
+
+    if has_value(normalized_url):
+        parsed = urllib.parse.urlparse(normalized_url)
+        simplified = urllib.parse.urlunparse(
+            (parsed.scheme, parsed.netloc, parsed.path, "", "", "")
+        )
+        add_candidate(simplified)
+
+    return candidates
+
+
 def flatten_urls(value, path: str = "") -> list[tuple[str, str]]:
     urls: list[tuple[str, str]] = []
     if isinstance(value, dict):
@@ -213,6 +236,7 @@ def build_success_payload(
     backend_payload_path: str,
     backend_status_code: int,
     media_url: str,
+    request_url_used: str,
 ) -> dict:
     return {
         "success": True,
@@ -229,6 +253,7 @@ def build_success_payload(
         "fallbacks": [],
         "backend": "xhs_downloader_api",
         "capture_id": args.capture_id,
+        "request_url_used": request_url_used,
     }
 
 
@@ -240,6 +265,7 @@ def build_failure_payload(
     backend_status_code: int = 0,
     extra_errors: list[str] | None = None,
     extra_fallbacks: list[str] | None = None,
+    request_url_used: str = "",
 ) -> dict:
     return {
         "success": False,
@@ -256,6 +282,7 @@ def build_failure_payload(
         "fallbacks": extra_fallbacks or [error_code],
         "backend": "xhs_downloader_api",
         "capture_id": args.capture_id,
+        "request_url_used": request_url_used,
     }
 
 
@@ -270,7 +297,8 @@ def main() -> int:
     if has_value(args.cookies_file):
         cookie_header = parse_cookie_file(Path(args.cookies_file))
 
-    request_url = args.normalized_url if has_value(args.normalized_url) else args.source_url
+    request_candidates = build_request_candidates(args.source_url, args.normalized_url)
+    request_url = request_candidates[0] if request_candidates else args.source_url
     referer = request_url or args.source_url
     origin = ""
     if has_value(referer):
@@ -279,33 +307,72 @@ def main() -> int:
             origin = f"{parsed_referer.scheme}://{parsed_referer.netloc}"
 
     timeout_seconds = max(float(args.timeout_ms) / 1000.0, 5.0)
-    api_payload = {
-        "url": request_url,
-        "download": False,
-        "cookie": cookie_header,
-    }
-    if has_value(args.proxy):
-        api_payload["proxy"] = args.proxy
+    last_status_code = 0
+    backend_payload = {}
+    request_url_used = request_url
+    last_error_message = ""
 
-    try:
-        status_code, backend_payload = post_json(args.server_url, api_payload, timeout_seconds)
-    except urllib.error.URLError as exc:
+    for candidate_url in request_candidates:
+        request_url_used = candidate_url
+        referer = candidate_url or args.source_url
+        origin = ""
+        if has_value(referer):
+            parsed_referer = urllib.parse.urlparse(referer)
+            if has_value(parsed_referer.scheme) and has_value(parsed_referer.netloc):
+                origin = f"{parsed_referer.scheme}://{parsed_referer.netloc}"
+
+        api_payload = {
+            "url": candidate_url,
+            "download": False,
+            "cookie": cookie_header,
+        }
+        if has_value(args.proxy):
+            api_payload["proxy"] = args.proxy
+
+        try:
+            status_code, backend_payload = post_json(args.server_url, api_payload, timeout_seconds)
+            last_status_code = status_code
+        except urllib.error.URLError as exc:
+            write_json(
+                output_json,
+                build_failure_payload(
+                    args,
+                    error_code="backend_unavailable",
+                    message=f"XHS-Downloader API is unavailable: {exc.reason}",
+                    request_url_used=candidate_url,
+                ),
+            )
+            return 0
+        except Exception as exc:
+            write_json(
+                output_json,
+                build_failure_payload(
+                    args,
+                    error_code="backend_request_failed",
+                    message=f"XHS-Downloader request failed: {exc}",
+                    request_url_used=candidate_url,
+                ),
+            )
+            return 0
+
+        flattened_urls = flatten_urls(backend_payload)
+        media_url = choose_best_video_url(flattened_urls)
+        if has_value(media_url):
+            break
+
+        backend_message = ""
+        if isinstance(backend_payload, dict):
+            backend_message = str(backend_payload.get("message", "")).strip()
+        last_error_message = backend_message or "XHS-Downloader did not return a direct downloadable video URL."
+    else:
         write_json(
             output_json,
             build_failure_payload(
                 args,
-                error_code="backend_unavailable",
-                message=f"XHS-Downloader API is unavailable: {exc.reason}",
-            ),
-        )
-        return 0
-    except Exception as exc:
-        write_json(
-            output_json,
-            build_failure_payload(
-                args,
-                error_code="backend_request_failed",
-                message=f"XHS-Downloader request failed: {exc}",
+                error_code="backend_no_media_url",
+                message=last_error_message or "XHS-Downloader did not return a direct downloadable video URL.",
+                backend_status_code=last_status_code,
+                request_url_used=request_url_used,
             ),
         )
         return 0
@@ -327,7 +394,8 @@ def main() -> int:
                 error_code="backend_no_media_url",
                 message="XHS-Downloader did not return a direct downloadable video URL.",
                 backend_payload_path=backend_payload_path_text,
-                backend_status_code=status_code,
+                backend_status_code=last_status_code,
+                request_url_used=request_url_used,
             ),
         )
         return 0
@@ -350,7 +418,8 @@ def main() -> int:
                 error_code="backend_download_failed",
                 message=f"Adapter download failed with HTTP {exc.code}.",
                 backend_payload_path=backend_payload_path_text,
-                backend_status_code=status_code,
+                backend_status_code=last_status_code,
+                request_url_used=request_url_used,
             ),
         )
         return 0
@@ -362,7 +431,8 @@ def main() -> int:
                 error_code="backend_download_failed",
                 message=f"Adapter download failed: {exc}",
                 backend_payload_path=backend_payload_path_text,
-                backend_status_code=status_code,
+                backend_status_code=last_status_code,
+                request_url_used=request_url_used,
             ),
         )
         return 0
@@ -375,7 +445,8 @@ def main() -> int:
                 error_code="backend_download_failed",
                 message=result_text,
                 backend_payload_path=backend_payload_path_text,
-                backend_status_code=status_code,
+                backend_status_code=last_status_code,
+                request_url_used=request_url_used,
             ),
         )
         return 0
@@ -387,8 +458,9 @@ def main() -> int:
             video_path=result_text,
             cover_url=cover_url,
             backend_payload_path=backend_payload_path_text,
-            backend_status_code=status_code,
+            backend_status_code=last_status_code,
             media_url=media_url,
+            request_url_used=request_url_used,
         ),
     )
     return 0
