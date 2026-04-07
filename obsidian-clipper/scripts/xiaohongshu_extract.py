@@ -1,5 +1,6 @@
-import argparse
+﻿import argparse
 from datetime import datetime
+import hashlib
 import json
 import re
 import sys
@@ -78,6 +79,31 @@ def build_request_candidates(source_url: str, normalized_url: str) -> list[str]:
         add_candidate(simplified)
 
     return candidates
+
+
+def extract_note_id_from_url(*urls: str) -> str:
+    for url in urls:
+        value = string_value(url)
+        if not value:
+            continue
+        for pattern in (r"/explore/([A-Za-z0-9]+)", r"/discovery/item/([A-Za-z0-9]+)"):
+            match = re.search(pattern, value)
+            if match:
+                return match.group(1)
+    return ""
+
+
+def build_capture_identity(platform: str, source_item_id: str, normalized_url: str, source_url: str) -> tuple[str, str]:
+    capture_key = f"{platform}:{source_item_id}" if has_value(source_item_id) else f"{platform}:{string_value(normalized_url, source_url)}"
+    digest = hashlib.sha256(capture_key.encode("utf-8")).hexdigest()[:16]
+    return capture_key, f"{platform}_{digest}"
+
+
+def normalize_xiaohongshu_note_url(url: str, source_item_id: str) -> str:
+    value = string_value(url)
+    if has_value(source_item_id) and (not has_value(value) or "xhslink.com" in value):
+        return f"https://www.xiaohongshu.com/discovery/item/{source_item_id}"
+    return value
 
 
 def post_json(server_url: str, payload: dict[str, Any], timeout_seconds: float) -> tuple[int, dict[str, Any]]:
@@ -227,6 +253,9 @@ def build_ssr_success_payload(
     initial_state_path: str,
 ) -> dict[str, Any]:
     interact = note.get("interactInfo") or {}
+    source_item_id = string_value(note.get("noteId"), default=extract_note_id_from_url(request_url_used, normalized_url, source_url))
+    resolved_normalized_url = normalize_xiaohongshu_note_url(string_value(request_url_used, normalized_url, source_url), source_item_id)
+    capture_key, capture_id = build_capture_identity("xiaohongshu", source_item_id, resolved_normalized_url, source_url)
     canonical_video_url = first_stream_url(note.get("video") or {})
     cover_url = first_cover_url(note)
     metrics = {
@@ -246,7 +275,10 @@ def build_ssr_success_payload(
         "backend_payload_path": initial_state_path,
         "request_url_used": request_url_used,
         "source_url": source_url,
-        "normalized_url": string_value(request_url_used, normalized_url, source_url),
+        "normalized_url": resolved_normalized_url,
+        "source_item_id": source_item_id,
+        "capture_key": capture_key,
+        "capture_id": capture_id,
         "title": string_value(note.get("title")),
         "author": string_value((note.get("user") or {}).get("nickname")),
         "description": string_value(note.get("desc")),
@@ -274,10 +306,10 @@ def first_media_url(value: Any) -> str:
 
 def normalize_metrics(data: dict[str, Any]) -> dict[str, str]:
     return {
-        "like_count": string_value(data.get("点赞数量")),
-        "comment_count": string_value(data.get("评论数量")),
-        "collect_count": string_value(data.get("收藏数量")),
-        "share_count": string_value(data.get("分享数量")),
+        "like_count": string_value(data.get("鐐硅禐鏁伴噺")),
+        "comment_count": string_value(data.get("璇勮鏁伴噺")),
+        "collect_count": string_value(data.get("鏀惰棌鏁伴噺")),
+        "share_count": string_value(data.get("鍒嗕韩鏁伴噺")),
     }
 
 
@@ -289,10 +321,13 @@ def build_success_payload(
     backend_payload_path: str,
     backend_payload: dict[str, Any],
 ) -> dict[str, Any]:
-    data = backend_payload.get("data") or {}
+    raw_backend_url = string_value(data.get("浣滃搧閾炬帴"), normalized_url, source_url)
+    source_item_id = extract_note_id_from_url(raw_backend_url, request_url_used, source_url)
+    resolved_normalized_url = normalize_xiaohongshu_note_url(raw_backend_url, source_item_id)
+    capture_key, capture_id = build_capture_identity("xiaohongshu", source_item_id, resolved_normalized_url, source_url)
     metrics = normalize_metrics(data)
-    canonical_video_url = first_media_url(data.get("下载地址"))
-    cover_url = first_media_url(data.get("封面地址"))
+    canonical_video_url = first_media_url(data.get("涓嬭浇鍦板潃"))
+    cover_url = first_media_url(data.get("灏侀潰鍦板潃"))
     media_candidates = [item for item in [canonical_video_url] if has_value(item)]
     return {
         "success": True,
@@ -304,11 +339,14 @@ def build_success_payload(
         "backend_payload_path": backend_payload_path,
         "request_url_used": request_url_used,
         "source_url": source_url,
-        "normalized_url": string_value(data.get("作品链接"), normalized_url, source_url),
-        "title": string_value(data.get("作品标题")),
-        "author": string_value(data.get("作者昵称")),
-        "description": string_value(data.get("作品描述")),
-        "published_at": string_value(data.get("发布时间"), default="unknown"),
+        "source_item_id": source_item_id,
+        "capture_key": capture_key,
+        "capture_id": capture_id,
+        "normalized_url": resolved_normalized_url,
+        "title": string_value(data.get("title"), data.get("note_title")),
+        "author": string_value(data.get("author"), data.get("nickname")),
+        "description": string_value(data.get("description"), data.get("desc")),
+        "published_at": string_value(data.get("published_at"), data.get("publish_time"), default="unknown"),
         "metrics": metrics,
         "comments": [],
         "media_candidates": media_candidates,
@@ -329,6 +367,8 @@ def build_failure_payload(
     backend_status_code: int = 0,
     backend_payload_path: str = "",
 ) -> dict[str, Any]:
+    source_item_id = extract_note_id_from_url(request_url_used, normalized_url, source_url)
+    capture_key, capture_id = build_capture_identity("xiaohongshu", source_item_id, normalized_url, source_url)
     return {
         "success": False,
         "extractor": "xiaohongshu_backend",
@@ -340,6 +380,9 @@ def build_failure_payload(
         "request_url_used": request_url_used,
         "source_url": source_url,
         "normalized_url": normalized_url,
+        "source_item_id": source_item_id,
+        "capture_key": capture_key,
+        "capture_id": capture_id,
         "title": "",
         "author": "",
         "description": "",
@@ -391,7 +434,7 @@ def main() -> int:
                     ),
                 )
                 return 0
-            if "页面不见了" in html:
+            if "page not found" in html.lower():
                 last_message = "XHS SSR page request returned a page-not-found shell."
         except Exception as exc:
             last_message = f"XHS SSR request failed: {exc}"
@@ -434,7 +477,7 @@ def main() -> int:
             write_json(backend_payload_path, backend_payload)
 
         data = backend_payload.get("data") or {}
-        if isinstance(data, dict) and (has_value(data.get("作品标题")) or has_value(first_media_url(data.get("下载地址")))):
+        if isinstance(data, dict) and (has_value(data.get("浣滃搧鏍囬")) or has_value(first_media_url(data.get("涓嬭浇鍦板潃")))):
             write_json(
                 output_json,
                 build_success_payload(

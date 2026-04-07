@@ -1,4 +1,4 @@
-param(
+﻿param(
     [Parameter(Mandatory = $true)]
     [string]$SourceUrl,
     [string]$VaultPath,
@@ -185,7 +185,8 @@ function Invoke-XiaohongshuExtractor {
     if (-not (Test-Path $extractorScript)) { return $null }
     $extractorOutputPath = Join-Path $TempDir 'xiaohongshu-extract.json'
     $backendPayloadPath = Join-Path $TempDir 'xiaohongshu-extract-backend.json'
-    $extractArguments = @($extractorScript, '--source-url', $SourceUrl, '--normalized-url', $NormalizedUrl, '--server-url', $extractorServerUrl, '--timeout-ms', $extractorTimeoutValue, '--output-json', $extractorOutputPath, '--backend-payload-path', $backendPayloadPath)
+    $extractArguments = @($extractorScript, '--source-url', $SourceUrl, '--server-url', $extractorServerUrl, '--timeout-ms', $extractorTimeoutValue, '--output-json', $extractorOutputPath, '--backend-payload-path', $backendPayloadPath)
+    if (Test-HasValue $NormalizedUrl) { $extractArguments += @('--normalized-url', $NormalizedUrl) }
     if (Test-HasValue $CookiesFile) { $extractArguments += @('--cookies-file', $CookiesFile) }
     if (Test-HasValue $StorageStatePath) { $extractArguments += @('--storage-state-path', $StorageStatePath) }
     & $extractorCommand @extractArguments 2>&1 | Out-Null
@@ -275,6 +276,177 @@ function Merge-XiaohongshuExtractorResult {
     Set-ObjectField -Object $metadata -Name 'xiaohongshu_extractor_success' -Value $extractorSucceeded | Out-Null
     Set-ObjectField -Object $metadata -Name 'xiaohongshu_extractor_error_code' -Value (Get-StringValue -Data $ExtractorResult -Name 'error_code' -DefaultValue '') | Out-Null
     return $CaptureObject
+}
+
+function New-XiaohongshuCaptureFromExtractor {
+    param([string]$SourceUrl, $ExtractorResult)
+    if ($null -eq $ExtractorResult) { return $null }
+
+    $title = Get-StringValue -Data $ExtractorResult -Name 'title' -DefaultValue 'Social Clip - xiaohongshu'
+    $author = Get-StringValue -Data $ExtractorResult -Name 'author' -DefaultValue 'unknown'
+    $publishedAt = Get-StringValue -Data $ExtractorResult -Name 'published_at' -DefaultValue 'unknown'
+    $description = Get-StringValue -Data $ExtractorResult -Name 'description' -DefaultValue ''
+    $normalizedUrl = Get-StringValue -Data $ExtractorResult -Name 'normalized_url' -DefaultValue $SourceUrl
+    $sourceItemId = Get-StringValue -Data $ExtractorResult -Name 'source_item_id' -DefaultValue ''
+    $captureKey = Get-StringValue -Data $ExtractorResult -Name 'capture_key' -DefaultValue ''
+    $captureId = Get-StringValue -Data $ExtractorResult -Name 'capture_id' -DefaultValue ''
+    $canonicalVideoUrl = Get-StringValue -Data $ExtractorResult -Name 'canonical_video_url' -DefaultValue ''
+    $coverUrl = Get-StringValue -Data $ExtractorResult -Name 'cover_url' -DefaultValue ''
+    $metrics = Get-DataValue -Data $ExtractorResult -Name 'metrics'
+    $likeCount = if ($null -ne $metrics) { Get-StringValue -Data $metrics -Name 'like_count' -DefaultValue '' } else { '' }
+    $commentCount = if ($null -ne $metrics) { Get-StringValue -Data $metrics -Name 'comment_count' -DefaultValue '' } else { '' }
+    $collectCount = if ($null -ne $metrics) { Get-StringValue -Data $metrics -Name 'collect_count' -DefaultValue '' } else { '' }
+    $shareCount = if ($null -ne $metrics) { Get-StringValue -Data $metrics -Name 'share_count' -DefaultValue '' } else { '' }
+    $mediaCandidates = Get-StringArrayValue -Data $ExtractorResult -Name 'media_candidates'
+
+    $summaryParts = New-Object System.Collections.Generic.List[string]
+    if (Test-HasValue $description) { $summaryParts.Add((Get-PreviewText -Text $description -Length 240)) }
+    $metricParts = New-Object System.Collections.Generic.List[string]
+    if (Test-HasValue $likeCount) { $metricParts.Add("likes $likeCount") | Out-Null }
+    if (Test-HasValue $commentCount) { $metricParts.Add("comments $commentCount") | Out-Null }
+    if (Test-HasValue $collectCount) { $metricParts.Add("collects $collectCount") | Out-Null }
+    if (Test-HasValue $shareCount) { $metricParts.Add("shares $shareCount") | Out-Null }
+    if ($metricParts.Count -gt 0) { $summaryParts.Add("Metrics: $(($metricParts -join ', ')).") | Out-Null }
+    $summaryParts.Add('Captured via xiaohongshu-extractor / xiaohongshu.') | Out-Null
+    $summary = (($summaryParts | Where-Object { Test-HasValue $_ }) -join ' ').Trim()
+
+    $tags = @('clipped', 'social', 'xiaohongshu')
+    $images = @()
+    if (Test-HasValue $coverUrl) { $images += $coverUrl }
+    $videos = @()
+    if (Test-HasValue $canonicalVideoUrl) { $videos += $canonicalVideoUrl } else { $videos += $SourceUrl }
+
+    $metadata = [ordered]@{
+        capture_level = if (Test-HasValue $description) { 'standard' } else { 'light' }
+        transcript_status = 'missing'
+        media_downloaded = $false
+        analysis_ready = $true
+        extractor = 'xiaohongshu-extractor'
+        route = 'social'
+        platform = 'xiaohongshu'
+        content_type = 'social_post'
+        source_url = $SourceUrl
+        normalized_url = $normalizedUrl
+        source_item_id = $sourceItemId
+        capture_key = $captureKey
+        capture_id = $captureId
+        metrics_source = 'xiaohongshu_extractor'
+        comments_source = 'none'
+        comments_capture_status = 'none'
+        comment_count_visible = 0
+        like_count = $likeCount
+        comment_count = $commentCount
+        collect_count = $collectCount
+        share_count = $shareCount
+    }
+
+    $extraProperties = [ordered]@{
+        source_url = $SourceUrl
+        normalized_url = $normalizedUrl
+        platform = 'xiaohongshu'
+        content_type = 'social_post'
+        route = 'social'
+        source_item_id = $sourceItemId
+        capture_key = $captureKey
+        capture_id = $captureId
+        description = $description
+        canonical_video_url = $canonicalVideoUrl
+        cover_url = $coverUrl
+        candidate_video_refs = @($mediaCandidates)
+        comments = @()
+        top_comments = @()
+        comments_count = 0
+        comments_capture_status = 'none'
+        metrics_like = $likeCount
+        metrics_comment = $commentCount
+        metrics_collect = $collectCount
+        metrics_share = $shareCount
+        auth_applied = $false
+        auth_mode = 'extractor'
+        status = 'clipped'
+        download_status = 'skipped'
+        download_method = 'none'
+        media_downloaded = $false
+        analyzer_status = 'pending'
+        bitable_sync_status = 'pending'
+    }
+
+    return (New-CaptureObject -Title $title -Author $author -PublishedAt $publishedAt -Summary $summary -RawText $description -Transcript '' -Tags $tags -Images $images -Videos $videos -Metadata $metadata -ExtraProperties $extraProperties)
+}
+
+function Merge-XiaohongshuSupplementalCapture {
+    param($BaseCapture, $SupplementalCapture)
+    if ($null -eq $BaseCapture) { return $SupplementalCapture }
+    if ($null -eq $SupplementalCapture) { return $BaseCapture }
+
+    $baseMetadata = Get-DataValue -Data $BaseCapture -Name 'metadata'
+    if ($null -eq $baseMetadata) {
+        $baseMetadata = [ordered]@{}
+        Set-ObjectField -Object $BaseCapture -Name 'metadata' -Value $baseMetadata | Out-Null
+    }
+
+    foreach ($field in @('normalized_url', 'final_url', 'published_at', 'source_item_id', 'capture_key', 'capture_id', 'cover_url')) {
+        $baseValue = Get-StringValue -Data $BaseCapture -Name $field -DefaultValue ''
+        $supplementalValue = Get-StringValue -Data $SupplementalCapture -Name $field -DefaultValue ''
+        if (-not (Test-HasValue $baseValue) -and (Test-HasValue $supplementalValue)) {
+            Set-ObjectField -Object $BaseCapture -Name $field -Value $supplementalValue | Out-Null
+        }
+    }
+
+    $baseRawText = Get-StringValue -Data $BaseCapture -Name 'raw_text' -DefaultValue ''
+    $supplementalRawText = Get-StringValue -Data $SupplementalCapture -Name 'raw_text' -DefaultValue ''
+    if ((-not (Test-HasValue $baseRawText) -or $supplementalRawText.Length -gt $baseRawText.Length) -and (Test-HasValue $supplementalRawText)) {
+        Set-ObjectField -Object $BaseCapture -Name 'raw_text' -Value $supplementalRawText | Out-Null
+    }
+
+    $baseSummary = Get-StringValue -Data $BaseCapture -Name 'summary' -DefaultValue ''
+    $supplementalSummary = Get-StringValue -Data $SupplementalCapture -Name 'summary' -DefaultValue ''
+    if ((-not (Test-HasValue $baseSummary) -or $supplementalSummary.Length -gt $baseSummary.Length) -and (Test-HasValue $supplementalSummary)) {
+        Set-ObjectField -Object $BaseCapture -Name 'summary' -Value $supplementalSummary | Out-Null
+    }
+
+    $baseDescription = Get-StringValue -Data $BaseCapture -Name 'description' -DefaultValue ''
+    $supplementalDescription = Get-StringValue -Data $SupplementalCapture -Name 'description' -DefaultValue ''
+    if (-not (Test-HasValue $baseDescription) -and (Test-HasValue $supplementalDescription)) {
+        Set-ObjectField -Object $BaseCapture -Name 'description' -Value $supplementalDescription | Out-Null
+    }
+
+    foreach ($field in @('tags', 'images', 'videos', 'candidate_video_refs', 'top_comments')) {
+        $mergedValues = Get-StringArrayValue -Data $BaseCapture -Name $field
+        foreach ($value in (Get-StringArrayValue -Data $SupplementalCapture -Name $field)) {
+            $mergedValues = Add-UniqueStringToArray -Items $mergedValues -Value $value
+        }
+        Set-ObjectField -Object $BaseCapture -Name $field -Value $mergedValues | Out-Null
+    }
+
+    $supplementalComments = Get-DataValue -Data $SupplementalCapture -Name 'comments'
+    if ($null -ne $supplementalComments -and @($supplementalComments).Count -gt 0) {
+        Set-ObjectField -Object $BaseCapture -Name 'comments' -Value $supplementalComments | Out-Null
+    }
+
+    $commentsCount = Get-DataValue -Data $SupplementalCapture -Name 'comments_count'
+    if ($null -ne $commentsCount) {
+        Set-ObjectField -Object $BaseCapture -Name 'comments_count' -Value $commentsCount | Out-Null
+        Set-ObjectField -Object $baseMetadata -Name 'comment_count_visible' -Value $commentsCount | Out-Null
+    }
+
+    $commentsCaptureStatus = Get-StringValue -Data $SupplementalCapture -Name 'comments_capture_status' -DefaultValue ''
+    if (Test-HasValue $commentsCaptureStatus) {
+        Set-ObjectField -Object $BaseCapture -Name 'comments_capture_status' -Value $commentsCaptureStatus | Out-Null
+        Set-ObjectField -Object $baseMetadata -Name 'comments_capture_status' -Value $commentsCaptureStatus | Out-Null
+        Set-ObjectField -Object $baseMetadata -Name 'comments_source' -Value 'playwright' | Out-Null
+    }
+
+    foreach ($field in @('auth_applied', 'auth_mode', 'auth_cookie_count', 'auth_session_state', 'auth_session_likely_valid', 'comments_login_required')) {
+        $value = Get-DataValue -Data $SupplementalCapture -Name $field
+        if ($null -ne $value) {
+            Set-ObjectField -Object $BaseCapture -Name $field -Value $value | Out-Null
+            Set-ObjectField -Object $baseMetadata -Name $field -Value $value | Out-Null
+        }
+    }
+
+    Set-ObjectField -Object $baseMetadata -Name 'playwright_supplement_applied' -Value $true | Out-Null
+    return $BaseCapture
 }
 
 function New-LocalTempDirectory {
@@ -712,22 +884,56 @@ function Invoke-SocialCapture {
     $tempDir = New-LocalTempDirectory
     try {
         $outputJsonPath = Join-Path $tempDir 'social-capture.json'
-        $captureArguments = @($scriptPath, '--url', $Url, '--platform', $Platform, '--timeout-ms', $timeoutMs, '--output-json', $outputJsonPath)
-        if (Test-HasValue $storageStatePath) { $captureArguments += @('--storage-state', $storageStatePath) }
-        if (Test-HasValue $cookiesFile) { $captureArguments += @('--cookies-file', $cookiesFile) }
-        & $pythonCommand @captureArguments 2>&1 | Out-Null
-        if ($LASTEXITCODE -ne 0) { throw "Playwright social capture failed with exit code $LASTEXITCODE." }
-        if (-not (Test-Path $outputJsonPath)) { throw 'Playwright social capture did not write its JSON output file.' }
-        $payload = Read-Utf8Text -Path $outputJsonPath
-        if (-not (Test-HasValue $payload)) { throw 'Playwright social capture returned no output.' }
-        $obj = ConvertFrom-JsonCompat -Json $payload -Depth 50
+        $obj = $null
+        $extractorResult = $null
+        $extractorSucceeded = $false
         if ($Platform -eq 'xiaohongshu') {
-            $extractorResult = Invoke-XiaohongshuExtractor -Config $Config -SourceUrl $Url -NormalizedUrl ([string]$obj.normalized_url) -PythonCommand $pythonCommand -CookiesFile $cookiesFile -StorageStatePath $storageStatePath -TempDir $tempDir
-            if ($null -ne $extractorResult) {
+            $extractorResult = Invoke-XiaohongshuExtractor -Config $Config -SourceUrl $Url -NormalizedUrl '' -PythonCommand $pythonCommand -CookiesFile $cookiesFile -StorageStatePath $storageStatePath -TempDir $tempDir
+            $extractorSucceeded = ($null -ne $extractorResult) -and [bool](Get-DataValue -Data $extractorResult -Name 'success')
+            if ($extractorSucceeded) {
+                $obj = New-XiaohongshuCaptureFromExtractor -SourceUrl $Url -ExtractorResult $extractorResult
                 $obj = Merge-XiaohongshuExtractorResult -CaptureObject $obj -ExtractorResult $extractorResult
-                Write-Utf8Text -Path $outputJsonPath -Content ($obj | ConvertTo-Json -Depth 100)
             }
         }
+
+        $playwrightError = ''
+        try {
+            $captureArguments = @($scriptPath, '--url', $Url, '--platform', $Platform, '--timeout-ms', $timeoutMs, '--output-json', $outputJsonPath)
+            if (Test-HasValue $storageStatePath) { $captureArguments += @('--storage-state', $storageStatePath) }
+            if (Test-HasValue $cookiesFile) { $captureArguments += @('--cookies-file', $cookiesFile) }
+            & $pythonCommand @captureArguments 2>&1 | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "Playwright social capture failed with exit code $LASTEXITCODE." }
+            if (-not (Test-Path $outputJsonPath)) { throw 'Playwright social capture did not write its JSON output file.' }
+            $payload = Read-Utf8Text -Path $outputJsonPath
+            if (-not (Test-HasValue $payload)) { throw 'Playwright social capture returned no output.' }
+            $playwrightObject = ConvertFrom-JsonCompat -Json $payload -Depth 50
+
+            if ($Platform -eq 'xiaohongshu' -and $extractorSucceeded -and $null -ne $obj) {
+                $obj = Merge-XiaohongshuSupplementalCapture -BaseCapture $obj -SupplementalCapture $playwrightObject
+                $obj = Merge-XiaohongshuExtractorResult -CaptureObject $obj -ExtractorResult $extractorResult
+            } else {
+                $obj = $playwrightObject
+                if ($Platform -eq 'xiaohongshu' -and $null -ne $extractorResult) {
+                    $obj = Merge-XiaohongshuExtractorResult -CaptureObject $obj -ExtractorResult $extractorResult
+                }
+            }
+        } catch {
+            $playwrightError = $_.Exception.Message
+            if (-not $extractorSucceeded -or $null -eq $obj) { throw }
+            $metadata = Get-DataValue -Data $obj -Name 'metadata'
+            if ($null -eq $metadata) {
+                $metadata = [ordered]@{}
+                Set-ObjectField -Object $obj -Name 'metadata' -Value $metadata | Out-Null
+            }
+            Set-ObjectField -Object $metadata -Name 'playwright_supplement_status' -Value 'failed' | Out-Null
+            Set-ObjectField -Object $metadata -Name 'playwright_supplement_error' -Value $playwrightError | Out-Null
+            Set-ObjectField -Object $metadata -Name 'comments_source' -Value 'none' | Out-Null
+            Set-ObjectField -Object $obj -Name 'playwright_supplement_status' -Value 'failed' | Out-Null
+            Set-ObjectField -Object $obj -Name 'playwright_supplement_error' -Value $playwrightError | Out-Null
+        }
+
+        if ($null -eq $obj) { throw 'Social capture returned no result.' }
+        Write-Utf8Text -Path $outputJsonPath -Content ($obj | ConvertTo-Json -Depth 100)
         if (Test-HasValue $ResolvedVaultPath) {
             $downloadScriptPath = Join-Path $PSScriptRoot 'download_social_media.ps1'
             if (Test-Path $downloadScriptPath) {
@@ -1365,7 +1571,7 @@ function Write-RunSummary {
     Write-Host ''
     Write-Host $lines[0] -ForegroundColor Cyan
     foreach ($line in @($lines | Select-Object -Skip 1)) {
-        if ($line -like 'error    :*' -or $line -like 'result   : FAILED' -or $line -like '*失败' -or $line -like 'step     :*') {
+        if ($line -like 'error    :*' -or $line -like 'result   : FAILED' -or $line -like '*澶辫触' -or $line -like 'step     :*') {
             Write-Host $line -ForegroundColor Yellow
         } else {
             Write-Host $line
@@ -1550,3 +1756,4 @@ try {
     Write-RunSummary -Result $failureObject
     throw
 }
+
