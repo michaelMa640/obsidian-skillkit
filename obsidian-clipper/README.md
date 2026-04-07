@@ -2,10 +2,19 @@
 
 ## Document Status
 
-- Last Updated: `2026-04-05`
+- Last Updated: `2026-04-07`
 
 ## Change Log
 
+- `2026-04-07`
+  - documented the Step 7 removal-readiness assessment for the Xiaohongshu fallback backend
+- `2026-04-07`
+  - documented the Step 6 fallback-backend behavior for Xiaohongshu
+  - clarified that `XHS-Downloader` now runs only when resolved media candidates are missing or fail
+- `2026-04-07`
+  - documented the Step 5 media pipeline split between media resolution and media download
+  - documented the new generic `resolved_media_*` and `media_backend_*` fields
+  - updated the Xiaohongshu download order to extractor-first with backend fallback
 - `2026-04-05`
   - rewrote the README around the currently verified clipper behavior
   - documented the Xiaohongshu adapter, auth split, blocked-access detection, and note rendering changes
@@ -39,12 +48,13 @@ Current verified social platforms:
 
 ## Current Xiaohongshu Behavior
 
-As of `2026-04-05`, Xiaohongshu support includes:
+As of `2026-04-07`, Xiaohongshu support includes:
 
 - full short-link extraction from pasted share text such as `https://xhslink.com/o/<id>`
 - per-platform auth files instead of reusing Douyin cookies
 - blocked-access detection for `website-login/error` and `300012`
-- optional dedicated video download through `XHS-Downloader`
+- extractor-first media resolution with optional backend fallback through `XHS-Downloader`
+- generic media metadata fields such as `resolved_media_*` and `media_backend_*`
 - note rendering that embeds the local `.mp4` after `## 原始文案`
 - interaction-metric cleanup so malformed labels such as `赞` become `未获取`
 
@@ -53,14 +63,21 @@ Important:
 - note creation does not depend on media download
 - if Xiaohongshu media download fails, the note can still be saved successfully
 - `CategoryHint` folder override is disabled by default, so clip notes should stay in `Clippings/`
+- `XHS-Downloader` is now treated as a fallback backend, not the primary Xiaohongshu path
+- current engineering verdict: do not remove the fallback backend yet, because the validation set is still too small and too synthetic
 
 ## Download Strategy
 
 Current Xiaohongshu download order:
 
-1. `XHS-Downloader` adapter
-2. Playwright candidate media refs
+1. extractor-provided resolved media candidates
+2. optional `XHS-Downloader` backend fallback
 3. `yt-dlp` fallback
+
+Current fallback-backend semantics:
+
+- backend is attempted only after the resolved-media stage does not produce a landed video
+- runs now record `media_backend_trigger_reason` so it is visible why fallback backend was used
 
 Current Douyin download order:
 

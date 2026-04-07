@@ -2,10 +2,17 @@
 
 ## Document Status
 
-- Last Updated: `2026-04-05`
+- Last Updated: `2026-04-07`
 
 ## Change Log
 
+- `2026-04-07`
+  - documented the Step 7 readiness decision for whether Xiaohongshu can remove the fallback backend today
+- `2026-04-07`
+  - documented the Step 6 fallback-backend behavior for Xiaohongshu media download
+- `2026-04-07`
+  - documented the Step 5 generic media resolution pipeline and backend fallback fields
+  - updated the Xiaohongshu download order to extractor-first with backend fallback
 - `2026-04-05`
   - rewrote the root overview to match the current Feishu / OpenClaw workflow
   - documented the Xiaohongshu short-link fix, blocked-access detection, and local video embedding status
@@ -15,7 +22,7 @@ This repository is the local workspace for the Obsidian-based short-video workfl
 
 ## Current Status
 
-Verified on `2026-04-05`:
+Verified on `2026-04-07`:
 
 - `obsidian-clipper/` can capture Douyin and Xiaohongshu share text into `Clippings/`
 - Xiaohongshu share text now preserves the full `xhslink.com/o/<id>` short link instead of truncating to `/o`
@@ -32,6 +39,9 @@ Important Xiaohongshu nuance:
 - content capture does not require `XHS-Downloader`
 - local video landing currently benefits from the optional `XHS-Downloader` adapter
 - if that API is not running, the clipping note is still created, but the Xiaohongshu video file may not land locally
+- current clip runs also record generic `resolved_media_*` and `media_backend_*` fields so media resolution and media download can evolve independently
+- `XHS-Downloader` now acts as a fallback backend behind the built-in Xiaohongshu extractor path
+- current engineering verdict: keep the fallback backend for now, because the current validation sample is not yet enough to justify hard removal
 
 ## Main Modules
 
@@ -77,8 +87,8 @@ If Feishu / OpenClaw behavior does not match the repo, check whether the runtime
 
 Current download order for Xiaohongshu short video:
 
-1. `XHS-Downloader` adapter
-2. Playwright-discovered candidate media refs
+1. extractor-provided resolved media candidates
+2. optional `XHS-Downloader` backend fallback
 3. `yt-dlp` fallback
 
 The local helper scripts in `tools/` start and stop the bundled API:

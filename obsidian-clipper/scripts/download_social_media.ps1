@@ -230,6 +230,157 @@ function Invoke-DirectMediaDownload {
     Invoke-WebRequest -Uri $Url -OutFile $DestinationPath -Headers $headers -UseBasicParsing
 }
 
+function Add-ResolvedMediaCandidate {
+    param(
+        [System.Collections.Generic.List[object]]$Candidates,
+        [string]$Url,
+        [string]$Source = 'record',
+        [string]$Method = 'direct',
+        [int]$Priority = 100
+    )
+    if (-not (Test-HasValue $Url)) { return }
+    $trimmedUrl = $Url.Trim()
+    if (-not $trimmedUrl.StartsWith('http')) { return }
+    if ($trimmedUrl.StartsWith('blob:')) { return }
+    foreach ($existing in @($Candidates)) {
+        if ($null -eq $existing) { continue }
+        if ([string]$existing.url -eq $trimmedUrl) { return }
+    }
+    $Candidates.Add([ordered]@{
+        url = $trimmedUrl
+        source = $Source
+        method = $Method
+        priority = $Priority
+    }) | Out-Null
+}
+
+function Get-ResolvedMediaCandidatesFromRecord {
+    param(
+        $Record,
+        [string]$PlatformName = ''
+    )
+    $candidates = New-Object 'System.Collections.Generic.List[object]'
+    $canonicalVideoUrl = Get-StringValue -Data $Record -Name 'canonical_video_url' -DefaultValue ''
+    $preferredMethod = if ($PlatformName -eq 'xiaohongshu') { 'xiaohongshu-extractor' } else { 'playwright' }
+    Add-ResolvedMediaCandidate -Candidates $candidates -Url $canonicalVideoUrl -Source 'canonical_video_url' -Method $preferredMethod -Priority 10
+    foreach ($candidate in @(Get-StringArrayValue -Data $Record -Name 'candidate_video_refs')) {
+        Add-ResolvedMediaCandidate -Candidates $candidates -Url $candidate -Source 'candidate_video_refs' -Method $preferredMethod -Priority 20
+    }
+    foreach ($candidate in @(Get-StringArrayValue -Data $Record -Name 'videos')) {
+        Add-ResolvedMediaCandidate -Candidates $candidates -Url $candidate -Source 'videos' -Method $preferredMethod -Priority 30
+    }
+    return @($candidates | Sort-Object priority, source, url)
+}
+
+function Invoke-ResolvedMediaCandidatesDownload {
+    param(
+        [object[]]$Candidates,
+        [string]$AttachmentDirectory,
+        [string]$Referer,
+        [string]$Origin,
+        [string]$CookieHeader,
+        [System.Collections.Generic.List[string]]$Errors,
+        [System.Collections.Generic.List[string]]$Fallbacks
+    )
+    foreach ($candidate in @($Candidates)) {
+        if ($null -eq $candidate) { continue }
+        $candidateUrl = [string]$candidate.url
+        if (-not (Test-HasValue $candidateUrl)) { continue }
+        try {
+            $sourceName = Get-StringValue -Data $candidate -Name 'source' -DefaultValue 'resolved'
+            $methodName = Get-StringValue -Data $candidate -Name 'method' -DefaultValue 'direct'
+            $sanitizedSource = ($sourceName -replace '[^a-zA-Z0-9_-]', '-').ToLowerInvariant()
+            if (-not (Test-HasValue $sanitizedSource)) { $sanitizedSource = 'resolved' }
+            $extension = Get-DownloadFileExtension -Url $candidateUrl
+            $destinationPath = Join-Path $AttachmentDirectory ("video-" + $sanitizedSource + $extension)
+            Invoke-DirectMediaDownload -Url $candidateUrl -DestinationPath $destinationPath -Referer $Referer -Origin $Origin -CookieHeader $CookieHeader
+            if ((Test-Path $destinationPath) -and ((Get-Item -LiteralPath $destinationPath).Length -gt 0)) {
+                return [ordered]@{
+                    success = $true
+                    video_file = Get-Item -LiteralPath $destinationPath
+                    download_method = $methodName
+                    resolved_from = $sourceName
+                    resolved_url = $candidateUrl
+                }
+            }
+        } catch {
+            if ($null -ne $Errors) {
+                $Errors.Add("Resolved media download failed for candidate ref: $candidateUrl")
+            }
+        }
+    }
+
+    return [ordered]@{
+        success = $false
+        video_file = $null
+        download_method = 'none'
+        resolved_from = ''
+        resolved_url = ''
+    }
+}
+
+function Invoke-PlatformMediaBackend {
+    param(
+        [string]$PlatformName,
+        [string]$Command,
+        [string]$ScriptPath,
+        [string]$SourceUrl,
+        [string]$NormalizedUrl,
+        [string]$CaptureId,
+        [string]$AttachmentDirectory,
+        [string]$CookiesPath,
+        [string]$StorageState,
+        [string]$ServerUrl,
+        [int]$TimeoutMs,
+        [bool]$SaveBackendPayload
+    )
+    if ($PlatformName -eq 'xiaohongshu') {
+        $result = Invoke-XiaohongshuAdapter `
+            -Command $Command `
+            -ScriptPath $ScriptPath `
+            -SourceUrl $SourceUrl `
+            -NormalizedUrl $NormalizedUrl `
+            -CaptureId $CaptureId `
+            -AttachmentDirectory $AttachmentDirectory `
+            -CookiesPath $CookiesPath `
+            -StorageState $StorageState `
+            -ServerUrl $ServerUrl `
+            -TimeoutMs $TimeoutMs `
+            -SaveBackendPayload $SaveBackendPayload
+        return [ordered]@{
+            attempted = $true
+            backend_name = 'xhs-downloader'
+            backend_status = Get-StringValue -Data $result -Name 'download_status' -DefaultValue ''
+            backend_error_code = Get-StringValue -Data $result -Name 'backend_error_code' -DefaultValue ''
+            backend_error_message = Get-StringValue -Data $result -Name 'backend_error_message' -DefaultValue ''
+            backend_payload_path = Get-StringValue -Data $result -Name 'backend_payload_path' -DefaultValue ''
+            backend_status_code = $(try { [int](Get-DataValue -Data $result -Name 'backend_status_code') } catch { 0 })
+            download_status = Get-StringValue -Data $result -Name 'download_status' -DefaultValue ''
+            download_method = Get-StringValue -Data $result -Name 'download_method' -DefaultValue ''
+            video_path = Get-StringValue -Data $result -Name 'video_path' -DefaultValue ''
+            errors = @((Get-DataValue -Data $result -Name 'errors'))
+            fallbacks = @((Get-DataValue -Data $result -Name 'fallbacks'))
+            resolved_media_candidates = @()
+        }
+    }
+
+    return [ordered]@{
+        attempted = $false
+        backend_name = ''
+        backend_status = ''
+        backend_error_code = ''
+        backend_error_message = ''
+        backend_payload_path = ''
+        backend_status_code = 0
+        download_status = ''
+        download_method = ''
+        video_path = ''
+        errors = @()
+        fallbacks = @()
+        resolved_media_candidates = @()
+    }
+}
+
 function Get-VideoFile {
     param([string]$Directory)
     Get-ChildItem -LiteralPath $Directory -File -ErrorAction SilentlyContinue |
@@ -479,6 +630,19 @@ $xiaohongshuAdapterErrorCode = ''
 $xiaohongshuAdapterErrorMessage = ''
 $xiaohongshuAdapterPayloadPath = ''
 $xiaohongshuAdapterStatusCode = 0
+$mediaBackendAttempted = $false
+$mediaBackendName = ''
+$mediaBackendStatus = ''
+$mediaBackendErrorCode = ''
+$mediaBackendErrorMessage = ''
+$mediaBackendPayloadPath = ''
+$mediaBackendStatusCode = 0
+$mediaBackendTriggerReason = ''
+$resolvedMediaCandidates = @()
+$resolvedMediaFrom = ''
+$resolvedMediaUrl = ''
+$resolvedMediaDownloadAttempted = $false
+$resolvedMediaDownloadFailed = $false
 
 $storageStateAvailable = ((Test-HasValue $StorageStatePath) -and (Test-Path $StorageStatePath))
 $cookiesFileAvailable = ((Test-HasValue $CookiesFile) -and (Test-Path $CookiesFile))
@@ -578,41 +742,45 @@ if (-not $shouldSkipDownload) {
     $ytMetadata = Get-YtDlpMetadata -Command $YtDlpCommand -Url $downloadUrl -ExtraArgs $ytDlpAuthArgs
 }
 
-if ($null -eq $videoFile -and -not $shouldSkipDownload -and $Platform -eq 'xiaohongshu') {
-    $preferredCandidates = @()
-    $canonicalVideoUrl = Get-StringValue -Data $record -Name 'canonical_video_url' -DefaultValue ''
-    if (Test-HasValue $canonicalVideoUrl) { $preferredCandidates += $canonicalVideoUrl }
-    $preferredCandidates += Get-StringArrayValue -Data $record -Name 'candidate_video_refs'
-    if (@($preferredCandidates).Count -eq 0) {
-        $preferredCandidates += Get-StringArrayValue -Data $record -Name 'videos'
-    }
-    foreach ($candidate in $preferredCandidates) {
-        if (-not (Test-HasValue $candidate)) { continue }
-        if ($candidate.StartsWith('blob:')) { continue }
-        if (-not $candidate.StartsWith('http')) { continue }
-        try {
-            $extension = Get-DownloadFileExtension -Url $candidate
-            $directVideoPath = Join-Path $attachmentDir ("video-xiaohongshu-extractor" + $extension)
-            Invoke-DirectMediaDownload -Url $candidate -DestinationPath $directVideoPath -Referer $downloadReferer -Origin $downloadOrigin -CookieHeader $cookieHeader
-            if ((Test-Path $directVideoPath) -and ((Get-Item -LiteralPath $directVideoPath).Length -gt 0)) {
-                $videoFile = Get-Item -LiteralPath $directVideoPath
-                $downloadMethod = 'xiaohongshu-extractor'
-                $downloadStatus = 'success'
-                $fallbacks.Add('xiaohongshu_extractor_media')
-                break
-            }
-        } catch {
-            $errors.Add("Xiaohongshu extractor media download failed for candidate ref: $candidate")
+$resolvedMediaCandidates = Get-ResolvedMediaCandidatesFromRecord -Record $record -PlatformName $Platform
+
+if ($null -eq $videoFile -and -not $shouldSkipDownload) {
+    $resolvedMediaDownloadAttempted = (@($resolvedMediaCandidates).Count -gt 0)
+    $resolvedMediaResult = Invoke-ResolvedMediaCandidatesDownload `
+        -Candidates $resolvedMediaCandidates `
+        -AttachmentDirectory $attachmentDir `
+        -Referer $downloadReferer `
+        -Origin $downloadOrigin `
+        -CookieHeader $cookieHeader `
+        -Errors $errors `
+        -Fallbacks $fallbacks
+    if ($resolvedMediaResult.success -eq $true) {
+        $videoFile = $resolvedMediaResult.video_file
+        $downloadMethod = [string]$resolvedMediaResult.download_method
+        $downloadStatus = 'success'
+        $resolvedMediaFrom = [string]$resolvedMediaResult.resolved_from
+        $resolvedMediaUrl = [string]$resolvedMediaResult.resolved_url
+        if (Test-HasValue $resolvedMediaFrom) {
+            $fallbacks.Add("resolved_media:$resolvedMediaFrom")
         }
+    } elseif ($resolvedMediaDownloadAttempted) {
+        $resolvedMediaDownloadFailed = $true
     }
 }
 
 if ($null -eq $videoFile -and -not $shouldSkipDownload -and $Platform -eq 'xiaohongshu') {
-    $xiaohongshuAdapterAttempted = $true
+    if (@($resolvedMediaCandidates).Count -eq 0) {
+        $mediaBackendTriggerReason = 'resolved_media_missing'
+    } elseif ($resolvedMediaDownloadFailed) {
+        $mediaBackendTriggerReason = 'resolved_media_download_failed'
+    } else {
+        $mediaBackendTriggerReason = 'fallback_requested'
+    }
     if (-not (Test-HasValue $XiaohongshuAdapterScriptPath)) {
         $XiaohongshuAdapterScriptPath = Join-Path $PSScriptRoot 'xiaohongshu_downloader_adapter.py'
     }
-    $adapterResult = Invoke-XiaohongshuAdapter `
+    $backendResult = Invoke-PlatformMediaBackend `
+        -PlatformName $Platform `
         -Command $XiaohongshuAdapterCommand `
         -ScriptPath $XiaohongshuAdapterScriptPath `
         -SourceUrl $SourceUrl `
@@ -625,61 +793,34 @@ if ($null -eq $videoFile -and -not $shouldSkipDownload -and $Platform -eq 'xiaoh
         -TimeoutMs $XiaohongshuAdapterTimeoutMs `
         -SaveBackendPayload $XiaohongshuAdapterSaveBackendPayload
 
-    $xiaohongshuAdapterStatus = Get-StringValue -Data $adapterResult -Name 'download_status' -DefaultValue ''
-    $xiaohongshuAdapterErrorCode = Get-StringValue -Data $adapterResult -Name 'backend_error_code' -DefaultValue ''
-    $xiaohongshuAdapterErrorMessage = Get-StringValue -Data $adapterResult -Name 'backend_error_message' -DefaultValue ''
-    $xiaohongshuAdapterPayloadPath = Get-StringValue -Data $adapterResult -Name 'backend_payload_path' -DefaultValue ''
+    $mediaBackendAttempted = [bool]$backendResult.attempted
+    $mediaBackendName = Get-StringValue -Data $backendResult -Name 'backend_name' -DefaultValue ''
+    $mediaBackendStatus = Get-StringValue -Data $backendResult -Name 'backend_status' -DefaultValue ''
+    $mediaBackendErrorCode = Get-StringValue -Data $backendResult -Name 'backend_error_code' -DefaultValue ''
+    $mediaBackendErrorMessage = Get-StringValue -Data $backendResult -Name 'backend_error_message' -DefaultValue ''
+    $mediaBackendPayloadPath = Get-StringValue -Data $backendResult -Name 'backend_payload_path' -DefaultValue ''
     try {
-        $xiaohongshuAdapterStatusCode = [int](Get-DataValue -Data $adapterResult -Name 'backend_status_code')
+        $mediaBackendStatusCode = [int](Get-DataValue -Data $backendResult -Name 'backend_status_code')
     } catch {
-        $xiaohongshuAdapterStatusCode = 0
+        $mediaBackendStatusCode = 0
     }
 
-    foreach ($adapterError in @(Get-DataValue -Data $adapterResult -Name 'errors')) {
+    foreach ($adapterError in @(Get-DataValue -Data $backendResult -Name 'errors')) {
         if (Test-HasValue ([string]$adapterError)) { $errors.Add([string]$adapterError) }
     }
-    foreach ($adapterFallback in @(Get-DataValue -Data $adapterResult -Name 'fallbacks')) {
+    foreach ($adapterFallback in @(Get-DataValue -Data $backendResult -Name 'fallbacks')) {
         if (Test-HasValue ([string]$adapterFallback)) { $fallbacks.Add([string]$adapterFallback) }
     }
 
-    $adapterVideoPath = Get-StringValue -Data $adapterResult -Name 'video_path' -DefaultValue ''
-    if ((Get-StringValue -Data $adapterResult -Name 'download_method' -DefaultValue '') -eq 'xhs-downloader' -and (Test-HasValue $adapterVideoPath) -and (Test-Path $adapterVideoPath)) {
+    $adapterVideoPath = Get-StringValue -Data $backendResult -Name 'video_path' -DefaultValue ''
+    if (Test-HasValue $adapterVideoPath -and (Test-Path $adapterVideoPath)) {
         $videoFile = Get-Item -LiteralPath $adapterVideoPath
-        $downloadMethod = 'xhs-downloader'
+        $downloadMethod = Get-StringValue -Data $backendResult -Name 'download_method' -DefaultValue 'backend'
         $downloadStatus = 'success'
-    }
-}
-
-if ($null -eq $videoFile -and -not $shouldSkipDownload -and $Platform -eq 'xiaohongshu') {
-    $candidateRefs = @()
-    $candidateRefs += Get-StringArrayValue -Data $record -Name 'candidate_video_refs'
-    if (@($candidateRefs).Count -eq 0) {
-        $candidateRefs += Get-StringArrayValue -Data $record -Name 'videos'
-    }
-    foreach ($candidate in $candidateRefs) {
-        if (-not (Test-HasValue $candidate)) { continue }
-        if ($candidate.StartsWith('blob:')) { continue }
-        if (-not $candidate.StartsWith('http')) { continue }
-        try {
-            $extension = Get-DownloadFileExtension -Url $candidate
-            $fallbackVideoPath = Join-Path $attachmentDir ("video-playwright" + $extension)
-            $headers = @{
-                'Referer' = $downloadReferer
-                'User-Agent' = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
-            }
-            if (Test-HasValue $downloadOrigin) {
-                $headers['Origin'] = $downloadOrigin
-            }
-            Invoke-WebRequest -Uri $candidate -OutFile $fallbackVideoPath -Headers $headers -UseBasicParsing
-            if ((Test-Path $fallbackVideoPath) -and ((Get-Item -LiteralPath $fallbackVideoPath).Length -gt 0)) {
-                $videoFile = Get-Item -LiteralPath $fallbackVideoPath
-                $downloadMethod = 'playwright'
-                $downloadStatus = 'success'
-                $fallbacks.Add('playwright_candidate_ref')
-                break
-            }
-        } catch {
-            $errors.Add("Playwright fallback failed for candidate ref: $candidate")
+        $resolvedMediaFrom = if (Test-HasValue $mediaBackendName) { "backend:$mediaBackendName" } else { 'backend' }
+        $resolvedMediaUrl = ''
+        if (Test-HasValue $mediaBackendName) {
+            $fallbacks.Add("media_backend:$mediaBackendName")
         }
     }
 }
@@ -696,33 +837,6 @@ if ($null -eq $videoFile -and -not $shouldSkipDownload) {
     } catch {
         $errors.Add($_.Exception.Message)
         $fallbacks.Add('yt-dlp_failed')
-    }
-}
-
-if ($null -eq $videoFile -and -not $shouldSkipDownload -and $Platform -ne 'xiaohongshu') {
-    $candidateRefs = @()
-    $candidateRefs += Get-StringArrayValue -Data $record -Name 'candidate_video_refs'
-    if (@($candidateRefs).Count -eq 0) {
-        $candidateRefs += Get-StringArrayValue -Data $record -Name 'videos'
-    }
-    foreach ($candidate in $candidateRefs) {
-        if (-not (Test-HasValue $candidate)) { continue }
-        if ($candidate.StartsWith('blob:')) { continue }
-        if (-not $candidate.StartsWith('http')) { continue }
-        try {
-            $extension = Get-DownloadFileExtension -Url $candidate
-            $fallbackVideoPath = Join-Path $attachmentDir ("video-playwright" + $extension)
-            Invoke-DirectMediaDownload -Url $candidate -DestinationPath $fallbackVideoPath -Referer $downloadReferer -Origin $downloadOrigin -CookieHeader $cookieHeader
-            if ((Test-Path $fallbackVideoPath) -and ((Get-Item -LiteralPath $fallbackVideoPath).Length -gt 0)) {
-                $videoFile = Get-Item -LiteralPath $fallbackVideoPath
-                $downloadMethod = 'playwright'
-                $downloadStatus = 'success'
-                $fallbacks.Add('playwright_candidate_ref')
-                break
-            }
-        } catch {
-            $errors.Add("Playwright fallback failed for candidate ref: $candidate")
-        }
     }
 }
 
@@ -746,6 +860,15 @@ if (-not $shouldSkipDownload -and (Test-IsAuthRefreshRequired -Errors @($errors)
     $authRefreshCommand = ('python "{0}" --platform douyin' -f (Join-Path $PSScriptRoot 'bootstrap_social_auth.py'))
     $authGuidanceEn = 'Douyin auth appears expired or missing. Refresh local auth and retry. Running the refresh command will open a browser window for login.'
     $authGuidanceZh = Zh '\u6296\u97f3\u767b\u5f55\u6001\u7591\u4f3c\u5df2\u8fc7\u671f\u6216\u7f3a\u5931\u3002\u8bf7\u5148\u5237\u65b0\u672c\u5730\u767b\u5f55\u6001\uff0c\u518d\u91cd\u65b0\u8fd0\u884c\u3002\u6267\u884c\u5237\u65b0\u547d\u4ee4\u65f6\u4f1a\u6253\u5f00\u6d4f\u89c8\u5668\u7528\u4e8e\u767b\u5f55\u3002'
+}
+
+if ($mediaBackendAttempted -and $mediaBackendName -eq 'xhs-downloader') {
+    $xiaohongshuAdapterAttempted = $true
+    $xiaohongshuAdapterStatus = $mediaBackendStatus
+    $xiaohongshuAdapterErrorCode = $mediaBackendErrorCode
+    $xiaohongshuAdapterErrorMessage = $mediaBackendErrorMessage
+    $xiaohongshuAdapterPayloadPath = $mediaBackendPayloadPath
+    $xiaohongshuAdapterStatusCode = $mediaBackendStatusCode
 }
 
 $coverUrl = Get-StringValue -Data $record -Name 'cover_url' -DefaultValue ''
@@ -797,9 +920,13 @@ $sidecarCaptureRelative = Get-NormalizedRelativePath -BasePath $VaultPath -Targe
 $sidecarCommentsRelative = Get-NormalizedRelativePath -BasePath $VaultPath -TargetPath $sidecarCommentsPath
 $sidecarMetadataRelative = Get-NormalizedRelativePath -BasePath $VaultPath -TargetPath $sidecarMetadataPath
 $xiaohongshuAdapterPayloadRelative = if (Test-HasValue $xiaohongshuAdapterPayloadPath) { Get-NormalizedRelativePath -BasePath $VaultPath -TargetPath $xiaohongshuAdapterPayloadPath } else { '' }
+$mediaBackendPayloadRelative = if (Test-HasValue $mediaBackendPayloadPath) { Get-NormalizedRelativePath -BasePath $VaultPath -TargetPath $mediaBackendPayloadPath } else { '' }
 
 Set-DataValue -Data $record -Name 'download_status' -Value $downloadStatus
 Set-DataValue -Data $record -Name 'download_method' -Value $downloadMethod
+Set-DataValue -Data $record -Name 'resolved_media_candidates' -Value @($resolvedMediaCandidates)
+Set-DataValue -Data $record -Name 'resolved_media_source' -Value $resolvedMediaFrom
+Set-DataValue -Data $record -Name 'resolved_media_url' -Value $resolvedMediaUrl
 Set-DataValue -Data $record -Name 'media_downloaded' -Value ([bool]($null -ne $videoFile))
 Set-DataValue -Data $record -Name 'video_path' -Value $videoPathRelative
 Set-DataValue -Data $record -Name 'video_storage_url' -Value ''
@@ -822,6 +949,14 @@ Set-DataValue -Data $record -Name 'auth_failure_reason' -Value $authFailureReaso
 Set-DataValue -Data $record -Name 'auth_refresh_command' -Value $authRefreshCommand
 Set-DataValue -Data $record -Name 'auth_guidance_en' -Value $authGuidanceEn
 Set-DataValue -Data $record -Name 'auth_guidance_zh' -Value $authGuidanceZh
+Set-DataValue -Data $record -Name 'media_backend_attempted' -Value $mediaBackendAttempted
+Set-DataValue -Data $record -Name 'media_backend_name' -Value $mediaBackendName
+Set-DataValue -Data $record -Name 'media_backend_status' -Value $mediaBackendStatus
+Set-DataValue -Data $record -Name 'media_backend_error_code' -Value $mediaBackendErrorCode
+Set-DataValue -Data $record -Name 'media_backend_error_message' -Value $mediaBackendErrorMessage
+Set-DataValue -Data $record -Name 'media_backend_payload_path' -Value $mediaBackendPayloadRelative
+Set-DataValue -Data $record -Name 'media_backend_status_code' -Value $mediaBackendStatusCode
+Set-DataValue -Data $record -Name 'media_backend_trigger_reason' -Value $mediaBackendTriggerReason
 Set-DataValue -Data $record -Name 'xiaohongshu_adapter_attempted' -Value $xiaohongshuAdapterAttempted
 Set-DataValue -Data $record -Name 'xiaohongshu_adapter_status' -Value $xiaohongshuAdapterStatus
 Set-DataValue -Data $record -Name 'xiaohongshu_adapter_error_code' -Value $xiaohongshuAdapterErrorCode
@@ -846,6 +981,8 @@ foreach ($pair in @(
     @{ Name = 'capture_id'; Value = $captureId },
     @{ Name = 'download_status'; Value = $downloadStatus },
     @{ Name = 'download_method'; Value = $downloadMethod },
+    @{ Name = 'resolved_media_source'; Value = $resolvedMediaFrom },
+    @{ Name = 'resolved_media_url'; Value = $resolvedMediaUrl },
     @{ Name = 'media_downloaded'; Value = ([bool]($null -ne $videoFile)) },
     @{ Name = 'video_path'; Value = $videoPathRelative },
     @{ Name = 'cover_path'; Value = $coverPathRelative },
@@ -865,6 +1002,14 @@ foreach ($pair in @(
     @{ Name = 'auth_refresh_command'; Value = $authRefreshCommand },
     @{ Name = 'auth_guidance_en'; Value = $authGuidanceEn },
     @{ Name = 'auth_guidance_zh'; Value = $authGuidanceZh },
+    @{ Name = 'media_backend_attempted'; Value = $mediaBackendAttempted },
+    @{ Name = 'media_backend_name'; Value = $mediaBackendName },
+    @{ Name = 'media_backend_status'; Value = $mediaBackendStatus },
+    @{ Name = 'media_backend_error_code'; Value = $mediaBackendErrorCode },
+    @{ Name = 'media_backend_error_message'; Value = $mediaBackendErrorMessage },
+    @{ Name = 'media_backend_payload_path'; Value = $mediaBackendPayloadRelative },
+    @{ Name = 'media_backend_status_code'; Value = $mediaBackendStatusCode },
+    @{ Name = 'media_backend_trigger_reason'; Value = $mediaBackendTriggerReason },
     @{ Name = 'xiaohongshu_adapter_attempted'; Value = $xiaohongshuAdapterAttempted },
     @{ Name = 'xiaohongshu_adapter_status'; Value = $xiaohongshuAdapterStatus },
     @{ Name = 'xiaohongshu_adapter_error_code'; Value = $xiaohongshuAdapterErrorCode },
@@ -882,6 +1027,9 @@ $metadataPayload = [ordered]@{
     downloaded_at = (Get-Date).ToString('o')
     download_status = $downloadStatus
     download_method = $downloadMethod
+    resolved_media_source = $resolvedMediaFrom
+    resolved_media_url = $resolvedMediaUrl
+    resolved_media_candidates = @($resolvedMediaCandidates)
     video_path = $videoPathRelative
     cover_path = $coverPathRelative
     video_size_bytes = $videoSizeBytes
@@ -897,6 +1045,14 @@ $metadataPayload = [ordered]@{
     auth_refresh_command = $authRefreshCommand
     auth_guidance_en = $authGuidanceEn
     auth_guidance_zh = $authGuidanceZh
+    media_backend_attempted = $mediaBackendAttempted
+    media_backend_name = $mediaBackendName
+    media_backend_status = $mediaBackendStatus
+    media_backend_error_code = $mediaBackendErrorCode
+    media_backend_error_message = $mediaBackendErrorMessage
+    media_backend_payload_path = $mediaBackendPayloadRelative
+    media_backend_status_code = $mediaBackendStatusCode
+    media_backend_trigger_reason = $mediaBackendTriggerReason
     xiaohongshu_adapter_attempted = $xiaohongshuAdapterAttempted
     xiaohongshu_adapter_status = $xiaohongshuAdapterStatus
     xiaohongshu_adapter_error_code = $xiaohongshuAdapterErrorCode
