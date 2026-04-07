@@ -138,6 +138,11 @@ def is_social_short_video(detection: dict[str, Any]) -> bool:
     return detection.get("route") == "social" and detection.get("content_type") == "short_video"
 
 
+def should_embed_local_video(detection: dict[str, Any], capture: dict[str, Any]) -> bool:
+    video_path = string_value(capture.get("video_path"), nested_value(capture, "metadata", "video_path"))
+    return has_value(video_path) and detection.get("route") == "social"
+
+
 def collect_top_comments(capture: dict[str, Any]) -> list[str]:
     top_comments = [string_value(item) for item in capture.get("top_comments") or [] if has_value(item)]
     if not top_comments:
@@ -363,7 +368,7 @@ def render_note(config: dict[str, Any], detection: dict[str, Any], capture: dict
         "",
     ])
 
-    if is_social_short_video(detection):
+    if should_embed_local_video(detection, capture):
         lines.extend(["## 视频内容", f"![[{video_path}]]" if has_value(video_path) else "- 当前未落到本地 mp4 文件。"])
         if has_value(video_path):
             lines.extend([
@@ -386,7 +391,7 @@ def render_note(config: dict[str, Any], detection: dict[str, Any], capture: dict
     lines.extend([f"- {item}" for item in top_comments] if top_comments else ["- 未抓取到可展示评论。"])
     lines.extend(["", "## 附件索引", *attachment_lines(capture)])
 
-    if not is_social_short_video(detection):
+    if not should_embed_local_video(detection, capture):
         lines.extend(["", "## 图片链接", *images_text(capture), "", "## 视频链接", *videos_text(capture)])
 
     lines.extend(["", "## 采集状态", *status_lines(capture)])

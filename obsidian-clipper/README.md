@@ -7,6 +7,8 @@
 ## Change Log
 
 - 2026-04-07
+  - local social videos are now embedded whenever a social clipping has a local ideo_path, even if the detected content_type is social_post
+- 2026-04-07
   - documented the OpenClaw routing hardening for Feishu clipping requests so Xiaohongshu and Douyin share links should not fall through to obsidian-archiver or web_fetch
 - `2026-04-07`
   - documented the Step 7 removal-readiness assessment for the Xiaohongshu fallback backend
@@ -198,4 +200,5 @@ Preferred files to share first:
 - if you need the note, clipper alone is enough
 - if you need the Xiaohongshu video file to land locally, keep `XHS-Downloader` running
 - if Feishu behavior does not match this repo, verify the OpenClaw runtime copy under `C:\Users\<user>\.openclaw\workspace\skills\obsidian-clipper`
+
 
