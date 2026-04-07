@@ -1,4 +1,4 @@
-# Obsidian Skillkit
+﻿# Obsidian Skillkit
 
 ## Document Status
 
@@ -6,6 +6,8 @@
 
 ## Change Log
 
+- 2026-04-07
+  - hardened OpenClaw routing guidance so Feishu 剪藏 + xhslink / xiaohongshu / douyin requests should go to obsidian-clipper instead of generic web archiving
 - `2026-04-07`
   - documented the Step 7 readiness decision for whether Xiaohongshu can remove the fallback backend today
 - `2026-04-07`
@@ -120,3 +122,4 @@ For social validation runs:
 - [Analyzer README](E:\Codex_project\obsidian-skillkit\obsidian-analyzer\README.md)
 - [OpenClaw Short-Video Integration](E:\Codex_project\obsidian-skillkit\openclaw-short-video-integration.md)
 - [iOS Shortcuts Gateway README](E:\Codex_project\obsidian-skillkit\ios-shortcuts-gateway\README.md)
+

@@ -1,6 +1,6 @@
----
+﻿---
 name: obsidian-archiver
-description: Legacy one-step x-reader based archival workflow for Obsidian. Use mainly for compatibility or migration support, not as the primary path for new two-stage development.
+description: Legacy one-step x-reader based archival workflow for generic webpages and documents. Do not use for Douyin/Xiaohongshu share links or copied social share text; those belong to obsidian-clipper.
 ---
 
 # Obsidian Archiver (Legacy)
@@ -44,3 +44,12 @@ If this legacy skill is still used, it should:
 - write the note into Obsidian
 
 It should not be the base for new feature expansion unless the user explicitly chooses to keep the legacy path.
+
+## Do not use this skill when
+
+- the input is a Douyin or Xiaohongshu share link
+- the input contains copied share text from a social app
+- the user says `剪藏`, `剪藏视频`, `保存链接`, or `收录视频` and the source is a short-social platform
+- the source domain is `xhslink.com`, `xiaohongshu.com`, `douyin.com`, or `iesdouyin.com`
+
+In all of those cases, route to `obsidian-clipper` instead.

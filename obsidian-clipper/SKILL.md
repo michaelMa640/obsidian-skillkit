@@ -1,6 +1,6 @@
----
+﻿---
 name: obsidian-clipper
-description: Quickly clip a URL or share text into an Obsidian vault as a reusable raw-content note. Use when OpenClaw should save a link into Clippings first, preserve source facts, and prepare analyzer-ready records.
+description: Primary clipping route for Douyin/Xiaohongshu social share links and share text. Use when OpenClaw should save a link into Clippings first, preserve source facts, and prepare analyzer-ready records. This skill should win over obsidian-archiver for xhslink, xiaohongshu, douyin, and copied social share text.
 ---
 
 # Obsidian Clipper
@@ -9,6 +9,8 @@ description: Quickly clip a URL or share text into an Obsidian vault as a reusab
 
 - the user wants to clip, save, archive, or collect a link into Obsidian
 - the user provides a raw URL or a full share-text block copied from Douyin / Xiaohongshu
+- the link is from `xhslink.com`, `xiaohongshu.com`, `douyin.com`, `iesdouyin.com`, or another short-social share domain
+- the content is a Xiaohongshu note, post, or share page even if it looks like an article instead of a short video
 - the user wants a stored clipping note first, before any deeper analysis
 
 ## Do not use this skill when
@@ -20,6 +22,10 @@ description: Quickly clip a URL or share text into an Obsidian vault as a reusab
 
 - User intent like `剪藏`, `保存链接`, `收录视频`, `保存到 Obsidian` should call this skill directly.
 - Explicit entry prefixes like `剪藏视频：` or `剪藏：` should call this skill directly.
+- If the input contains a Douyin / Xiaohongshu share link or copied share text, do not route to `obsidian-archiver`, `web_fetch`, or a direct `write` flow first.
+- For `xhslink.com`, `xiaohongshu.com`, `douyin.com`, and copied app-share blocks, this skill must be treated as the default clipping entry even when the page looks like an article, note, or mixed media post.
+- Do not classify Xiaohongshu note links as generic web articles just because the title or body reads like an article.
+- Do not create a manual summary note when this skill should have been used. First run the clipper, then summarize or analyze from the returned clipping record if needed.
 - If the user intent contains `拆解`, `分析`, `爆款拆解`, or `分析视频`, and the input is a raw URL or share text, do not stop after clipping.
 - In that case, this skill is stage 1 of a two-stage workflow:
   - first create the clipping note
