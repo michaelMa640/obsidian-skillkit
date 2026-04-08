@@ -34,5 +34,6 @@
 ### `podcast`
 - Tooling: built-in page metadata capture in `run_clipper.ps1`
 - Preferred assets: title, description, show notes, transcript link hints, RSS hints, audio enclosure hints
+- Phase 1 capture result: stable `capture_id`, page + RSS merged metadata, Obsidian note, and podcast sidecars under `Attachments/Podcasts/{platform}/{capture_id}/`
 - Fallback: minimal clipping with network/error summary
 - Analyzer intent: `learn`, not `analyze`

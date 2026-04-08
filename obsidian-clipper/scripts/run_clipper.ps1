@@ -467,6 +467,7 @@ function Remove-LocalTempDirectory {
 function Clean-SubtitleText {
     param([string]$Text)
     $cleaned = $Text -replace '\uFEFF', ''
+    $cleaned = $cleaned.TrimStart([char]0xFEFF, [char]0x200B, [char]0x00EF, [char]0x00BB, [char]0x00BF)
     $cleaned = $cleaned -replace '(?m)^WEBVTT.*$', ''
     $cleaned = $cleaned -replace '(?m)^Kind:.*$', ''
     $cleaned = $cleaned -replace '(?m)^Language:.*$', ''
@@ -722,6 +723,306 @@ function Resolve-AbsoluteUrl {
     param([string]$BaseUrl, [string]$Candidate)
     if (-not (Test-HasValue $Candidate)) { return '' }
     try { return [System.Uri]::new([System.Uri]$BaseUrl, $Candidate).AbsoluteUri } catch { return $Candidate }
+}
+
+function Get-NormalizedContentUrl {
+    param([string]$Url)
+    if (-not (Test-HasValue $Url)) { return '' }
+    try {
+        $builder = [System.UriBuilder]::new([System.Uri]$Url)
+        $builder.Query = ''
+        $builder.Fragment = ''
+        $normalized = $builder.Uri.AbsoluteUri
+        if ($normalized.EndsWith('/')) { return $normalized.TrimEnd('/') }
+        return $normalized
+    } catch {
+        return $Url
+    }
+}
+
+function Get-Sha256Hex {
+    param([string]$Text)
+    if (-not (Test-HasValue $Text)) { return '' }
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($Text)
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $hash = $sha256.ComputeHash($bytes)
+        return (-join ($hash | ForEach-Object { $_.ToString('x2') }))
+    } finally {
+        $sha256.Dispose()
+    }
+}
+
+function Get-XiaoyuzhouEpisodeIdFromUrl {
+    param([string]$Url)
+    if (-not (Test-HasValue $Url)) { return '' }
+    try {
+        $uri = [System.Uri]$Url
+        $episodeMatch = [regex]::Match($uri.AbsolutePath, '/episode/(?<id>[A-Za-z0-9]+)')
+        if ($episodeMatch.Success) { return $episodeMatch.Groups['id'].Value }
+        foreach ($queryKey in @('eid', 'episodeId', 'episode_id', 'id')) {
+            $queryValue = Get-QueryParameterValue -Query $uri.Query -Name $queryKey
+            if (Test-HasValue $queryValue) { return $queryValue }
+        }
+    } catch {
+    }
+    ''
+}
+
+function New-PodcastIdentity {
+    param(
+        [string]$Url,
+        [string]$Platform = 'podcast',
+        [string]$SourceItemId = ''
+    )
+    $normalizedUrl = Get-NormalizedContentUrl -Url $Url
+    $resolvedSourceItemId = if (Test-HasValue $SourceItemId) { $SourceItemId } elseif ($Platform -eq 'xiaoyuzhou') { Get-XiaoyuzhouEpisodeIdFromUrl -Url $normalizedUrl } else { '' }
+    $captureKey = if (Test-HasValue $resolvedSourceItemId) { "${Platform}:$resolvedSourceItemId" } else { "${Platform}:$normalizedUrl" }
+    $captureHash = Get-Sha256Hex -Text $captureKey
+    [pscustomobject]@{
+        normalized_url = $normalizedUrl
+        source_item_id = $resolvedSourceItemId
+        capture_key = $captureKey
+        capture_id = if (Test-HasValue $captureHash) { "${Platform}_$($captureHash.Substring(0, 16))" } else { '' }
+    }
+}
+
+function Get-ComparableTitle {
+    param([string]$Text)
+    if (-not (Test-HasValue $Text)) { return '' }
+    $normalized = [System.Net.WebUtility]::HtmlDecode([string]$Text)
+    $normalized = $normalized -replace '\s+', ' '
+    $normalized = $normalized -replace '\s+\|\s+.*$', ''
+    $normalized = $normalized -replace '\s+-\s+.*$', ''
+    $normalized.Trim().ToLowerInvariant()
+}
+
+function Get-XmlChildText {
+    param($Node, [string]$LocalName)
+    if ($null -eq $Node) { return '' }
+    $selected = $Node.SelectSingleNode("./*[local-name()='$LocalName']")
+    if ($null -ne $selected -and (Test-HasValue $selected.InnerText)) {
+        return [System.Net.WebUtility]::HtmlDecode($selected.InnerText).Trim()
+    }
+    ''
+}
+
+function Get-XmlChildAttribute {
+    param($Node, [string]$LocalName, [string]$AttributeName)
+    if ($null -eq $Node) { return '' }
+    $selected = $Node.SelectSingleNode("./*[local-name()='$LocalName']")
+    if ($null -ne $selected -and $null -ne $selected.Attributes) {
+        $attribute = $selected.Attributes[$AttributeName]
+        if ($null -ne $attribute -and (Test-HasValue $attribute.Value)) { return $attribute.Value.Trim() }
+    }
+    ''
+}
+
+function Convert-PodcastDurationToSeconds {
+    param([string]$DurationText)
+    if (-not (Test-HasValue $DurationText)) { return 0 }
+    $trimmed = $DurationText.Trim()
+    if ($trimmed -match '^\d+$') { return [int]$trimmed }
+    $parts = @($trimmed -split ':')
+    if ($parts.Count -eq 2) {
+        return ([int]$parts[0] * 60) + [int]$parts[1]
+    }
+    if ($parts.Count -eq 3) {
+        return ([int]$parts[0] * 3600) + ([int]$parts[1] * 60) + [int]$parts[2]
+    }
+    0
+}
+
+function Get-PodcastTranscriptUrlFromRssNode {
+    param($Node, [string]$BaseUrl)
+    if ($null -eq $Node) { return '' }
+    $transcriptNodes = $Node.SelectNodes("./*[local-name()='transcript']")
+    foreach ($transcriptNode in @($transcriptNodes)) {
+        if ($null -eq $transcriptNode) { continue }
+        if ($null -ne $transcriptNode.Attributes) {
+            foreach ($attributeName in @('url', 'href')) {
+                $attribute = $transcriptNode.Attributes[$attributeName]
+                if ($null -ne $attribute -and (Test-HasValue $attribute.Value)) {
+                    return (Resolve-AbsoluteUrl -BaseUrl $BaseUrl -Candidate $attribute.Value)
+                }
+            }
+        }
+        if (Test-HasValue $transcriptNode.InnerText) {
+            return (Resolve-AbsoluteUrl -BaseUrl $BaseUrl -Candidate $transcriptNode.InnerText.Trim())
+        }
+    }
+    ''
+}
+
+function Find-PodcastRssItem {
+    param(
+        $XmlDocument,
+        [string]$BaseUrl,
+        [string]$SourceItemId,
+        [string]$NormalizedEpisodeUrl,
+        [string[]]$TitleCandidates
+    )
+    if ($null -eq $XmlDocument) { return $null }
+    $items = $XmlDocument.SelectNodes("//*[local-name()='item']")
+    $cleanTitleCandidates = @($TitleCandidates | Where-Object { Test-HasValue $_ } | ForEach-Object { Get-ComparableTitle -Text $_ } | Where-Object { Test-HasValue $_ })
+    foreach ($item in @($items)) {
+        $itemLink = Resolve-AbsoluteUrl -BaseUrl $BaseUrl -Candidate (Get-XmlChildText -Node $item -LocalName 'link')
+        $itemGuid = Get-XmlChildText -Node $item -LocalName 'guid'
+        $itemTitle = Get-XmlChildText -Node $item -LocalName 'title'
+        $comparableItemTitle = Get-ComparableTitle -Text $itemTitle
+
+        if (Test-HasValue $SourceItemId) {
+            foreach ($candidate in @($itemLink, $itemGuid)) {
+                if ((Test-HasValue $candidate) -and ($candidate -match [regex]::Escape($SourceItemId))) {
+                    return [pscustomobject]@{ item = $item; match_strategy = 'source_item_id' }
+                }
+            }
+        }
+
+        if (Test-HasValue $NormalizedEpisodeUrl) {
+            foreach ($candidate in @($itemLink, $itemGuid)) {
+                if ((Test-HasValue $candidate) -and ((Get-NormalizedContentUrl -Url $candidate) -eq $NormalizedEpisodeUrl)) {
+                    return [pscustomobject]@{ item = $item; match_strategy = 'normalized_url' }
+                }
+            }
+        }
+
+        foreach ($titleCandidate in $cleanTitleCandidates) {
+            if ((Test-HasValue $titleCandidate) -and (Test-HasValue $comparableItemTitle)) {
+                if ($titleCandidate -eq $comparableItemTitle -or $titleCandidate.Contains($comparableItemTitle) -or $comparableItemTitle.Contains($titleCandidate)) {
+                    return [pscustomobject]@{ item = $item; match_strategy = 'title' }
+                }
+            }
+        }
+    }
+    $null
+}
+
+function Get-PodcastRssMetadata {
+    param(
+        [string]$RssUrl,
+        [string]$NormalizedEpisodeUrl,
+        [string]$SourceItemId,
+        [string[]]$TitleCandidates
+    )
+    if (-not (Test-HasValue $RssUrl)) { return $null }
+    try {
+        $response = Invoke-WebRequest -Uri $RssUrl -UseBasicParsing
+        $rssContent = [string]$response.Content
+        if (-not (Test-HasValue $rssContent)) { throw 'RSS feed returned empty content.' }
+        $rssContent = $rssContent.TrimStart([char]0xFEFF, [char]0x200B, [char]0x00EF, [char]0x00BB, [char]0x00BF)
+        $xml = New-Object System.Xml.XmlDocument
+        $xml.LoadXml($rssContent)
+        $channel = $xml.SelectSingleNode("//*[local-name()='channel']")
+        $match = Find-PodcastRssItem -XmlDocument $xml -BaseUrl $RssUrl -SourceItemId $SourceItemId -NormalizedEpisodeUrl $NormalizedEpisodeUrl -TitleCandidates $TitleCandidates
+        $item = if ($null -ne $match) { $match.item } else { $null }
+        $itemTitle = if ($null -ne $item) { Get-XmlChildText -Node $item -LocalName 'title' } else { '' }
+        $itemLink = if ($null -ne $item) { Resolve-AbsoluteUrl -BaseUrl $RssUrl -Candidate (Get-XmlChildText -Node $item -LocalName 'link') } else { '' }
+        $description = if ($null -ne $item) { Get-XmlChildText -Node $item -LocalName 'description' } else { '' }
+        $durationText = if ($null -ne $item) { Get-XmlChildText -Node $item -LocalName 'duration' } else { '' }
+        $channelImage = if ($null -ne $channel) { Get-XmlChildText -Node ($channel.SelectSingleNode("./*[local-name()='image']")) -LocalName 'url' } else { '' }
+        $itunesImage = if ($null -ne $channel) { Get-XmlChildAttribute -Node $channel -LocalName 'image' -AttributeName 'href' } else { '' }
+        [pscustomobject]@{
+            rss_url = $RssUrl
+            fetch_error = ''
+            item_found = ($null -ne $item)
+            match_strategy = if ($null -ne $match) { [string]$match.match_strategy } else { '' }
+            podcast_title = if ($null -ne $channel) { Get-XmlChildText -Node $channel -LocalName 'title' } else { '' }
+            podcast_author = if ($null -ne $channel) { Get-XmlChildText -Node $channel -LocalName 'author' } else { '' }
+            podcast_image = if (Test-HasValue $itunesImage) { $itunesImage } else { $channelImage }
+            episode_title = $itemTitle
+            episode_link = $itemLink
+            episode_guid = if ($null -ne $item) { Get-XmlChildText -Node $item -LocalName 'guid' } else { '' }
+            published_at = if ($null -ne $item) { Get-XmlChildText -Node $item -LocalName 'pubDate' } else { '' }
+            description = $description
+            duration_text = $durationText
+            duration_seconds = Convert-PodcastDurationToSeconds -DurationText $durationText
+            enclosure_url = if ($null -ne $item) { Resolve-AbsoluteUrl -BaseUrl $RssUrl -Candidate (Get-XmlChildAttribute -Node $item -LocalName 'enclosure' -AttributeName 'url') } else { '' }
+            transcript_url = if ($null -ne $item) { Get-PodcastTranscriptUrlFromRssNode -Node $item -BaseUrl $RssUrl } else { '' }
+        }
+    } catch {
+        [pscustomobject]@{
+            rss_url = $RssUrl
+            fetch_error = $_.Exception.Message
+            item_found = $false
+            match_strategy = ''
+            podcast_title = ''
+            podcast_author = ''
+            podcast_image = ''
+            episode_title = ''
+            episode_link = ''
+            episode_guid = ''
+            published_at = ''
+            description = ''
+            duration_text = ''
+            duration_seconds = 0
+            enclosure_url = ''
+            transcript_url = ''
+        }
+    }
+}
+
+function Get-VaultRelativePath {
+    param(
+        [string]$BasePath,
+        [string]$TargetPath
+    )
+    if (-not (Test-HasValue $BasePath) -or -not (Test-HasValue $TargetPath)) { return '' }
+    $baseUri = [System.Uri](([System.IO.Path]::GetFullPath($BasePath).TrimEnd('\', '/')) + '\')
+    $targetUri = [System.Uri]([System.IO.Path]::GetFullPath($TargetPath))
+    [System.Uri]::UnescapeDataString($baseUri.MakeRelativeUri($targetUri).ToString()).Replace('\', '/')
+}
+
+function Save-PodcastArtifacts {
+    param(
+        $Config,
+        $Capture,
+        [string]$ResolvedVaultPath
+    )
+    if (-not (Test-HasValue $ResolvedVaultPath) -or $null -eq $Capture) { return $Capture }
+    $captureId = Get-StringValue -Data $Capture -Name 'capture_id' -DefaultValue ''
+    $metadata = Get-DataValue -Data $Capture -Name 'metadata'
+    if (-not (Test-HasValue $captureId) -and $null -ne $metadata) { $captureId = Get-StringValue -Data $metadata -Name 'capture_id' -DefaultValue '' }
+    if (-not (Test-HasValue $captureId)) { return $Capture }
+
+    $attachmentsRoot = if ($null -ne $Config.clipper -and $null -ne $Config.clipper.PSObject.Properties['podcast_attachments_root'] -and (Test-HasValue ([string]$Config.clipper.podcast_attachments_root))) {
+        [string]$Config.clipper.podcast_attachments_root
+    } else {
+        'Attachments/Podcasts'
+    }
+    $platform = Get-StringValue -Data $Capture -Name 'podcast_platform' -DefaultValue ''
+    if (-not (Test-HasValue $platform)) { $platform = Get-StringValue -Data $Capture -Name 'platform' -DefaultValue 'podcast' }
+
+    $assetDirectory = Join-Path (Join-Path (Join-Path $ResolvedVaultPath $attachmentsRoot) $platform) $captureId
+    New-Item -ItemType Directory -Path $assetDirectory -Force | Out-Null
+
+    $capturePath = Join-Path $assetDirectory 'capture.json'
+    $metadataPath = Join-Path $assetDirectory 'metadata.json'
+    Write-Utf8Text -Path $capturePath -Content ($Capture | ConvertTo-Json -Depth 100)
+    if ($null -ne $metadata) {
+        Write-Utf8Text -Path $metadataPath -Content ($metadata | ConvertTo-Json -Depth 100)
+    }
+
+    $transcript = Get-StringValue -Data $Capture -Name 'transcript' -DefaultValue ''
+    $transcriptPath = ''
+    if (Test-HasValue $transcript) {
+        $transcriptPath = Join-Path $assetDirectory 'transcript.txt'
+        Write-Utf8Text -Path $transcriptPath -Content $transcript
+    }
+
+    $relativeCapturePath = Get-VaultRelativePath -BasePath $ResolvedVaultPath -TargetPath $capturePath
+    $relativeMetadataPath = Get-VaultRelativePath -BasePath $ResolvedVaultPath -TargetPath $metadataPath
+    $relativeTranscriptPath = if (Test-HasValue $transcriptPath) { Get-VaultRelativePath -BasePath $ResolvedVaultPath -TargetPath $transcriptPath } else { '' }
+
+    Set-ObjectField -Object $Capture -Name 'sidecar_path' -Value $relativeCapturePath | Out-Null
+    Set-ObjectField -Object $Capture -Name 'metadata_path' -Value $relativeMetadataPath | Out-Null
+    if (Test-HasValue $relativeTranscriptPath) { Set-ObjectField -Object $Capture -Name 'transcript_path' -Value $relativeTranscriptPath | Out-Null }
+    if ($null -ne $metadata) {
+        Set-ObjectField -Object $metadata -Name 'sidecar_path' -Value $relativeCapturePath | Out-Null
+        Set-ObjectField -Object $metadata -Name 'metadata_path' -Value $relativeMetadataPath | Out-Null
+        if (Test-HasValue $relativeTranscriptPath) { Set-ObjectField -Object $metadata -Name 'transcript_path' -Value $relativeTranscriptPath | Out-Null }
+    }
+    return $Capture
 }
 
 function Get-RegexGroupValue {
@@ -1041,7 +1342,7 @@ function Invoke-VideoMetadataCapture {
 }
 
 function Invoke-PodcastCapture {
-    param($Config,[string]$Url,[string]$TitleHint,[string]$Platform,[switch]$DryRun)
+    param($Config,[string]$Url,[string]$TitleHint,[string]$Platform,[string]$ResolvedVaultPath,[switch]$DryRun)
     if ($DryRun) {
         $title = if (Test-HasValue $TitleHint) { $TitleHint } else { "Podcast Clip - $Platform" }
         $metadata = [ordered]@{ capture_level='light'; transcript_status='missing'; media_downloaded=$false; analysis_ready=$true; extractor='web-metadata'; dry_run=$true }
@@ -1055,27 +1356,111 @@ function Invoke-PodcastCapture {
         $ogDescription = Get-MetaContent -Html $html -Key 'og:description'
         if (-not (Test-HasValue $ogDescription)) { $ogDescription = Get-MetaContent -Html $html -Key 'description' -Attr 'name' }
         $ogImage = Get-MetaContent -Html $html -Key 'og:image'
+        $canonicalUrl = Get-RegexGroupValue -Html $html -Pattern '<link[^>]+rel="canonical"[^>]+href="(?<value>[^"]+)"'
+        if (-not (Test-HasValue $canonicalUrl)) { $canonicalUrl = Get-MetaContent -Html $html -Key 'og:url' }
+        $canonicalUrl = Resolve-AbsoluteUrl -BaseUrl $Url -Candidate $canonicalUrl
         $pageTitle = Get-HtmlTitle -Html $html
         $plainText = Get-PlainTextFromHtml -Html $html
+        $identity = New-PodcastIdentity -Url $(if (Test-HasValue $canonicalUrl) { $canonicalUrl } else { $Url }) -Platform $Platform
         $resourceHints = Get-PodcastResourceHints -Html $html -BaseUrl $Url
+        $rssMetadata = Get-PodcastRssMetadata -RssUrl $resourceHints.rss_url -NormalizedEpisodeUrl $identity.normalized_url -SourceItemId $identity.source_item_id -TitleCandidates @($TitleHint, $ogTitle, $pageTitle)
         $showNotes = Get-PodcastShowNotes -Html $html -Description $ogDescription -PlainText $plainText
-        $transcript = Get-TranscriptFromUrl -TranscriptUrl $resourceHints.transcript_url
-        $title = if (Test-HasValue $TitleHint) { $TitleHint } elseif (Test-HasValue $ogTitle) { $ogTitle } elseif (Test-HasValue $pageTitle) { $pageTitle } else { "Podcast Clip - $Platform" }
-        $author = 'unknown'; if (Test-HasValue $pageTitle -and $pageTitle -match '^(?<episode>.*?)\s+-\s+(?<podcast>.*?)\s+\|') { $author = $Matches['podcast'] }
+        $effectiveTranscriptUrl = if (Test-HasValue $resourceHints.transcript_url) { $resourceHints.transcript_url } elseif ($null -ne $rssMetadata -and (Test-HasValue $rssMetadata.transcript_url)) { [string]$rssMetadata.transcript_url } else { '' }
+        $effectiveEnclosureUrl = if ($null -ne $rssMetadata -and (Test-HasValue $rssMetadata.enclosure_url)) { [string]$rssMetadata.enclosure_url } elseif (Test-HasValue $resourceHints.enclosure_url) { $resourceHints.enclosure_url } else { '' }
+        $transcript = Get-TranscriptFromUrl -TranscriptUrl $effectiveTranscriptUrl
+        $title = if (Test-HasValue $TitleHint) { $TitleHint } elseif ($null -ne $rssMetadata -and (Test-HasValue $rssMetadata.episode_title)) { [string]$rssMetadata.episode_title } elseif (Test-HasValue $ogTitle) { $ogTitle } elseif (Test-HasValue $pageTitle) { $pageTitle } else { "Podcast Clip - $Platform" }
+        $author = 'unknown'
+        if ($null -ne $rssMetadata -and (Test-HasValue $rssMetadata.podcast_author)) {
+            $author = [string]$rssMetadata.podcast_author
+        } elseif ($null -ne $rssMetadata -and (Test-HasValue $rssMetadata.podcast_title)) {
+            $author = [string]$rssMetadata.podcast_title
+        } elseif (Test-HasValue $pageTitle) {
+            $pageTitleMatch = [regex]::Match($pageTitle, '^(?<episode>.*?)\s+-\s+(?<podcast>.*?)\s+\|')
+            if ($pageTitleMatch.Success) { $author = $pageTitleMatch.Groups['podcast'].Value }
+        }
+        $publishedAt = if ($null -ne $rssMetadata -and (Test-HasValue $rssMetadata.published_at)) { [string]$rssMetadata.published_at } else { 'unknown' }
+        $episodeDescription = if ($null -ne $rssMetadata -and (Test-HasValue $rssMetadata.description)) { [string]$rssMetadata.description } else { '' }
+        $podcastTitle = if ($null -ne $rssMetadata -and (Test-HasValue $rssMetadata.podcast_title)) { [string]$rssMetadata.podcast_title } else { $author }
+        $podcastImage = if ($null -ne $rssMetadata -and (Test-HasValue $rssMetadata.podcast_image)) { [string]$rssMetadata.podcast_image } else { '' }
         $summaryParts = New-Object System.Collections.Generic.List[string]
         if (Test-HasValue $ogDescription) { $summaryParts.Add($ogDescription) } else { $summaryParts.Add('Podcast metadata captured from the episode page.') }
+        if ($null -ne $rssMetadata -and [bool]$rssMetadata.item_found) { $summaryParts.Add("RSS item matched via $($rssMetadata.match_strategy).") }
         if (Test-HasValue $resourceHints.rss_url) { $summaryParts.Add('RSS discovered.') }
-        if (Test-HasValue $resourceHints.transcript_url) { $summaryParts.Add('Transcript hint discovered.') }
-        if (Test-HasValue $resourceHints.enclosure_url) { $summaryParts.Add('Audio enclosure hint discovered.') }
+        if (Test-HasValue $effectiveTranscriptUrl) { $summaryParts.Add('Transcript hint discovered.') }
+        if (Test-HasValue $effectiveEnclosureUrl) { $summaryParts.Add('Audio enclosure hint discovered.') }
         if (Test-HasValue $showNotes) { $summaryParts.Add('Show notes extracted from page content.') }
         $rawParts = New-Object System.Collections.Generic.List[string]
         if (Test-HasValue $ogDescription) { $rawParts.Add("Description:`n$ogDescription") }
+        if (Test-HasValue $episodeDescription) { $rawParts.Add("Episode Description:`n$episodeDescription") }
         if (Test-HasValue $showNotes) { $rawParts.Add("Show Notes:`n$showNotes") } elseif (Test-HasValue $plainText) { $rawParts.Add("Page Text Preview:`n$(Get-PreviewText -Text $plainText -Length 1800)") }
-        $images = @(); if (Test-HasValue $ogImage) { $images = @($ogImage) }
-        $videos = @($Url); if (Test-HasValue $resourceHints.enclosure_url) { $videos += $resourceHints.enclosure_url }; $videos = @($videos | Select-Object -Unique)
-        if (Test-HasValue $transcript) { $captureLevel = 'enhanced' } elseif (Test-HasValue $showNotes -or Test-HasValue $resourceHints.rss_url -or Test-HasValue $resourceHints.enclosure_url) { $captureLevel = 'standard' } else { $captureLevel = 'light' }
-        $metadata = [ordered]@{ capture_level=$captureLevel; transcript_status = if (Test-HasValue $transcript) { 'available' } else { 'missing' }; media_downloaded=$false; analysis_ready=$true; extractor='web-metadata'; source_status_code=$response.StatusCode; source_status_description=$response.StatusDescription; rss_url=$resourceHints.rss_url; transcript_url=$resourceHints.transcript_url; enclosure_url=$resourceHints.enclosure_url; show_notes_extracted=[bool](Test-HasValue $showNotes) }
-        return (New-CaptureObject -Title $title -Author $author -PublishedAt 'unknown' -Summary (($summaryParts -join ' ').Trim()) -RawText (($rawParts | Select-Object -Unique) -join "`n`n") -Transcript $transcript -Tags @('clipped','podcast',$Platform) -Images $images -Videos $videos -Metadata $metadata)
+        $images = @($ogImage, $podcastImage | Where-Object { Test-HasValue $_ } | Select-Object -Unique)
+        $videos = @($Url)
+        if (Test-HasValue $effectiveEnclosureUrl) { $videos += $effectiveEnclosureUrl }
+        if ($null -ne $rssMetadata -and (Test-HasValue $rssMetadata.episode_link)) { $videos += [string]$rssMetadata.episode_link }
+        $videos = @($videos | Where-Object { Test-HasValue $_ } | Select-Object -Unique)
+        if (Test-HasValue $transcript) {
+            $captureLevel = 'enhanced'
+        } elseif (Test-HasValue $showNotes -or Test-HasValue $resourceHints.rss_url -or ($null -ne $rssMetadata -and [bool]$rssMetadata.item_found) -or Test-HasValue $effectiveEnclosureUrl) {
+            $captureLevel = 'standard'
+        } else {
+            $captureLevel = 'light'
+        }
+        $metadata = [ordered]@{
+            capture_level = $captureLevel
+            transcript_status = if (Test-HasValue $transcript) { 'available' } else { 'missing' }
+            media_downloaded = $false
+            analysis_ready = $true
+            extractor = if ($null -ne $rssMetadata -and [bool]$rssMetadata.item_found) { 'web-metadata+rss' } else { 'web-metadata' }
+            source_status_code = $response.StatusCode
+            source_status_description = $response.StatusDescription
+            rss_url = $resourceHints.rss_url
+            transcript_url = $effectiveTranscriptUrl
+            enclosure_url = $effectiveEnclosureUrl
+            show_notes_extracted = [bool](Test-HasValue $showNotes)
+            normalized_url = $identity.normalized_url
+            source_item_id = $identity.source_item_id
+            capture_key = $identity.capture_key
+            capture_id = $identity.capture_id
+            source_strategy = if ($null -ne $rssMetadata -and [bool]$rssMetadata.item_found) { 'page+rss' } else { 'page_only' }
+            rss_item_found = if ($null -ne $rssMetadata) { [bool]$rssMetadata.item_found } else { $false }
+            rss_match_strategy = if ($null -ne $rssMetadata) { [string]$rssMetadata.match_strategy } else { '' }
+            rss_fetch_error = if ($null -ne $rssMetadata) { [string]$rssMetadata.fetch_error } else { '' }
+            podcast_title = $podcastTitle
+            podcast_author = $author
+            duration_seconds = if ($null -ne $rssMetadata) { [int]$rssMetadata.duration_seconds } else { 0 }
+        }
+        $extraProperties = [ordered]@{
+            source_url = $Url
+            normalized_url = $identity.normalized_url
+            platform = $Platform
+            podcast_platform = $Platform
+            content_type = 'podcast'
+            route = 'podcast'
+            episode_url = $identity.normalized_url
+            episode_id = $identity.source_item_id
+            source_item_id = $identity.source_item_id
+            capture_key = $identity.capture_key
+            capture_id = $identity.capture_id
+            podcast_title = $podcastTitle
+            podcast_author = $author
+            rss_url = $resourceHints.rss_url
+            transcript_url = $effectiveTranscriptUrl
+            enclosure_url = $effectiveEnclosureUrl
+            source_strategy = $metadata.source_strategy
+            duration_seconds = $metadata.duration_seconds
+            description = if (Test-HasValue $ogDescription) { $ogDescription } else { $episodeDescription }
+            audio_path = ''
+            audio_download_status = 'skipped'
+            status = 'clipped'
+            download_status = 'skipped'
+            download_method = 'none'
+            media_downloaded = $false
+            analyzer_status = 'pending'
+            bitable_sync_status = 'pending'
+        }
+        $capture = New-CaptureObject -Title $title -Author $author -PublishedAt $publishedAt -Summary (($summaryParts -join ' ').Trim()) -RawText (($rawParts | Select-Object -Unique) -join "`n`n") -Transcript $transcript -Tags @('clipped','podcast',$Platform) -Images $images -Videos $videos -Metadata $metadata -ExtraProperties $extraProperties
+        $capture = Save-PodcastArtifacts -Config $Config -Capture $capture -ResolvedVaultPath $ResolvedVaultPath
+        return $capture
     } catch {
         return (New-PodcastFallbackCapture -Url $Url -TitleHint $TitleHint -Platform $Platform -ErrorText $_.Exception.Message)
     }
@@ -1087,7 +1472,7 @@ function Invoke-CaptureRoute {
         'article' { return Invoke-ArticleCapture -Url $Url -TitleHint $TitleHint -DryRun:$DryRun }
         'social' { return Invoke-SocialCapture -Config $Config -Url $Url -TitleHint $TitleHint -Platform $Detection.platform -ResolvedVaultPath $ResolvedVaultPath -DryRun:$DryRun }
         'video_metadata' { return Invoke-VideoMetadataCapture -Config $Config -Url $Url -TitleHint $TitleHint -Platform $Detection.platform -DryRun:$DryRun }
-        'podcast' { return Invoke-PodcastCapture -Config $Config -Url $Url -TitleHint $TitleHint -Platform $Detection.platform -DryRun:$DryRun }
+        'podcast' { return Invoke-PodcastCapture -Config $Config -Url $Url -TitleHint $TitleHint -Platform $Detection.platform -ResolvedVaultPath $ResolvedVaultPath -DryRun:$DryRun }
         default { throw "Unsupported route: $($Detection.route)" }
     }
 }

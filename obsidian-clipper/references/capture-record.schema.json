@@ -30,7 +30,7 @@
     "normalized_url": { "type": "string", "format": "uri" },
     "platform": {
       "type": "string",
-      "enum": ["douyin", "xiaohongshu", "youtube", "bilibili", "podcast", "article", "unknown"]
+      "enum": ["douyin", "xiaohongshu", "xiaoyuzhou", "youtube", "bilibili", "podcast", "article", "unknown"]
     },
     "content_type": {
       "type": "string",
@@ -56,9 +56,15 @@
     },
     "media_downloaded": { "type": "boolean" },
     "video_path": { "type": "string" },
+    "audio_path": { "type": "string" },
+    "audio_download_status": { "type": "string" },
     "video_storage_url": { "type": "string" },
     "cover_path": { "type": "string" },
+    "transcript_path": { "type": "string" },
+    "metadata_path": { "type": "string" },
+    "sidecar_path": { "type": "string" },
     "video_duration_seconds": { "type": "number", "minimum": 0 },
+    "duration_seconds": { "type": "number", "minimum": 0 },
     "video_width": { "type": "integer", "minimum": 0 },
     "video_height": { "type": "integer", "minimum": 0 },
     "video_size_bytes": { "type": "integer", "minimum": 0 },
@@ -70,6 +76,15 @@
     "description": { "type": "string" },
     "raw_text": { "type": "string" },
     "transcript": { "type": "string" },
+    "podcast_platform": { "type": "string" },
+    "episode_url": { "type": "string" },
+    "episode_id": { "type": "string" },
+    "podcast_title": { "type": "string" },
+    "podcast_author": { "type": "string" },
+    "rss_url": { "type": "string" },
+    "transcript_url": { "type": "string" },
+    "enclosure_url": { "type": "string" },
+    "source_strategy": { "type": "string" },
     "top_comments": {
       "type": "array",
       "items": { "type": "string" }

@@ -204,8 +204,10 @@ def build_summary(capture: dict[str, Any], detection: dict[str, Any], top_commen
 
 def attachment_lines(capture: dict[str, Any]) -> list[str]:
     mapping = (
+        ("audio_path", "本地音频"),
         ("video_path", "本地视频"),
         ("cover_path", "封面图"),
+        ("transcript_path", "转录文本"),
         ("sidecar_path", "Capture JSON"),
         ("comments_path", "Comments JSON"),
         ("metadata_path", "Metadata JSON"),
@@ -218,10 +220,43 @@ def attachment_lines(capture: dict[str, Any]) -> list[str]:
     return lines or ["- none"]
 
 
+def podcast_info_lines(capture: dict[str, Any]) -> list[str]:
+    metadata = capture.get("metadata") or {}
+    podcast_title = string_value(capture.get("podcast_title"), metadata.get("podcast_title"), default="unknown")
+    podcast_author = string_value(capture.get("podcast_author"), metadata.get("podcast_author"), capture.get("author"), default="unknown")
+    episode_id = string_value(capture.get("episode_id"), capture.get("source_item_id"), metadata.get("source_item_id"), default="n/a")
+    duration_seconds = string_value(capture.get("duration_seconds"), metadata.get("duration_seconds"), default="0")
+    return [
+        f"- 播客名称: {podcast_title}",
+        f"- 播客作者: {podcast_author}",
+        f"- 单集 ID: {episode_id}",
+        f"- 时长（秒）: {duration_seconds}",
+    ]
+
+
+def podcast_resource_lines(capture: dict[str, Any]) -> list[str]:
+    metadata = capture.get("metadata") or {}
+    rss_url = string_value(capture.get("rss_url"), metadata.get("rss_url"), default="n/a")
+    transcript_url = string_value(capture.get("transcript_url"), metadata.get("transcript_url"), default="n/a")
+    enclosure_url = string_value(capture.get("enclosure_url"), metadata.get("enclosure_url"), default="n/a")
+    source_strategy = string_value(capture.get("source_strategy"), metadata.get("source_strategy"), default="page_only")
+    rss_match_strategy = string_value(metadata.get("rss_match_strategy"), default="n/a")
+    audio_download_status = string_value(capture.get("audio_download_status"), default="skipped")
+    return [
+        f"- Source Strategy: {source_strategy}",
+        f"- RSS URL: {rss_url}",
+        f"- Transcript URL: {transcript_url}",
+        f"- Enclosure URL: {enclosure_url}",
+        f"- RSS Match Strategy: {rss_match_strategy}",
+        f"- Audio Download Status: {audio_download_status}",
+    ]
+
+
 def status_lines(capture: dict[str, Any]) -> list[str]:
     metadata = capture.get("metadata") or {}
     download_status = string_value(capture.get("download_status"), metadata.get("download_status"), default="unknown")
     download_method = string_value(capture.get("download_method"), metadata.get("download_method"), default="unknown")
+    audio_download_status = string_value(capture.get("audio_download_status"), default="skipped")
     media_downloaded = bool_value(capture.get("media_downloaded"), bool_value(metadata.get("media_downloaded")))
     transcript_status = string_value(metadata.get("transcript_status"), default="missing")
     analyzer_status = string_value(capture.get("analyzer_status"), default="pending")
@@ -234,6 +269,7 @@ def status_lines(capture: dict[str, Any]) -> list[str]:
     lines = [
         f"- 下载状态: {download_status}",
         f"- 下载方式: {download_method}",
+        f"- 音频下载状态: {audio_download_status}",
         f"- 视频已落盘: {'是' if media_downloaded else '否'}",
         f"- 转录状态: {transcript_status}",
         f"- Analyzer 状态: {analyzer_status}",
@@ -314,6 +350,16 @@ def render_note(config: dict[str, Any], detection: dict[str, Any], capture: dict
     published_at = string_value(capture.get("published_at"), default="unknown")
     raw_text = string_value(capture.get("raw_text"), default="(none)")
     transcript = string_value(capture.get("transcript"), default="(none)")
+    podcast_title = string_value(capture.get("podcast_title"), nested_value(capture, "metadata", "podcast_title"))
+    podcast_author = string_value(capture.get("podcast_author"), nested_value(capture, "metadata", "podcast_author"), author)
+    episode_url = string_value(capture.get("episode_url"), default=source_url)
+    episode_id = string_value(capture.get("episode_id"), source_item_id)
+    rss_url = string_value(capture.get("rss_url"), nested_value(capture, "metadata", "rss_url"))
+    transcript_url = string_value(capture.get("transcript_url"), nested_value(capture, "metadata", "transcript_url"))
+    enclosure_url = string_value(capture.get("enclosure_url"), nested_value(capture, "metadata", "enclosure_url"))
+    source_strategy = string_value(capture.get("source_strategy"), nested_value(capture, "metadata", "source_strategy"))
+    duration_seconds = string_value(capture.get("duration_seconds"), nested_value(capture, "metadata", "duration_seconds"), default="0")
+    audio_path = string_value(capture.get("audio_path"))
 
     top_comments = collect_top_comments(capture)
     lines = [
@@ -331,6 +377,16 @@ def render_note(config: dict[str, Any], detection: dict[str, Any], capture: dict
         f"capture_id: {yaml_scalar(frontmatter_text(capture_id))}",
         f"capture_key: {yaml_scalar(frontmatter_text(capture_key))}",
         f"source_item_id: {yaml_scalar(frontmatter_text(source_item_id))}",
+        f"episode_url: {yaml_scalar(frontmatter_text(episode_url))}",
+        f"episode_id: {yaml_scalar(frontmatter_text(episode_id))}",
+        f"podcast_title: {yaml_scalar(frontmatter_text(podcast_title))}",
+        f"podcast_author: {yaml_scalar(frontmatter_text(podcast_author))}",
+        f"rss_url: {yaml_scalar(frontmatter_text(rss_url))}",
+        f"transcript_url: {yaml_scalar(frontmatter_text(transcript_url))}",
+        f"enclosure_url: {yaml_scalar(frontmatter_text(enclosure_url))}",
+        f"source_strategy: {yaml_scalar(frontmatter_text(source_strategy))}",
+        f"duration_seconds: {yaml_scalar(frontmatter_text(duration_seconds))}",
+        f"audio_path: {yaml_scalar(frontmatter_text(audio_path))}",
         f"capture_level: {yaml_scalar(frontmatter_text(capture_level))}",
         f"transcript_status: {yaml_scalar(frontmatter_text(transcript_status))}",
         f"media_downloaded: {str(media_downloaded).lower()}",
@@ -358,6 +414,16 @@ def render_note(config: dict[str, Any], detection: dict[str, Any], capture: dict
         f"- Source Item ID: {source_item_id if has_value(source_item_id) else 'n/a'}",
         "",
     ])
+
+    if detection.get("route") == "podcast":
+        lines.extend([
+            "## 播客信息",
+            *podcast_info_lines(capture),
+            "",
+            "## 资源线索",
+            *podcast_resource_lines(capture),
+            "",
+        ])
 
     lines.extend([
         "## 内容摘要",
