@@ -35,5 +35,7 @@
 - Tooling: built-in page metadata capture in `run_clipper.ps1`
 - Preferred assets: title, description, show notes, transcript link hints, RSS hints, audio enclosure hints
 - Phase 1 capture result: stable `capture_id`, page + RSS merged metadata, Obsidian note, and podcast sidecars under `Attachments/Podcasts/{platform}/{capture_id}/`
+- Phase 2 capture result: when `enclosure_url` is available, the local audio file is downloaded into the same podcast attachment directory and exposed as `audio_path`
+- Phase 3 capture result: when remote transcript is missing and ASR fallback is enabled, transcript text is generated from the local audio attachment and written back into the note plus sidecars
 - Fallback: minimal clipping with network/error summary
 - Analyzer intent: `learn`, not `analyze`

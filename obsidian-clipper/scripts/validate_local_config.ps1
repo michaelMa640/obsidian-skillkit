@@ -69,7 +69,10 @@ if (Is-PlaceholderValue $vaultPath) {
 
 $socialScript = ''
 if ($null -ne $config.routes -and $null -ne $config.routes.social) {
-    $socialScript = [string]$config.routes.social.script
+    $socialScriptValue = $config.routes.social.PSObject.Properties['script']
+    if ($null -ne $socialScriptValue) {
+        $socialScript = [string]$socialScriptValue.Value
+    }
 }
 if (Is-PlaceholderValue $socialScript) {
     $missingRequired.Add([pscustomobject]@{
@@ -83,7 +86,13 @@ if (Is-PlaceholderValue $socialScript) {
     }) | Out-Null
 }
 
-$xiaohongshuAdapter = if ($null -ne $config.routes -and $null -ne $config.routes.social) { $config.routes.social.xiaohongshu_adapter } else { $null }
+$xiaohongshuAdapter = $null
+if ($null -ne $config.routes -and $null -ne $config.routes.social) {
+    $xiaohongshuAdapterProp = $config.routes.social.PSObject.Properties['xiaohongshu_adapter']
+    if ($null -ne $xiaohongshuAdapterProp) {
+        $xiaohongshuAdapter = $xiaohongshuAdapterProp.Value
+    }
+}
 if ($null -ne $xiaohongshuAdapter) {
     $adapterScript = [string]$xiaohongshuAdapter.script
     if (Is-PlaceholderValue $adapterScript) {
@@ -93,7 +102,13 @@ if ($null -ne $xiaohongshuAdapter) {
     }
 }
 
-$socialAuth = if ($null -ne $config.routes -and $null -ne $config.routes.social) { $config.routes.social.auth } else { $null }
+$socialAuth = $null
+if ($null -ne $config.routes -and $null -ne $config.routes.social) {
+    $socialAuthProp = $config.routes.social.PSObject.Properties['auth']
+    if ($null -ne $socialAuthProp) {
+        $socialAuth = $socialAuthProp.Value
+    }
+}
 foreach ($platform in @('douyin', 'xiaohongshu')) {
     $platformAuth = Get-AuthConfigForPlatform -AuthConfig $socialAuth -Platform $platform
     $storageStatePath = if ($null -ne $platformAuth) { [string]$platformAuth.storage_state_path } else { '' }
@@ -112,6 +127,35 @@ foreach ($platform in @('douyin', 'xiaohongshu')) {
     }
 }
 
+$podcastRoute = if ($null -ne $config.routes) { $config.routes.podcast } else { $null }
+$podcastAsr = if ($null -ne $podcastRoute) { $podcastRoute.asr } else { $null }
+if ($null -ne $podcastAsr) {
+    $asrEnabled = $false
+    if ($null -ne $podcastAsr.PSObject.Properties['enabled']) {
+        $rawEnabled = $podcastAsr.enabled
+        if ($rawEnabled -is [bool]) {
+            $asrEnabled = [bool]$rawEnabled
+        } else {
+            $asrEnabled = ([string]$rawEnabled).Trim().ToLowerInvariant() -in @('true', '1', 'yes', 'on')
+        }
+    }
+
+    if ($asrEnabled) {
+        $asrScript = [string]$podcastAsr.script
+        if (Is-PlaceholderValue $asrScript) {
+            $missingRequired.Add([pscustomobject]@{
+                field = 'routes.podcast.asr.script'
+                message = 'Podcast ASR fallback is enabled, but the ASR script path is not configured.'
+            }) | Out-Null
+        } elseif (-not (Test-Path $asrScript)) {
+            $missingRequired.Add([pscustomobject]@{
+                field = 'routes.podcast.asr.script'
+                message = "Configured podcast ASR script does not exist: $asrScript"
+            }) | Out-Null
+        }
+    }
+}
+
 $result = [pscustomobject]@{
     success = ($missingRequired.Count -eq 0)
     config_path = $resolvedConfigPath
@@ -120,6 +164,7 @@ $result = [pscustomobject]@{
     recommended_next_steps = @(
         'If auth warnings exist, refresh Douyin login state with scripts/bootstrap_social_auth.py --platform douyin.',
         'If Xiaohongshu auth warnings exist, refresh Xiaohongshu login state with scripts/bootstrap_social_auth.py --platform xiaohongshu.',
+        'If podcast ASR fallback is enabled, verify routes.podcast.asr.script points to podcast_asr_fallback.py and that the target Python environment has the chosen ASR dependency installed.',
         'After config is valid, run scripts/run_clipper.ps1 or let OpenClaw call the skill normally.'
     )
 }

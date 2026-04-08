@@ -63,7 +63,23 @@
     "podcast": {
       "built_in": true,
       "prefer_transcript": true,
-      "prefer_show_notes": true
+      "prefer_show_notes": true,
+      "download_audio": true,
+      "download_timeout_sec": 60,
+      "asr": {
+        "enabled": false,
+        "command": "python",
+        "script": "E:/REPLACE/WITH/YOUR/obsidian-clipper/scripts/podcast_asr_fallback.py",
+        "provider": "faster-whisper",
+        "model": "base",
+        "language": "zh",
+        "device": "auto",
+        "compute_type": "auto",
+        "beam_size": 5,
+        "vad_filter": true,
+        "timeout_sec": 600,
+        "mock_transcript_path": "E:/REPLACE/WITH/YOUR/obsidian-clipper/.tmp/mock-transcript.txt"
+      }
     }
   }
 }

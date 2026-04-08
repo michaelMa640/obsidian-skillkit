@@ -143,6 +143,11 @@ def should_embed_local_video(detection: dict[str, Any], capture: dict[str, Any])
     return has_value(video_path) and detection.get("route") == "social"
 
 
+def should_embed_local_audio(detection: dict[str, Any], capture: dict[str, Any]) -> bool:
+    audio_path = string_value(capture.get("audio_path"), nested_value(capture, "metadata", "audio_path"))
+    return has_value(audio_path) and detection.get("route") == "podcast"
+
+
 def collect_top_comments(capture: dict[str, Any]) -> list[str]:
     top_comments = [string_value(item) for item in capture.get("top_comments") or [] if has_value(item)]
     if not top_comments:
@@ -242,6 +247,7 @@ def podcast_resource_lines(capture: dict[str, Any]) -> list[str]:
     source_strategy = string_value(capture.get("source_strategy"), metadata.get("source_strategy"), default="page_only")
     rss_match_strategy = string_value(metadata.get("rss_match_strategy"), default="n/a")
     audio_download_status = string_value(capture.get("audio_download_status"), default="skipped")
+    transcript_source = string_value(capture.get("transcript_source"), metadata.get("transcript_source"), default="missing")
     return [
         f"- Source Strategy: {source_strategy}",
         f"- RSS URL: {rss_url}",
@@ -249,6 +255,7 @@ def podcast_resource_lines(capture: dict[str, Any]) -> list[str]:
         f"- Enclosure URL: {enclosure_url}",
         f"- RSS Match Strategy: {rss_match_strategy}",
         f"- Audio Download Status: {audio_download_status}",
+        f"- Transcript Source: {transcript_source}",
     ]
 
 
@@ -259,6 +266,10 @@ def status_lines(capture: dict[str, Any]) -> list[str]:
     audio_download_status = string_value(capture.get("audio_download_status"), default="skipped")
     media_downloaded = bool_value(capture.get("media_downloaded"), bool_value(metadata.get("media_downloaded")))
     transcript_status = string_value(metadata.get("transcript_status"), default="missing")
+    asr_status = string_value(capture.get("asr_status"), metadata.get("asr_status"), default="not_attempted")
+    asr_provider = string_value(capture.get("asr_provider"), metadata.get("asr_provider"))
+    asr_model = string_value(capture.get("asr_model"), metadata.get("asr_model"))
+    asr_error = string_value(capture.get("asr_error"), metadata.get("asr_error"))
     analyzer_status = string_value(capture.get("analyzer_status"), default="pending")
     bitable_sync_status = string_value(capture.get("bitable_sync_status"), default="pending")
     analysis_ready = bool_value(capture.get("analysis_ready"), bool_value(metadata.get("analysis_ready"), True))
@@ -272,10 +283,17 @@ def status_lines(capture: dict[str, Any]) -> list[str]:
         f"- 音频下载状态: {audio_download_status}",
         f"- 视频已落盘: {'是' if media_downloaded else '否'}",
         f"- 转录状态: {transcript_status}",
+        f"- ASR 状态: {asr_status}",
         f"- Analyzer 状态: {analyzer_status}",
         f"- 多维表格同步: {bitable_sync_status}",
         f"- 分析就绪: {'是' if analysis_ready else '否'}",
     ]
+    if has_value(asr_provider):
+        lines.append(f"- ASR Provider: {asr_provider}")
+    if has_value(asr_model):
+        lines.append(f"- ASR Model: {asr_model}")
+    if has_value(asr_error):
+        lines.append(f"- ASR 错误: {asr_error}")
     if access_blocked:
         block_label = "IP 风险拦截" if access_block_type == "ip_risk" else "站点访问受限"
         lines.insert(0, f"- 访问状态: {block_label}")
@@ -340,11 +358,15 @@ def render_note(config: dict[str, Any], detection: dict[str, Any], capture: dict
     source_item_id = string_value(capture.get("source_item_id"), nested_value(capture, "metadata", "source_item_id"))
     capture_level = string_value(nested_value(capture, "metadata", "capture_level"), default="light")
     transcript_status = string_value(nested_value(capture, "metadata", "transcript_status"), default="missing")
+    transcript_source = string_value(capture.get("transcript_source"), nested_value(capture, "metadata", "transcript_source"), default="missing")
+    asr_status = string_value(capture.get("asr_status"), nested_value(capture, "metadata", "asr_status"), default="not_attempted")
+    asr_provider = string_value(capture.get("asr_provider"), nested_value(capture, "metadata", "asr_provider"))
     media_downloaded = bool_value(capture.get("media_downloaded"), bool_value(nested_value(capture, "metadata", "media_downloaded")))
     analysis_ready = bool_value(capture.get("analysis_ready"), bool_value(nested_value(capture, "metadata", "analysis_ready"), True))
     download_status = string_value(capture.get("download_status"), nested_value(capture, "metadata", "download_status"))
     download_method = string_value(capture.get("download_method"), nested_value(capture, "metadata", "download_method"))
     video_path = string_value(capture.get("video_path"), nested_value(capture, "metadata", "video_path"))
+    audio_path = string_value(capture.get("audio_path"), nested_value(capture, "metadata", "audio_path"))
     sidecar_path = string_value(capture.get("sidecar_path"), nested_value(capture, "metadata", "sidecar_path"))
     author = string_value(capture.get("author"), default="unknown")
     published_at = string_value(capture.get("published_at"), default="unknown")
@@ -389,6 +411,9 @@ def render_note(config: dict[str, Any], detection: dict[str, Any], capture: dict
         f"audio_path: {yaml_scalar(frontmatter_text(audio_path))}",
         f"capture_level: {yaml_scalar(frontmatter_text(capture_level))}",
         f"transcript_status: {yaml_scalar(frontmatter_text(transcript_status))}",
+        f"transcript_source: {yaml_scalar(frontmatter_text(transcript_source))}",
+        f"asr_status: {yaml_scalar(frontmatter_text(asr_status))}",
+        f"asr_provider: {yaml_scalar(frontmatter_text(asr_provider))}",
         f"media_downloaded: {str(media_downloaded).lower()}",
         f"analysis_ready: {str(analysis_ready).lower()}",
         f"download_status: {yaml_scalar(frontmatter_text(download_status))}",
@@ -445,8 +470,24 @@ def render_note(config: dict[str, Any], detection: dict[str, Any], capture: dict
             ])
         lines.append("")
 
+    if detection.get("route") == "podcast":
+        lines.extend(["## 音频附件"])
+        if should_embed_local_audio(detection, capture):
+            lines.extend([
+                f"![[{audio_path}]]",
+                "",
+                f"- 本地音频: {audio_path}",
+            ])
+        else:
+            lines.append("- 当前未落到本地音频文件。")
+        lines.append("")
+
     lines.extend([
         "## 转录文本",
+        f"- 来源: {transcript_source}",
+        f"- ASR 状态: {asr_status}",
+        *([f"- ASR Provider: {asr_provider}"] if has_value(asr_provider) else []),
+        "",
         transcript,
         "",
         "## 互动数据",

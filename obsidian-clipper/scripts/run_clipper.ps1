@@ -140,6 +140,26 @@ function Get-StringValue {
     $DefaultValue
 }
 
+function Get-BoolValueFromData {
+    param($Data, [string]$Name, [bool]$DefaultValue = $false)
+    $value = Get-DataValue -Data $Data -Name $Name
+    if ($null -eq $value) { return $DefaultValue }
+    if ($value -is [bool]) { return [bool]$value }
+    $text = [string]$value
+    if (-not (Test-HasValue $text)) { return $DefaultValue }
+    switch ($text.Trim().ToLowerInvariant()) {
+        'true' { return $true }
+        '1' { return $true }
+        'yes' { return $true }
+        'on' { return $true }
+        'false' { return $false }
+        '0' { return $false }
+        'no' { return $false }
+        'off' { return $false }
+        default { return $DefaultValue }
+    }
+}
+
 function Set-ObjectField {
     param($Object, [string]$Name, $Value)
     if ($Object -is [System.Collections.IDictionary]) {
@@ -973,6 +993,164 @@ function Get-VaultRelativePath {
     [System.Uri]::UnescapeDataString($baseUri.MakeRelativeUri($targetUri).ToString()).Replace('\', '/')
 }
 
+function Get-UrlFileExtension {
+    param(
+        [string]$Url,
+        [string]$DefaultExtension = '.mp3'
+    )
+    if (-not (Test-HasValue $Url)) { return $DefaultExtension }
+    try {
+        $path = ([System.Uri]$Url).AbsolutePath
+        $extension = [System.IO.Path]::GetExtension($path)
+        if (Test-HasValue $extension) { return $extension.ToLowerInvariant() }
+    } catch {
+    }
+    $DefaultExtension
+}
+
+function Download-PodcastAudio {
+    param(
+        [string]$AudioUrl,
+        [string]$TargetDirectory,
+        [int]$TimeoutSec = 60
+    )
+    if (-not (Test-HasValue $AudioUrl) -or -not (Test-HasValue $TargetDirectory)) {
+        return [pscustomobject]@{ success = $false; status = 'skipped'; file_path = ''; error = '' }
+    }
+
+    $extension = Get-UrlFileExtension -Url $AudioUrl -DefaultExtension '.mp3'
+    $targetPath = Join-Path $TargetDirectory ("episode$extension")
+    try {
+        Invoke-WebRequest -Uri $AudioUrl -OutFile $targetPath -UseBasicParsing -TimeoutSec $TimeoutSec
+        if (-not (Test-Path $targetPath)) {
+            throw 'Audio download completed without a landed file.'
+        }
+        return [pscustomobject]@{
+            success = $true
+            status = 'success'
+            file_path = $targetPath
+            error = ''
+        }
+    } catch {
+        if (Test-Path $targetPath) {
+            Remove-Item -LiteralPath $targetPath -Force -ErrorAction SilentlyContinue
+        }
+        return [pscustomobject]@{
+            success = $false
+            status = 'failed'
+            file_path = ''
+            error = $_.Exception.Message
+        }
+    }
+}
+
+function Invoke-PodcastAsrFallback {
+    param(
+        $Config,
+        [string]$AudioPath,
+        [string]$AssetDirectory
+    )
+
+    $result = [ordered]@{
+        enabled = $false
+        attempted = $false
+        success = $false
+        status = 'disabled'
+        provider = ''
+        model = ''
+        language = ''
+        transcript = ''
+        error = ''
+    }
+
+    $podcastRoute = if ($null -ne $Config.routes) { Get-DataValue -Data $Config.routes -Name 'podcast' } else { $null }
+    $asrConfig = if ($null -ne $podcastRoute) { Get-DataValue -Data $podcastRoute -Name 'asr' } else { $null }
+    if ($null -eq $asrConfig) { return [pscustomobject]$result }
+
+    $enabled = Get-BoolValueFromData -Data $asrConfig -Name 'enabled' -DefaultValue $false
+    $result.enabled = $enabled
+    $provider = Get-StringValue -Data $asrConfig -Name 'provider' -DefaultValue 'faster-whisper'
+    $model = Get-StringValue -Data $asrConfig -Name 'model' -DefaultValue 'base'
+    $language = Get-StringValue -Data $asrConfig -Name 'language' -DefaultValue 'zh'
+    $result.provider = $provider
+    $result.model = $model
+    $result.language = $language
+    if (-not $enabled) { return [pscustomobject]$result }
+
+    if (-not (Test-HasValue $AudioPath) -or -not (Test-Path $AudioPath)) {
+        $result.status = 'missing_audio'
+        $result.error = 'ASR fallback could not start because no local audio file was available.'
+        return [pscustomobject]$result
+    }
+
+    $command = Get-ConfiguredPathValue -Object $asrConfig -PropertyName 'command'
+    if (-not (Test-HasValue $command)) { $command = 'python' }
+    $scriptPath = Get-ConfiguredPathValue -Object $asrConfig -PropertyName 'script'
+    if (($command -match 'python(?:\.exe)?$') -and -not (Test-HasValue $scriptPath)) {
+        $result.status = 'not_configured'
+        $result.error = 'Podcast ASR is enabled, but routes.podcast.asr.script is not configured.'
+        return [pscustomobject]$result
+    }
+
+    $timeoutSec = 600
+    $timeoutValue = Get-StringValue -Data $asrConfig -Name 'timeout_sec' -DefaultValue '600'
+    if (Test-HasValue $timeoutValue) { $timeoutSec = [int]$timeoutValue }
+    $device = Get-StringValue -Data $asrConfig -Name 'device' -DefaultValue 'auto'
+    $computeType = Get-StringValue -Data $asrConfig -Name 'compute_type' -DefaultValue 'auto'
+    $beamSize = Get-StringValue -Data $asrConfig -Name 'beam_size' -DefaultValue '5'
+    $vadFilter = Get-BoolValueFromData -Data $asrConfig -Name 'vad_filter' -DefaultValue $true
+    $mockTranscriptPath = Get-ConfiguredPathValue -Object $asrConfig -PropertyName 'mock_transcript_path'
+
+    $outputJsonPath = Join-Path $AssetDirectory 'asr-output.json'
+    $arguments = @()
+    if (Test-HasValue $scriptPath) { $arguments += @($scriptPath) }
+    $arguments += @('--audio-path', $AudioPath, '--output-json', $outputJsonPath, '--provider', $provider, '--model', $model, '--language', $language, '--device', $device, '--compute-type', $computeType, '--beam-size', $beamSize, '--vad-filter', $(if ($vadFilter) { 'true' } else { 'false' }))
+    if (Test-HasValue $mockTranscriptPath) { $arguments += @('--mock-transcript-path', $mockTranscriptPath) }
+
+    try {
+        $result.attempted = $true
+        $commandOutput = & $command @arguments 2>&1 | Out-String
+        $exitCode = $LASTEXITCODE
+        $payload = $null
+        if (Test-Path $outputJsonPath) {
+            try {
+                $payload = ConvertFrom-JsonCompat -Json (Read-Utf8Text -Path $outputJsonPath) -Depth 50
+            } catch {
+                $payload = $null
+            }
+        }
+
+        if ($null -ne $payload) {
+            $result.provider = Get-StringValue -Data $payload -Name 'provider' -DefaultValue $provider
+            $result.model = Get-StringValue -Data $payload -Name 'model' -DefaultValue $model
+            $result.language = Get-StringValue -Data $payload -Name 'language' -DefaultValue $language
+            $result.transcript = Get-StringValue -Data $payload -Name 'transcript' -DefaultValue ''
+            $result.error = Get-StringValue -Data $payload -Name 'error' -DefaultValue ''
+        }
+
+        if ($exitCode -eq 0 -and (Test-HasValue $result.transcript)) {
+            $result.success = $true
+            $result.status = 'success'
+            return [pscustomobject]$result
+        }
+
+        $result.status = 'failed'
+        if (-not (Test-HasValue $result.error)) {
+            $trimmedOutput = ($commandOutput | Out-String).Trim()
+            if (Test-HasValue $trimmedOutput) {
+                $result.error = $trimmedOutput
+            } else {
+                $result.error = "ASR command exited with code $exitCode."
+            }
+        }
+        [pscustomobject]$result
+    } catch {
+        $result.status = 'failed'
+        $result.error = $_.Exception.Message
+        [pscustomobject]$result
+    }
+}
+
 function Save-PodcastArtifacts {
     param(
         $Config,
@@ -996,14 +1174,65 @@ function Save-PodcastArtifacts {
     $assetDirectory = Join-Path (Join-Path (Join-Path $ResolvedVaultPath $attachmentsRoot) $platform) $captureId
     New-Item -ItemType Directory -Path $assetDirectory -Force | Out-Null
 
-    $capturePath = Join-Path $assetDirectory 'capture.json'
-    $metadataPath = Join-Path $assetDirectory 'metadata.json'
-    Write-Utf8Text -Path $capturePath -Content ($Capture | ConvertTo-Json -Depth 100)
-    if ($null -ne $metadata) {
-        Write-Utf8Text -Path $metadataPath -Content ($metadata | ConvertTo-Json -Depth 100)
+    $audioUrl = Get-StringValue -Data $Capture -Name 'enclosure_url' -DefaultValue ''
+    if (-not (Test-HasValue $audioUrl) -and $null -ne $metadata) { $audioUrl = Get-StringValue -Data $metadata -Name 'enclosure_url' -DefaultValue '' }
+    $podcastRoute = if ($null -ne $Config.routes) { Get-DataValue -Data $Config.routes -Name 'podcast' } else { $null }
+    $downloadAudio = $true
+    if ($null -ne $podcastRoute) {
+        $downloadAudio = Get-BoolValueFromData -Data $podcastRoute -Name 'download_audio' -DefaultValue $true
+    }
+    $downloadTimeoutSec = 60
+    if ($null -ne $podcastRoute -and $null -ne $podcastRoute.PSObject.Properties['download_timeout_sec'] -and (Test-HasValue ([string]$podcastRoute.download_timeout_sec))) {
+        $downloadTimeoutSec = [int]$podcastRoute.download_timeout_sec
+    }
+    $audioDownloadStatus = if ($downloadAudio -and (Test-HasValue $audioUrl)) { 'pending' } elseif (Test-HasValue $audioUrl) { 'skipped' } else { 'missing' }
+    $audioPath = ''
+    $audioLocalPath = ''
+    if ($downloadAudio -and (Test-HasValue $audioUrl)) {
+        $audioDownloadResult = Download-PodcastAudio -AudioUrl $audioUrl -TargetDirectory $assetDirectory -TimeoutSec $downloadTimeoutSec
+        $audioDownloadStatus = [string]$audioDownloadResult.status
+        if ($audioDownloadResult.success) {
+            $audioLocalPath = [string]$audioDownloadResult.file_path
+            $audioPath = Get-VaultRelativePath -BasePath $ResolvedVaultPath -TargetPath $audioDownloadResult.file_path
+        } elseif ($null -ne $metadata) {
+            Set-ObjectField -Object $metadata -Name 'audio_download_error' -Value ([string]$audioDownloadResult.error) | Out-Null
+        }
     }
 
+    $capturePath = Join-Path $assetDirectory 'capture.json'
+    $metadataPath = Join-Path $assetDirectory 'metadata.json'
+
     $transcript = Get-StringValue -Data $Capture -Name 'transcript' -DefaultValue ''
+    $transcriptStatus = if ($null -ne $metadata) { Get-StringValue -Data $metadata -Name 'transcript_status' -DefaultValue $(if (Test-HasValue $transcript) { 'available' } else { 'missing' }) } else { if (Test-HasValue $transcript) { 'available' } else { 'missing' } }
+    $transcriptSource = if ($null -ne $metadata) { Get-StringValue -Data $metadata -Name 'transcript_source' -DefaultValue $(if (Test-HasValue $transcript) { 'remote' } else { 'missing' }) } else { if (Test-HasValue $transcript) { 'remote' } else { 'missing' } }
+    $asrStatus = if ($null -ne $metadata) { Get-StringValue -Data $metadata -Name 'asr_status' -DefaultValue $(if (Test-HasValue $transcript) { 'not_needed' } else { 'not_attempted' }) } else { if (Test-HasValue $transcript) { 'not_needed' } else { 'not_attempted' } }
+    $asrProvider = if ($null -ne $metadata) { Get-StringValue -Data $metadata -Name 'asr_provider' -DefaultValue '' } else { '' }
+    $asrModel = if ($null -ne $metadata) { Get-StringValue -Data $metadata -Name 'asr_model' -DefaultValue '' } else { '' }
+    $asrError = if ($null -ne $metadata) { Get-StringValue -Data $metadata -Name 'asr_error' -DefaultValue '' } else { '' }
+    if (-not (Test-HasValue $audioLocalPath) -and (Test-HasValue $audioPath)) {
+        $audioCandidatePath = Join-Path $ResolvedVaultPath ($audioPath -replace '/', '\')
+        if (Test-Path $audioCandidatePath) { $audioLocalPath = $audioCandidatePath }
+    }
+    if (-not (Test-HasValue $transcript)) {
+        $asrResult = Invoke-PodcastAsrFallback -Config $Config -AudioPath $audioLocalPath -AssetDirectory $assetDirectory
+        $asrStatus = [string]$asrResult.status
+        $asrProvider = [string]$asrResult.provider
+        $asrModel = [string]$asrResult.model
+        $asrError = [string]$asrResult.error
+        if ($asrResult.success -and (Test-HasValue $asrResult.transcript)) {
+            $transcript = [string]$asrResult.transcript
+            $transcriptStatus = 'available_asr'
+            $transcriptSource = 'asr_fallback'
+            if ($null -ne $metadata) {
+                $currentCaptureLevel = Get-StringValue -Data $metadata -Name 'capture_level' -DefaultValue 'light'
+                if ($currentCaptureLevel -ne 'enhanced') {
+                    Set-ObjectField -Object $metadata -Name 'capture_level' -Value 'enhanced' | Out-Null
+                }
+            }
+        } elseif ($transcriptSource -eq 'remote') {
+            $transcriptSource = 'missing'
+        }
+    }
     $transcriptPath = ''
     if (Test-HasValue $transcript) {
         $transcriptPath = Join-Path $assetDirectory 'transcript.txt'
@@ -1016,11 +1245,33 @@ function Save-PodcastArtifacts {
 
     Set-ObjectField -Object $Capture -Name 'sidecar_path' -Value $relativeCapturePath | Out-Null
     Set-ObjectField -Object $Capture -Name 'metadata_path' -Value $relativeMetadataPath | Out-Null
+    Set-ObjectField -Object $Capture -Name 'audio_path' -Value $audioPath | Out-Null
+    Set-ObjectField -Object $Capture -Name 'audio_download_status' -Value $audioDownloadStatus | Out-Null
+    Set-ObjectField -Object $Capture -Name 'transcript' -Value $transcript | Out-Null
+    Set-ObjectField -Object $Capture -Name 'transcript_status' -Value $transcriptStatus | Out-Null
+    Set-ObjectField -Object $Capture -Name 'transcript_source' -Value $transcriptSource | Out-Null
+    Set-ObjectField -Object $Capture -Name 'asr_status' -Value $asrStatus | Out-Null
+    Set-ObjectField -Object $Capture -Name 'asr_provider' -Value $asrProvider | Out-Null
+    Set-ObjectField -Object $Capture -Name 'asr_model' -Value $asrModel | Out-Null
+    Set-ObjectField -Object $Capture -Name 'asr_error' -Value $asrError | Out-Null
     if (Test-HasValue $relativeTranscriptPath) { Set-ObjectField -Object $Capture -Name 'transcript_path' -Value $relativeTranscriptPath | Out-Null }
     if ($null -ne $metadata) {
         Set-ObjectField -Object $metadata -Name 'sidecar_path' -Value $relativeCapturePath | Out-Null
         Set-ObjectField -Object $metadata -Name 'metadata_path' -Value $relativeMetadataPath | Out-Null
+        Set-ObjectField -Object $metadata -Name 'audio_path' -Value $audioPath | Out-Null
+        Set-ObjectField -Object $metadata -Name 'audio_download_status' -Value $audioDownloadStatus | Out-Null
+        Set-ObjectField -Object $metadata -Name 'transcript_status' -Value $transcriptStatus | Out-Null
+        Set-ObjectField -Object $metadata -Name 'transcript_source' -Value $transcriptSource | Out-Null
+        Set-ObjectField -Object $metadata -Name 'asr_status' -Value $asrStatus | Out-Null
+        Set-ObjectField -Object $metadata -Name 'asr_provider' -Value $asrProvider | Out-Null
+        Set-ObjectField -Object $metadata -Name 'asr_model' -Value $asrModel | Out-Null
+        Set-ObjectField -Object $metadata -Name 'asr_error' -Value $asrError | Out-Null
         if (Test-HasValue $relativeTranscriptPath) { Set-ObjectField -Object $metadata -Name 'transcript_path' -Value $relativeTranscriptPath | Out-Null }
+    }
+
+    Write-Utf8Text -Path $capturePath -Content ($Capture | ConvertTo-Json -Depth 100)
+    if ($null -ne $metadata) {
+        Write-Utf8Text -Path $metadataPath -Content ($metadata | ConvertTo-Json -Depth 100)
     }
     return $Capture
 }
@@ -1408,6 +1659,7 @@ function Invoke-PodcastCapture {
         $metadata = [ordered]@{
             capture_level = $captureLevel
             transcript_status = if (Test-HasValue $transcript) { 'available' } else { 'missing' }
+            transcript_source = if (Test-HasValue $transcript) { 'remote' } else { 'missing' }
             media_downloaded = $false
             analysis_ready = $true
             extractor = if ($null -ne $rssMetadata -and [bool]$rssMetadata.item_found) { 'web-metadata+rss' } else { 'web-metadata' }
@@ -1451,6 +1703,11 @@ function Invoke-PodcastCapture {
             description = if (Test-HasValue $ogDescription) { $ogDescription } else { $episodeDescription }
             audio_path = ''
             audio_download_status = 'skipped'
+            transcript_source = $metadata.transcript_source
+            asr_status = if (Test-HasValue $transcript) { 'not_needed' } else { 'not_attempted' }
+            asr_provider = ''
+            asr_model = ''
+            asr_error = ''
             status = 'clipped'
             download_status = 'skipped'
             download_method = 'none'
@@ -1918,6 +2175,9 @@ function Get-RunSummaryLines {
     $lines.Add(("{0}     : {1}" -f (Zh '\u6d41\u7a0b'), $flowLabelZh))
     $lines.Add("download : $($Result.download_status) / $($Result.download_method)")
     $lines.Add("video    : $($Result.video_path)")
+    if ($null -ne $Result.PSObject.Properties['audio_download_status']) { $lines.Add("audio    : $($Result.audio_download_status) / $($Result.audio_path)") }
+    if ($null -ne $Result.PSObject.Properties['transcript_status']) { $lines.Add("transcript: $($Result.transcript_status) / $($Result.transcript_source)") }
+    if ($null -ne $Result.PSObject.Properties['asr_status']) { $lines.Add("asr      : $($Result.asr_status) / $($Result.asr_provider)") }
     if ($null -ne $Result.PSObject.Properties['final_run_status']) { $lines.Add("result   : $($Result.final_run_status)") }
     if ($null -ne $Result.PSObject.Properties['final_run_status_zh']) { $lines.Add(("{0}     : {1}" -f (Zh '\u7ed3\u679c'), $Result.final_run_status_zh)) }
     if (Test-HasValue $failedStep) {
@@ -2019,6 +2279,18 @@ try {
     if (-not (Test-HasValue $downloadMethodForResult) -and $null -ne $captureMetadata) { $downloadMethodForResult = Get-StringValue -Data $captureMetadata -Name 'download_method' -DefaultValue '' }
     $videoPathForResult = Get-StringValue -Data $capture -Name 'video_path' -DefaultValue ''
     if (-not (Test-HasValue $videoPathForResult) -and $null -ne $captureMetadata) { $videoPathForResult = Get-StringValue -Data $captureMetadata -Name 'video_path' -DefaultValue '' }
+    $audioPathForResult = Get-StringValue -Data $capture -Name 'audio_path' -DefaultValue ''
+    if (-not (Test-HasValue $audioPathForResult) -and $null -ne $captureMetadata) { $audioPathForResult = Get-StringValue -Data $captureMetadata -Name 'audio_path' -DefaultValue '' }
+    $audioDownloadStatusForResult = Get-StringValue -Data $capture -Name 'audio_download_status' -DefaultValue ''
+    if (-not (Test-HasValue $audioDownloadStatusForResult) -and $null -ne $captureMetadata) { $audioDownloadStatusForResult = Get-StringValue -Data $captureMetadata -Name 'audio_download_status' -DefaultValue '' }
+    $transcriptStatusForResult = Get-StringValue -Data $capture -Name 'transcript_status' -DefaultValue ''
+    if (-not (Test-HasValue $transcriptStatusForResult) -and $null -ne $captureMetadata) { $transcriptStatusForResult = Get-StringValue -Data $captureMetadata -Name 'transcript_status' -DefaultValue '' }
+    $transcriptSourceForResult = Get-StringValue -Data $capture -Name 'transcript_source' -DefaultValue ''
+    if (-not (Test-HasValue $transcriptSourceForResult) -and $null -ne $captureMetadata) { $transcriptSourceForResult = Get-StringValue -Data $captureMetadata -Name 'transcript_source' -DefaultValue '' }
+    $asrStatusForResult = Get-StringValue -Data $capture -Name 'asr_status' -DefaultValue ''
+    if (-not (Test-HasValue $asrStatusForResult) -and $null -ne $captureMetadata) { $asrStatusForResult = Get-StringValue -Data $captureMetadata -Name 'asr_status' -DefaultValue '' }
+    $asrProviderForResult = Get-StringValue -Data $capture -Name 'asr_provider' -DefaultValue ''
+    if (-not (Test-HasValue $asrProviderForResult) -and $null -ne $captureMetadata) { $asrProviderForResult = Get-StringValue -Data $captureMetadata -Name 'asr_provider' -DefaultValue '' }
     $sidecarPathForResult = Get-StringValue -Data $capture -Name 'sidecar_path' -DefaultValue ''
     if (-not (Test-HasValue $sidecarPathForResult) -and $null -ne $captureMetadata) { $sidecarPathForResult = Get-StringValue -Data $captureMetadata -Name 'sidecar_path' -DefaultValue '' }
     $authActionRequiredForResult = Get-StringValue -Data $capture -Name 'auth_action_required' -DefaultValue ''
@@ -2049,6 +2321,12 @@ try {
         download_status = $downloadStatusForResult
         download_method = $downloadMethodForResult
         video_path = $videoPathForResult
+        audio_path = $audioPathForResult
+        audio_download_status = $audioDownloadStatusForResult
+        transcript_status = $transcriptStatusForResult
+        transcript_source = $transcriptSourceForResult
+        asr_status = $asrStatusForResult
+        asr_provider = $asrProviderForResult
         sidecar_path = $sidecarPathForResult
         auth_action_required = $authActionRequiredForResult
         auth_failure_reason = $authFailureReasonForResult

@@ -119,6 +119,8 @@ If you instead get a note that says `Processed by: web_fetch`, that note did not
   - adapter that talks to the local `XHS-Downloader` API and normalizes results back into clipper fields
 - `scripts/bootstrap_social_auth.py`
   - one-time auth bootstrap helper for platform-specific storage state and cookie export
+- `scripts/podcast_asr_fallback.py`
+  - optional podcast transcript fallback entrypoint for local audio attachments
 
 ## Storage Model
 
@@ -150,6 +152,9 @@ Important config points:
 - `routes.social.auth.xiaohongshu.*`
 - `routes.social.xiaohongshu_adapter.server_url`
   - default `http://127.0.0.1:5556/xhs/detail`
+- `routes.podcast.download_audio`
+- `routes.podcast.asr.*`
+  - optional transcript fallback configuration for Phase 3
 
 Validate config with:
 
