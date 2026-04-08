@@ -2,10 +2,12 @@
 
 ## Document Status
 
-- Last Updated: `2026-04-05`
+- Last Updated: `2026-04-08`
 
 ## Change Log
 
+- `2026-04-08`
+  - reviewed the gateway README against the current repository structure and kept it aligned with the optional iPhone entry role
 - `2026-04-05`
   - added document status metadata so gateway changes can be tracked directly in the README
 

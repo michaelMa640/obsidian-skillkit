@@ -1,128 +1,304 @@
-﻿# Obsidian Skillkit
+# Obsidian Skillkit
 
 ## Document Status
 
-- Last Updated: `2026-04-07`
+- Last Updated: `2026-04-08`
 
-## Change Log
+## 中文说明
 
-- 2026-04-07
-  - rendering now embeds local social videos based on ideo_path instead of only short_video, fixing Xiaohongshu notes that were detected as social_post
-- 2026-04-07
-  - hardened OpenClaw routing guidance so Feishu 剪藏 + xhslink / xiaohongshu / douyin requests should go to obsidian-clipper instead of generic web archiving
-- `2026-04-07`
-  - documented the Step 7 readiness decision for whether Xiaohongshu can remove the fallback backend today
-- `2026-04-07`
-  - documented the Step 6 fallback-backend behavior for Xiaohongshu media download
-- `2026-04-07`
-  - documented the Step 5 generic media resolution pipeline and backend fallback fields
-  - updated the Xiaohongshu download order to extractor-first with backend fallback
-- `2026-04-05`
-  - rewrote the root overview to match the current Feishu / OpenClaw workflow
-  - documented the Xiaohongshu short-link fix, blocked-access detection, and local video embedding status
-  - documented the optional `XHS-Downloader` role and the split between development repo and OpenClaw runtime copy
+### 这是一个什么项目
 
-This repository is the local workspace for the Obsidian-based short-video workflow used by OpenClaw, Feishu, and the optional iPhone gateway.
+`Obsidian Skillkit` 是一套围绕 Obsidian 搭建的短视频与网页知识归档工具链。
 
-## Current Status
+它的目标不是只“保存一个链接”，而是把来自抖音、小红书等平台的分享内容，尽量转成：
 
-Verified on `2026-04-07`:
+- 可长期保存的剪藏笔记
+- 可复用的结构化 sidecar 数据
+- 可落盘的本地视频附件
+- 可继续进入分析流程的知识资产
 
-- `obsidian-clipper/` can capture Douyin and Xiaohongshu share text into `Clippings/`
-- Xiaohongshu share text now preserves the full `xhslink.com/o/<id>` short link instead of truncating to `/o`
-- Xiaohongshu notes now:
-  - keep platform-specific auth separate from Douyin
-  - detect `website-login/error` and `300012` as blocked access instead of pretending the clip succeeded
-  - embed the downloaded local `.mp4` after `## 原始文案`
-  - clean malformed interaction labels such as `赞` so they render as `未获取`
-- `obsidian-analyzer/` can read an existing clipping plus sidecars and write structured notes into `爆款拆解/`
-- `ios-shortcuts-gateway/` still supports the remote iPhone path, but Feishu -> OpenClaw is the main day-to-day entry
+当前日常主入口是：
 
-Important Xiaohongshu nuance:
+- `飞书 -> OpenClaw -> skills`
 
-- content capture does not require `XHS-Downloader`
-- local video landing currently benefits from the optional `XHS-Downloader` adapter
-- if that API is not running, the clipping note is still created, but the Xiaohongshu video file may not land locally
-- current clip runs also record generic `resolved_media_*` and `media_backend_*` fields so media resolution and media download can evolve independently
-- `XHS-Downloader` now acts as a fallback backend behind the built-in Xiaohongshu extractor path
-- current engineering verdict: keep the fallback backend for now, because the current validation sample is not yet enough to justify hard removal
+可选远程入口是：
 
-## Main Modules
+- `iPhone Shortcut -> ios-shortcuts-gateway -> skills`
+
+### 适合谁
+
+这个项目主要面向使用者：
+
+- 想把抖音、小红书、网页内容稳定收进 Obsidian
+- 希望通过飞书直接发“剪藏”“拆解”指令
+- 希望视频、评论、互动数据尽量一起保存
+
+### 当前已经验证的能力
+
+截至 `2026-04-08`，当前仓库已经验证这些能力：
 
 - `obsidian-clipper/`
-  - raw capture into `Clippings/`
-  - sidecars and media under `Attachments/ShortVideos/...`
+  - 可处理抖音、小红书分享文本或链接
+  - 产出 `Clippings/` 下的结构化剪藏笔记
+  - 产出 `Attachments/ShortVideos/...` 下的媒体与 sidecar
 - `obsidian-analyzer/`
-  - structured analysis output into `爆款拆解/`
+  - 可读取已有剪藏笔记或 `capture.json`
+  - 产出 `爆款拆解/` 下的结构化分析笔记
+- 小红书当前主路径
+  - 已切到“内建 extractor 优先”
+  - 视频下载主路径是 extractor 解析出的 canonical media
+  - `XHS-Downloader` 只作为 fallback backend 保留
+- 小红书当前已修复的问题
+  - `xhslink.com/o/<id>` 短链提取
+  - 独立于抖音的 auth 文件
+  - `website-login/error` / `300012` 拦截识别
+  - OpenClaw 错误把“小红书剪藏”分流到 `web_fetch` 的入口规则
+  - 本地视频在笔记中的直接嵌入
+
+### 典型工作流
+
+#### 1. 只做剪藏
+
+用户在飞书中发送：
+
+```text
+剪藏：<抖音或小红书分享文本/链接>
+```
+
+系统执行：
+
+1. OpenClaw 识别为剪藏任务
+2. 调用 `obsidian-clipper`
+3. 在 Obsidian 中写入 `Clippings/` 笔记
+4. 尝试落盘本地视频、封面图、评论 JSON、元数据 JSON
+
+#### 2. 剪藏后继续拆解
+
+用户在飞书中发送：
+
+```text
+拆解视频：<抖音或小红书分享文本/链接>
+```
+
+系统执行：
+
+1. 先调用 `obsidian-clipper`
+2. 再把返回的 `note_path` 或 `sidecar_path` 交给 `obsidian-analyzer`
+3. 在 `爆款拆解/` 中写入分析笔记
+
+### 项目结构
+
+- `obsidian-clipper/`
+  - 第一阶段，负责剪藏、结构化捕获、媒体落盘
+- `obsidian-analyzer/`
+  - 第二阶段，负责分析和知识提炼
 - `ios-shortcuts-gateway/`
-  - optional local HTTP gateway for iPhone Shortcut submission
+  - 可选的远程 HTTP 入口，给 iPhone Shortcut 用
 - `obsidian/`
-  - direct Obsidian vault operations through the official CLI
+  - 通过官方 Obsidian CLI 做 vault 操作
+- `obsidian-archiver/`
+  - 旧的一步式网页归档路径，当前主要用于兼容与迁移
 - `tools/`
-  - local helper tools, including the bundled `XHS-Downloader` launcher
+  - 本地辅助工具，包括 `XHS-Downloader` 的启动脚本
 
-## Runtime Paths
+### 你作为使用者最需要知道的事
 
-There are usually two relevant copies of the clipper code on a machine:
+#### 飞书是当前主入口
 
-1. Development repo:
-   - `E:\Codex_project\obsidian-skillkit\obsidian-clipper`
-2. OpenClaw runtime copy:
-   - `C:\Users\<user>\.openclaw\workspace\skills\obsidian-clipper`
+如果你日常在用飞书发内容给 OpenClaw，当前推荐只记住这两种表达：
 
-If Feishu / OpenClaw behavior does not match the repo, check whether the runtime copy has been synced.
+```text
+剪藏：<分享文本或链接>
+```
 
-## Recommended Flow
+```text
+拆解视频：<分享文本或链接>
+```
 
-### Feishu / OpenClaw
+#### 小红书当前下载策略
 
-1. OpenClaw receives `剪藏视频：<share text or url>` or `拆解视频：<share text or url>`
-2. `obsidian-clipper` creates a clipping note in `Clippings/`
-3. `obsidian-analyzer` optionally reads that clipping and writes a breakdown note into `爆款拆解/`
+当前小红书视频下载顺序是：
 
-### iPhone Shortcut
-
-1. iPhone Shortcut sends a request to `ios-shortcuts-gateway`
-2. Gateway returns immediately with `ACCEPTED`
-3. Gateway runs `obsidian-clipper` or `obsidian-clipper -> obsidian-analyzer`
-4. Final status goes back to Feishu asynchronously
-
-## Xiaohongshu Video Download
-
-Current download order for Xiaohongshu short video:
-
-1. extractor-provided resolved media candidates
-2. optional `XHS-Downloader` backend fallback
+1. 内建 extractor 提供的 resolved media
+2. `XHS-Downloader` fallback backend
 3. `yt-dlp` fallback
 
-The local helper scripts in `tools/` start and stop the bundled API:
+这意味着：
 
-- `tools/start_xhs_downloader.cmd`
-- `tools/start_xhs_downloader.ps1`
-- `tools/stop_xhs_downloader.ps1`
+- 不开 `XHS-Downloader` 时，笔记通常仍能生成
+- 但小红书视频的本地落盘成功率会更依赖主路径和兜底路径
 
-Default adapter endpoint:
+#### 当前最常见的运维问题
 
-- `http://127.0.0.1:5556/xhs/detail`
+如果飞书里的行为和这份仓库代码不一致，先检查是不是运行了另一份 OpenClaw runtime copy：
 
-## Debugging
+- 开发仓库：
+  - `E:\Codex_project\obsidian-skillkit\obsidian-clipper`
+- OpenClaw 运行副本：
+  - `C:\Users\<user>\.openclaw\workspace\skills\obsidian-clipper`
 
-Preferred artifacts for troubleshooting:
+很多“我明明改了代码但飞书没变”的问题，本质上都是 runtime copy 没同步。
 
-- `support-bundle/`
-- `run-clipper.json`
-- `capture.json`
-- `download-social.json`
+### 当前仍需注意的边界
 
-For social validation runs:
+- 小红书 DOM 结构仍可能变化
+- 互动数据并非每条都能 100% 拿全
+- `XHS-Downloader` 仍是第三方依赖
+- OpenClaw 会话上下文有时会影响技能选择，所以 skill 规则和 runtime copy 同步都很关键
 
-- `obsidian-clipper/.tmp/social-download-validation/<timestamp>/`
+### 推荐阅读顺序
 
-## Main Docs
+- [obsidian-clipper/README.md](./obsidian-clipper/README.md)
+- [obsidian-analyzer/README.md](./obsidian-analyzer/README.md)
+- [ios-shortcuts-gateway/README.md](./ios-shortcuts-gateway/README.md)
+- [openclaw-short-video-integration.md](./openclaw-short-video-integration.md)
 
-- [Clipper README](E:\Codex_project\obsidian-skillkit\obsidian-clipper\README.md)
-- [Analyzer README](E:\Codex_project\obsidian-skillkit\obsidian-analyzer\README.md)
-- [OpenClaw Short-Video Integration](E:\Codex_project\obsidian-skillkit\openclaw-short-video-integration.md)
-- [iOS Shortcuts Gateway README](E:\Codex_project\obsidian-skillkit\ios-shortcuts-gateway\README.md)
+---
 
+## English Guide
 
+### What this project is
+
+`Obsidian Skillkit` is a local workflow toolkit for turning short-video shares and web content into reusable assets inside an Obsidian vault.
+
+The goal is not just to save a URL. The goal is to convert shared content from Douyin, Xiaohongshu, and similar sources into:
+
+- stable clipping notes
+- reusable structured sidecars
+- locally landed media files
+- analyzer-ready knowledge records
+
+The main production entry today is:
+
+- `Feishu -> OpenClaw -> skills`
+
+The optional remote/mobile entry is:
+
+- `iPhone Shortcut -> ios-shortcuts-gateway -> skills`
+
+### Who this is for
+
+This repository is written mainly for end users:
+
+- people who want to archive Douyin, Xiaohongshu, or web content into Obsidian
+- people who want to trigger clipping and analysis from Feishu
+- people who want local media, comments, and engagement metadata whenever possible
+
+### What is currently verified
+
+As of `2026-04-08`, the repository has verified support for:
+
+- `obsidian-clipper/`
+  - captures Douyin and Xiaohongshu share text or URLs
+  - writes structured clipping notes into `Clippings/`
+  - writes media and sidecars under `Attachments/ShortVideos/...`
+- `obsidian-analyzer/`
+  - reads a clipping note or `capture.json`
+  - writes structured analysis notes into `爆款拆解/`
+- Xiaohongshu current primary path
+  - built-in extractor first
+  - canonical media resolution before fallback tools
+  - `XHS-Downloader` retained only as a fallback backend
+- Xiaohongshu fixes already landed
+  - short-link extraction for `xhslink.com/o/<id>`
+  - separate auth files from Douyin
+  - blocked-access detection for `website-login/error` and `300012`
+  - OpenClaw routing hardening so clipping does not fall through to generic `web_fetch`
+  - direct embedded local video in the clipping note
+
+### Typical workflows
+
+#### 1. Clip only
+
+The user sends:
+
+```text
+剪藏：<Douyin or Xiaohongshu share text / URL>
+```
+
+The system then:
+
+1. routes the request into `obsidian-clipper`
+2. creates a note in `Clippings/`
+3. attempts to land local video, cover image, comments JSON, and metadata JSON
+
+#### 2. Clip and then analyze
+
+The user sends:
+
+```text
+拆解视频：<Douyin or Xiaohongshu share text / URL>
+```
+
+The system then:
+
+1. runs `obsidian-clipper`
+2. passes the returned `note_path` or `sidecar_path` into `obsidian-analyzer`
+3. writes an analysis note into `爆款拆解/`
+
+### Repository layout
+
+- `obsidian-clipper/`
+  - stage 1, clipping, structured capture, media landing
+- `obsidian-analyzer/`
+  - stage 2, analysis and knowledge extraction
+- `ios-shortcuts-gateway/`
+  - optional HTTP entry layer for iPhone Shortcut
+- `obsidian/`
+  - direct Obsidian CLI operations
+- `obsidian-archiver/`
+  - legacy one-step webpage archival path, now mostly for compatibility
+- `tools/`
+  - helper tools, including `XHS-Downloader` launch scripts
+
+### What end users should know
+
+#### Feishu is the main entry
+
+In daily use, the main commands to remember are:
+
+```text
+剪藏：<share text or URL>
+```
+
+```text
+拆解视频：<share text or URL>
+```
+
+#### Current Xiaohongshu download order
+
+The current Xiaohongshu download order is:
+
+1. built-in extractor resolved media
+2. `XHS-Downloader` fallback backend
+3. `yt-dlp` fallback
+
+In practice this means:
+
+- clipping notes can still be created even if the fallback backend is not running
+- local Xiaohongshu video landing is more reliable when the fallback backend is available
+
+#### Runtime copy matters
+
+If Feishu behavior does not match this repository, check whether the OpenClaw runtime copy was synced.
+
+The two most important locations are:
+
+- development repo:
+  - `E:\Codex_project\obsidian-skillkit\obsidian-clipper`
+- OpenClaw runtime copy:
+  - `C:\Users\<user>\.openclaw\workspace\skills\obsidian-clipper`
+
+### Current boundaries
+
+- Xiaohongshu DOM can still change
+- not every engagement field will be available on every capture
+- `XHS-Downloader` is still a third-party dependency
+- OpenClaw session context can affect skill selection, so skill rules and runtime sync matter
+
+### Recommended reading order
+
+- [obsidian-clipper/README.md](./obsidian-clipper/README.md)
+- [obsidian-analyzer/README.md](./obsidian-analyzer/README.md)
+- [ios-shortcuts-gateway/README.md](./ios-shortcuts-gateway/README.md)
+- [openclaw-short-video-integration.md](./openclaw-short-video-integration.md)

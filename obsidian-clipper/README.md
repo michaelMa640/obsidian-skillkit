@@ -2,14 +2,17 @@
 
 ## Document Status
 
-- Last Updated: `2026-04-07`
+- Last Updated: `2026-04-08`
 
 ## Change Log
 
-- 2026-04-07
-  - local social videos are now embedded whenever a social clipping has a local ideo_path, even if the detected content_type is social_post
-- 2026-04-07
-  - documented the OpenClaw routing hardening for Feishu clipping requests so Xiaohongshu and Douyin share links should not fall through to obsidian-archiver or web_fetch
+- `2026-04-08`
+  - reviewed the README against the current verified runtime behavior
+  - fixed the landed-video rendering note so it now correctly refers to `video_path`
+- `2026-04-07`
+  - documented that local social videos are embedded whenever a social clipping has a local `video_path`, even if the detected `content_type` is `social_post`
+- `2026-04-07`
+  - documented the OpenClaw routing hardening for Feishu clipping requests so Xiaohongshu and Douyin share links should not fall through to `obsidian-archiver` or `web_fetch`
 - `2026-04-07`
   - documented the Step 7 removal-readiness assessment for the Xiaohongshu fallback backend
 - `2026-04-07`
@@ -69,6 +72,7 @@ Important:
 - `CategoryHint` folder override is disabled by default, so clip notes should stay in `Clippings/`
 - `XHS-Downloader` is now treated as a fallback backend, not the primary Xiaohongshu path
 - current engineering verdict: do not remove the fallback backend yet, because the validation set is still too small and too synthetic
+- Feishu clipping requests for `xhslink`, `xiaohongshu`, `douyin`, and copied social share text should now route to `obsidian-clipper` first instead of generic web archiving
 
 ## Download Strategy
 
@@ -87,6 +91,19 @@ Current Douyin download order:
 
 1. Playwright candidate media refs
 2. `yt-dlp`
+
+## What A Good Run Looks Like
+
+For a healthy Xiaohongshu clipping run, you should expect:
+
+- `route = social`
+- `platform = xiaohongshu`
+- a clipping note in `Clippings/`
+- a local `video_path` when media landing succeeds
+- `capture.json`, `comments.json`, and `metadata.json` under `Attachments/ShortVideos/...`
+- direct embedded local video in the note whenever `video_path` exists
+
+If you instead get a note that says `Processed by: web_fetch`, that note did not come from `obsidian-clipper`.
 
 ## Key Scripts
 
