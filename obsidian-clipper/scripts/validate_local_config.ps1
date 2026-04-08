@@ -127,12 +127,25 @@ foreach ($platform in @('douyin', 'xiaohongshu')) {
     }
 }
 
-$podcastRoute = if ($null -ne $config.routes) { $config.routes.podcast } else { $null }
-$podcastAsr = if ($null -ne $podcastRoute) { $podcastRoute.asr } else { $null }
+$podcastRoute = $null
+if ($null -ne $config.routes) {
+    $podcastRouteProp = $config.routes.PSObject.Properties['podcast']
+    if ($null -ne $podcastRouteProp) {
+        $podcastRoute = $podcastRouteProp.Value
+    }
+}
+
+$podcastAsr = $null
+if ($null -ne $podcastRoute) {
+    $podcastAsrProp = $podcastRoute.PSObject.Properties['asr']
+    if ($null -ne $podcastAsrProp) {
+        $podcastAsr = $podcastAsrProp.Value
+    }
+}
 if ($null -ne $podcastAsr) {
     $asrEnabled = $false
     if ($null -ne $podcastAsr.PSObject.Properties['enabled']) {
-        $rawEnabled = $podcastAsr.enabled
+        $rawEnabled = $podcastAsr.PSObject.Properties['enabled'].Value
         if ($rawEnabled -is [bool]) {
             $asrEnabled = [bool]$rawEnabled
         } else {
@@ -141,7 +154,11 @@ if ($null -ne $podcastAsr) {
     }
 
     if ($asrEnabled) {
-        $asrScript = [string]$podcastAsr.script
+        $asrScript = ''
+        $asrScriptProp = $podcastAsr.PSObject.Properties['script']
+        if ($null -ne $asrScriptProp) {
+            $asrScript = [string]$asrScriptProp.Value
+        }
         if (Is-PlaceholderValue $asrScript) {
             $missingRequired.Add([pscustomobject]@{
                 field = 'routes.podcast.asr.script'
