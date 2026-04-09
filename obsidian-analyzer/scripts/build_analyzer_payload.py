@@ -214,6 +214,16 @@ def first_non_empty_section(sections: dict[str, str], names: list[str]) -> str:
     return ""
 
 
+def normalize_analysis_goal(raw_value: Any, analysis_mode: str) -> str:
+    explicit = string_value(raw_value).lower()
+    if explicit in {"analyze", "knowledge"}:
+        return explicit
+    mode = string_value(analysis_mode).lower()
+    if mode == "analyze":
+        return "analyze"
+    return "knowledge"
+
+
 def load_note(note_path: str, warnings: list[str]) -> tuple[dict[str, Any], str, dict[str, str]]:
     if not has_value(note_path):
         return {}, "", {}
@@ -335,6 +345,12 @@ def build_payload(note_path: str, capture_json_path: str, vault_path: str, analy
         capture.get("title"),
         default="Untitled analysis source",
     )
+    analysis_goal = normalize_analysis_goal(
+        frontmatter.get("analysis_goal"),
+        analysis_mode=analysis_mode,
+    )
+    if not has_value(frontmatter.get("analysis_goal")):
+        analysis_goal = normalize_analysis_goal(capture.get("analysis_goal"), analysis_mode=analysis_mode)
     comments_count_value = capture.get("comments_count")
     if not has_value(comments_count_value):
         comments_count_value = metadata.get("comment_count_visible")
@@ -343,6 +359,7 @@ def build_payload(note_path: str, capture_json_path: str, vault_path: str, analy
 
     payload = {
         "analysis_mode": analysis_mode,
+        "analysis_goal": analysis_goal,
         "source_note_path": resolved_note_path,
         "capture_json_path": resolved_capture_path,
         "source_url": string_value(frontmatter.get("source_url"), capture.get("source_url")),

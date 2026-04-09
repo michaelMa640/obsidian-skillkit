@@ -431,6 +431,7 @@ function Build-MockAnalysisResult {
     [pscustomobject]@{
         title = Get-StringValue -Data $Payload -Name 'title' -DefaultValue 'Untitled'
         analysis_mode = Get-StringValue -Data $Payload -Name 'analysis_mode' -DefaultValue 'analyze'
+        analysis_goal = Get-StringValue -Data $Payload -Name 'analysis_goal' -DefaultValue 'analyze'
         source_note_path = Get-StringValue -Data $Payload -Name 'source_note_path' -DefaultValue ''
         capture_json_path = Get-StringValue -Data $Payload -Name 'capture_json_path' -DefaultValue ''
         source_url = Get-StringValue -Data $Payload -Name 'source_url' -DefaultValue ''
@@ -509,6 +510,7 @@ function Get-AnalyzerSummaryLines {
     $failedStep = Get-StringValue -Data $Result -Name 'failed_step' -DefaultValue ''
     $lines.Add('=== Analyzer Summary ===')
     $lines.Add("mode     : $($Result.analysis_mode)")
+    if ($null -ne $Result.PSObject.Properties['analysis_goal']) { $lines.Add("goal     : $($Result.analysis_goal)") }
     $lines.Add("platform : $($Result.platform)")
     $lines.Add("title    : $($Result.title)")
     $lines.Add("status   : $($Result.analysis_status)")
@@ -668,6 +670,7 @@ try {
         success = $true
         dry_run = [bool]$DryRun
         analysis_mode = $analysisMode
+        analysis_goal = Get-StringValue -Data $payload -Name 'analysis_goal' -DefaultValue $(if ($analysisMode -eq 'analyze') { 'analyze' } else { 'knowledge' })
         analysis_status = [string]$rendererResult.analysis_status
         title = [string]$rendererResult.title
         platform = [string]$payload.platform
@@ -712,6 +715,7 @@ try {
         success = $false
         dry_run = [bool]$DryRun
         analysis_mode = if (Test-HasValue $Mode) { $Mode } else { '' }
+        analysis_goal = if ((if (Test-HasValue $Mode) { $Mode } else { '' }) -eq 'analyze') { 'analyze' } else { 'knowledge' }
         analysis_status = 'failed'
         failed_step = $script:AnalyzerCurrentStep
         title = ''

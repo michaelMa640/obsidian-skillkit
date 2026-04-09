@@ -7,7 +7,9 @@ This document defines the note contract emitted by `obsidian-analyzer`.
 ## Target folders
 
 - `爆款拆解/` for `analyze`
-- `Insights/` for `learn`
+- `Insights/知识解读/` for `knowledge`
+- `Insights/知识卡/` for knowledge cards
+- `Insights/主题地图/` for topic maps
 
 ## Required frontmatter
 
@@ -18,6 +20,7 @@ This document defines the note contract emitted by `obsidian-analyzer`.
 - `capture_json_path`
 - `video_path`
 - `analysis_mode`
+- `analysis_goal`
 - `platform`
 - `content_type`
 - `capture_id`
@@ -46,6 +49,15 @@ Required section order:
 - `## 风险提示`
 - `## 原文证据`
 - `## 来源`
+
+## Knowledge routing baseline
+
+- `analysis_mode` remains the current runtime implementation switch.
+- `analysis_goal` is the content-intent switch.
+- For Step 0, the baseline mapping is:
+  - `analysis_mode = analyze` -> `analysis_goal = analyze`
+  - `analysis_mode = learn` -> `analysis_goal = knowledge`
+- The dedicated `knowledge` renderer will be introduced in the follow-up implementation step.
 
 ## Renderer rules
 

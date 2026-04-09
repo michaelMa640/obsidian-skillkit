@@ -5,7 +5,7 @@
     "must_update": [
       "obsidian.vault_path unless your workflow always passes a vault path at runtime",
       "llm.provider and llm.model",
-      "analyzer.default_learn_folder and analyzer.default_analyze_folder if your vault uses different names"
+      "analyzer.default_knowledge_folder and analyzer.default_analyze_folder if your vault uses different names"
     ]
   },
   "obsidian": {
@@ -13,7 +13,10 @@
     "vault_path": "E:/REPLACE/WITH/YOUR/ObsidianVault"
   },
   "analyzer": {
-    "default_learn_folder": "Insights",
+    "default_learn_folder": "Insights/知识解读",
+    "default_knowledge_folder": "Insights/知识解读",
+    "default_knowledge_card_folder": "Insights/知识卡",
+    "default_topic_map_folder": "Insights/主题地图",
     "default_analyze_folder": "爆款拆解",
     "output_language": "zh-CN",
     "default_debug_directory": ".tmp/run-analyzer"

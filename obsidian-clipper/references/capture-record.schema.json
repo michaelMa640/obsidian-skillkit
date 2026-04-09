@@ -60,7 +60,9 @@
     "audio_download_status": { "type": "string" },
     "video_storage_url": { "type": "string" },
     "cover_path": { "type": "string" },
+    "transcript_raw_path": { "type": "string" },
     "transcript_path": { "type": "string" },
+    "transcript_segments_path": { "type": "string" },
     "metadata_path": { "type": "string" },
     "sidecar_path": { "type": "string" },
     "video_duration_seconds": { "type": "number", "minimum": 0 },
@@ -75,7 +77,23 @@
     "summary": { "type": "string" },
     "description": { "type": "string" },
     "raw_text": { "type": "string" },
+    "transcript_raw": { "type": "string" },
     "transcript": { "type": "string" },
+    "transcript_segments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "index": { "type": ["integer", "number"] },
+          "start": { "type": ["number", "integer"] },
+          "end": { "type": ["number", "integer"] },
+          "timestamp": { "type": "string" },
+          "raw_text": { "type": "string" },
+          "text": { "type": "string" }
+        }
+      }
+    },
     "podcast_platform": { "type": "string" },
     "episode_url": { "type": "string" },
     "episode_id": { "type": "string" },
@@ -136,6 +154,7 @@
       "type": "string",
       "enum": ["pending", "running", "done", "failed", "skipped"]
     },
+    "asr_normalization": { "type": "string" },
     "bitable_sync_status": {
       "type": "string",
       "enum": ["pending", "done", "failed", "skipped"]

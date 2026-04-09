@@ -1,7 +1,11 @@
 import argparse
 import json
+import re
 from pathlib import Path
 from typing import Any
+
+
+TIMESTAMP_RE = re.compile(r"^(?P<ts>(?:\d{2}:)?\d{2}:\d{2})\s+(?P<text>.+?)\s*$")
 
 
 def parse_bool(value: str | bool) -> bool:
@@ -33,19 +37,126 @@ def format_timestamp(seconds: float) -> str:
     return f"{minutes:02d}:{secs:02d}"
 
 
-def build_mock_result(audio_path: str, mock_transcript_path: str | None) -> dict[str, Any]:
-    transcript = read_text_if_exists(mock_transcript_path)
+def parse_timestamp_seconds(value: str) -> float:
+    parts = [int(part) for part in value.split(":")]
+    if len(parts) == 2:
+        minutes, seconds = parts
+        return float(minutes * 60 + seconds)
+    if len(parts) == 3:
+        hours, minutes, seconds = parts
+        return float(hours * 3600 + minutes * 60 + seconds)
+    raise ValueError(f"Unsupported timestamp format: {value}")
+
+
+def build_converter(normalize_script: str) -> tuple[Any | None, str]:
+    normalized = normalize_script.strip().lower()
+    if normalized in {"", "none", "original", "raw"}:
+        return None, "none"
+    if normalized not in {"simplified", "zh-cn", "zh-hans", "hans"}:
+        raise RuntimeError(f"Unsupported normalize-script value: {normalize_script}")
+    try:
+        from opencc import OpenCC
+    except ImportError as exc:
+        raise RuntimeError(
+            "Simplified transcript normalization requires the 'opencc-python-reimplemented' or 'opencc' package."
+        ) from exc
+    return OpenCC("t2s"), "opencc:t2s"
+
+
+def normalize_text(text: str, converter: Any | None) -> str:
+    if converter is None or not text:
+        return text
+    return str(converter.convert(text)).strip()
+
+
+def build_segment(index: int, start: float, end: float, raw_text: str, text: str) -> dict[str, Any]:
+    return {
+        "index": index,
+        "start": round(float(start), 3),
+        "end": round(float(end), 3),
+        "timestamp": format_timestamp(float(start)),
+        "raw_text": raw_text,
+        "text": text,
+    }
+
+
+def segments_to_transcript(segments: list[dict[str, Any]], field: str) -> str:
+    lines: list[str] = []
+    for segment in segments:
+        text = str(segment.get(field, "")).strip()
+        if not text:
+            continue
+        lines.append(f"{segment['timestamp']} {text}")
+    return "\n".join(lines).strip()
+
+
+def parse_mock_segments(transcript_raw: str, converter: Any | None) -> list[dict[str, Any]]:
+    segments: list[dict[str, Any]] = []
+    for index, line in enumerate(transcript_raw.splitlines()):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        timestamp_match = TIMESTAMP_RE.match(stripped)
+        if timestamp_match:
+            timestamp = timestamp_match.group("ts")
+            raw_text = timestamp_match.group("text").strip()
+            start = parse_timestamp_seconds(timestamp)
+        else:
+            raw_text = stripped
+            start = float(index)
+        segments.append(
+            build_segment(
+                index=len(segments),
+                start=start,
+                end=start,
+                raw_text=raw_text,
+                text=normalize_text(raw_text, converter),
+            )
+        )
+    return segments
+
+
+def build_result_payload(
+    provider: str,
+    model: str,
+    language: str,
+    transcript_raw: str,
+    segments: list[dict[str, Any]],
+    normalization: str,
+) -> dict[str, Any]:
+    transcript = segments_to_transcript(segments, "text")
     if not transcript:
-        transcript = f"00:00 Mock ASR transcript for {Path(audio_path).stem}."
+        raise RuntimeError("ASR finished without returning any transcript text.")
+    transcript_raw_rendered = segments_to_transcript(segments, "raw_text")
     return {
         "success": True,
-        "provider": "mock",
-        "model": "mock",
-        "language": "zh",
+        "provider": provider,
+        "model": model,
+        "language": language,
+        "transcript_raw": transcript_raw_rendered if transcript_raw_rendered else transcript_raw,
         "transcript": transcript,
-        "segment_count": max(len([line for line in transcript.splitlines() if line.strip()]), 1),
+        "segments": segments,
+        "segment_count": len(segments),
+        "normalization": normalization,
+        "normalization_applied": transcript != (transcript_raw_rendered if transcript_raw_rendered else transcript_raw),
         "error": "",
     }
+
+
+def build_mock_result(audio_path: str, mock_transcript_path: str | None, normalize_script: str) -> dict[str, Any]:
+    transcript_raw = read_text_if_exists(mock_transcript_path)
+    if not transcript_raw:
+        transcript_raw = f"00:00 Mock ASR transcript for {Path(audio_path).stem}."
+    converter, normalization = build_converter(normalize_script)
+    segments = parse_mock_segments(transcript_raw, converter)
+    return build_result_payload(
+        provider="mock",
+        model="mock",
+        language="zh",
+        transcript_raw=transcript_raw,
+        segments=segments,
+        normalization=normalization,
+    )
 
 
 def build_faster_whisper_result(
@@ -56,6 +167,7 @@ def build_faster_whisper_result(
     compute_type: str,
     beam_size: int,
     vad_filter: bool,
+    normalize_script: str,
 ) -> dict[str, Any]:
     try:
         from faster_whisper import WhisperModel
@@ -78,30 +190,38 @@ def build_faster_whisper_result(
     if language and language.lower() != "auto":
         transcribe_kwargs["language"] = language
 
+    converter, normalization = build_converter(normalize_script)
+    raw_lines: list[str] = []
+    segments_payload: list[dict[str, Any]] = []
     segments, info = model.transcribe(audio_path, **transcribe_kwargs)
-    transcript_lines: list[str] = []
-    segment_count = 0
     for segment in segments:
-        text = str(segment.text).strip()
-        if not text:
+        raw_text = str(segment.text).strip()
+        if not raw_text:
             continue
-        transcript_lines.append(f"{format_timestamp(float(segment.start))} {text}")
-        segment_count += 1
-
-    transcript = "\n".join(transcript_lines).strip()
-    if not transcript:
-        raise RuntimeError("ASR finished without returning any transcript text.")
+        normalized_text = normalize_text(raw_text, converter)
+        start = float(segment.start)
+        end = float(getattr(segment, "end", segment.start))
+        segments_payload.append(
+            build_segment(
+                index=len(segments_payload),
+                start=start,
+                end=end,
+                raw_text=raw_text,
+                text=normalized_text,
+            )
+        )
+        raw_lines.append(f"{format_timestamp(start)} {raw_text}")
 
     detected_language = getattr(info, "language", "") or language
-    return {
-        "success": True,
-        "provider": "faster-whisper",
-        "model": model_name,
-        "language": detected_language,
-        "transcript": transcript,
-        "segment_count": segment_count,
-        "error": "",
-    }
+    transcript_raw = "\n".join(raw_lines).strip()
+    return build_result_payload(
+        provider="faster-whisper",
+        model=model_name,
+        language=detected_language,
+        transcript_raw=transcript_raw,
+        segments=segments_payload,
+        normalization=normalization,
+    )
 
 
 def main() -> int:
@@ -109,12 +229,13 @@ def main() -> int:
     parser.add_argument("--audio-path", required=True)
     parser.add_argument("--output-json", required=True)
     parser.add_argument("--provider", default="faster-whisper")
-    parser.add_argument("--model", default="base")
+    parser.add_argument("--model", default="large-v3")
     parser.add_argument("--language", default="zh")
     parser.add_argument("--device", default="auto")
     parser.add_argument("--compute-type", default="auto")
     parser.add_argument("--beam-size", type=int, default=5)
     parser.add_argument("--vad-filter", default="true")
+    parser.add_argument("--normalize-script", default="simplified")
     parser.add_argument("--mock-transcript-path", default="")
     args = parser.parse_args()
 
@@ -128,8 +249,12 @@ def main() -> int:
             "provider": provider,
             "model": str(args.model),
             "language": str(args.language),
+            "transcript_raw": "",
             "transcript": "",
+            "segments": [],
             "segment_count": 0,
+            "normalization": "none",
+            "normalization_applied": False,
             "error": f"Audio file does not exist: {audio_path}",
         }
         write_json(output_json, payload)
@@ -137,7 +262,7 @@ def main() -> int:
 
     try:
         if provider == "mock":
-            payload = build_mock_result(audio_path, args.mock_transcript_path)
+            payload = build_mock_result(audio_path, args.mock_transcript_path, str(args.normalize_script))
         elif provider == "faster-whisper":
             payload = build_faster_whisper_result(
                 audio_path=audio_path,
@@ -147,6 +272,7 @@ def main() -> int:
                 compute_type=str(args.compute_type),
                 beam_size=int(args.beam_size),
                 vad_filter=parse_bool(args.vad_filter),
+                normalize_script=str(args.normalize_script),
             )
         else:
             raise RuntimeError(f"Unsupported ASR provider: {provider}")
@@ -156,8 +282,12 @@ def main() -> int:
             "provider": provider,
             "model": str(args.model),
             "language": str(args.language),
+            "transcript_raw": "",
             "transcript": "",
+            "segments": [],
             "segment_count": 0,
+            "normalization": "none",
+            "normalization_applied": False,
             "error": str(exc),
         }
         write_json(output_json, payload)

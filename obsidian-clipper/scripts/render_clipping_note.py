@@ -216,7 +216,9 @@ def attachment_lines(capture: dict[str, Any]) -> list[str]:
         ("audio_path", "本地音频"),
         ("video_path", "本地视频"),
         ("cover_path", "封面图"),
+        ("transcript_raw_path", "转录原稿"),
         ("transcript_path", "转录文本"),
+        ("transcript_segments_path", "转录分段 JSON"),
         ("sidecar_path", "Capture JSON"),
         ("comments_path", "Comments JSON"),
         ("metadata_path", "Metadata JSON"),
@@ -252,6 +254,7 @@ def podcast_resource_lines(capture: dict[str, Any]) -> list[str]:
     rss_match_strategy = string_value(metadata.get("rss_match_strategy"), default="n/a")
     audio_download_status = string_value(capture.get("audio_download_status"), default="skipped")
     transcript_source = string_value(capture.get("transcript_source"), metadata.get("transcript_source"), default="missing")
+    asr_normalization = string_value(capture.get("asr_normalization"), metadata.get("asr_normalization"), default="none")
     return [
         f"- Source Strategy: {source_strategy}",
         f"- RSS URL: {rss_url}",
@@ -260,6 +263,7 @@ def podcast_resource_lines(capture: dict[str, Any]) -> list[str]:
         f"- RSS Match Strategy: {rss_match_strategy}",
         f"- Audio Download Status: {audio_download_status}",
         f"- Transcript Source: {transcript_source}",
+        f"- ASR Normalization: {asr_normalization}",
     ]
 
 
@@ -273,6 +277,7 @@ def status_lines(capture: dict[str, Any]) -> list[str]:
     asr_status = string_value(capture.get("asr_status"), metadata.get("asr_status"), default="not_attempted")
     asr_provider = string_value(capture.get("asr_provider"), metadata.get("asr_provider"))
     asr_model = string_value(capture.get("asr_model"), metadata.get("asr_model"))
+    asr_normalization = string_value(capture.get("asr_normalization"), metadata.get("asr_normalization"))
     asr_error = string_value(capture.get("asr_error"), metadata.get("asr_error"))
     analyzer_status = string_value(capture.get("analyzer_status"), default="pending")
     bitable_sync_status = string_value(capture.get("bitable_sync_status"), default="pending")
@@ -296,6 +301,8 @@ def status_lines(capture: dict[str, Any]) -> list[str]:
         lines.append(f"- ASR Provider: {asr_provider}")
     if has_value(asr_model):
         lines.append(f"- ASR Model: {asr_model}")
+    if has_value(asr_normalization):
+        lines.append(f"- ASR 规范化: {asr_normalization}")
     if has_value(asr_error):
         lines.append(f"- ASR 错误: {asr_error}")
     if access_blocked:
@@ -491,6 +498,7 @@ def render_note(config: dict[str, Any], detection: dict[str, Any], capture: dict
         f"- 来源: {transcript_source}",
         f"- ASR 状态: {asr_status}",
         *([f"- ASR Provider: {asr_provider}"] if has_value(asr_provider) else []),
+        *([f"- ASR 规范化: {string_value(capture.get('asr_normalization'), nested_value(capture, 'metadata', 'asr_normalization'))}"] if has_value(string_value(capture.get("asr_normalization"), nested_value(capture, "metadata", "asr_normalization"))) else []),
         "",
         transcript,
         "",

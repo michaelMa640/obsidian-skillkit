@@ -5,6 +5,7 @@
   "type": "object",
   "required": [
     "analysis_mode",
+    "analysis_goal",
     "source_url",
     "title",
     "platform",
@@ -14,6 +15,10 @@
     "analysis_mode": {
       "type": "string",
       "enum": ["analyze", "learn"]
+    },
+    "analysis_goal": {
+      "type": "string",
+      "enum": ["analyze", "knowledge"]
     },
     "source_note_path": {
       "type": "string"

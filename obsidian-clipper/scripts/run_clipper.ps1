@@ -1059,7 +1059,10 @@ function Invoke-PodcastAsrFallback {
         provider = ''
         model = ''
         language = ''
+        normalization = 'none'
         transcript = ''
+        transcript_raw = ''
+        segments = @()
         error = ''
     }
 
@@ -1099,12 +1102,13 @@ function Invoke-PodcastAsrFallback {
     $computeType = Get-StringValue -Data $asrConfig -Name 'compute_type' -DefaultValue 'auto'
     $beamSize = Get-StringValue -Data $asrConfig -Name 'beam_size' -DefaultValue '5'
     $vadFilter = Get-BoolValueFromData -Data $asrConfig -Name 'vad_filter' -DefaultValue $true
+    $normalizeScript = Get-StringValue -Data $asrConfig -Name 'normalize_script' -DefaultValue 'simplified'
     $mockTranscriptPath = Get-ConfiguredPathValue -Object $asrConfig -PropertyName 'mock_transcript_path'
 
     $outputJsonPath = Join-Path $AssetDirectory 'asr-output.json'
     $arguments = @()
     if (Test-HasValue $scriptPath) { $arguments += @($scriptPath) }
-    $arguments += @('--audio-path', $AudioPath, '--output-json', $outputJsonPath, '--provider', $provider, '--model', $model, '--language', $language, '--device', $device, '--compute-type', $computeType, '--beam-size', $beamSize, '--vad-filter', $(if ($vadFilter) { 'true' } else { 'false' }))
+    $arguments += @('--audio-path', $AudioPath, '--output-json', $outputJsonPath, '--provider', $provider, '--model', $model, '--language', $language, '--device', $device, '--compute-type', $computeType, '--beam-size', $beamSize, '--vad-filter', $(if ($vadFilter) { 'true' } else { 'false' }), '--normalize-script', $normalizeScript)
     if (Test-HasValue $mockTranscriptPath) { $arguments += @('--mock-transcript-path', $mockTranscriptPath) }
 
     try {
@@ -1124,7 +1128,11 @@ function Invoke-PodcastAsrFallback {
             $result.provider = Get-StringValue -Data $payload -Name 'provider' -DefaultValue $provider
             $result.model = Get-StringValue -Data $payload -Name 'model' -DefaultValue $model
             $result.language = Get-StringValue -Data $payload -Name 'language' -DefaultValue $language
+            $result.normalization = Get-StringValue -Data $payload -Name 'normalization' -DefaultValue 'none'
+            $result.transcript_raw = Get-StringValue -Data $payload -Name 'transcript_raw' -DefaultValue ''
             $result.transcript = Get-StringValue -Data $payload -Name 'transcript' -DefaultValue ''
+            $segments = Get-DataValue -Data $payload -Name 'segments'
+            if ($null -ne $segments) { $result.segments = @($segments) }
             $result.error = Get-StringValue -Data $payload -Name 'error' -DefaultValue ''
         }
 
@@ -1208,7 +1216,10 @@ function Save-PodcastArtifacts {
     $asrStatus = if ($null -ne $metadata) { Get-StringValue -Data $metadata -Name 'asr_status' -DefaultValue $(if (Test-HasValue $transcript) { 'not_needed' } else { 'not_attempted' }) } else { if (Test-HasValue $transcript) { 'not_needed' } else { 'not_attempted' } }
     $asrProvider = if ($null -ne $metadata) { Get-StringValue -Data $metadata -Name 'asr_provider' -DefaultValue '' } else { '' }
     $asrModel = if ($null -ne $metadata) { Get-StringValue -Data $metadata -Name 'asr_model' -DefaultValue '' } else { '' }
+    $asrNormalization = if ($null -ne $metadata) { Get-StringValue -Data $metadata -Name 'asr_normalization' -DefaultValue 'none' } else { 'none' }
     $asrError = if ($null -ne $metadata) { Get-StringValue -Data $metadata -Name 'asr_error' -DefaultValue '' } else { '' }
+    $transcriptRaw = ''
+    $transcriptSegments = @()
     if (-not (Test-HasValue $audioLocalPath) -and (Test-HasValue $audioPath)) {
         $audioCandidatePath = Join-Path $ResolvedVaultPath ($audioPath -replace '/', '\')
         if (Test-Path $audioCandidatePath) { $audioLocalPath = $audioCandidatePath }
@@ -1218,9 +1229,12 @@ function Save-PodcastArtifacts {
         $asrStatus = [string]$asrResult.status
         $asrProvider = [string]$asrResult.provider
         $asrModel = [string]$asrResult.model
+        $asrNormalization = [string]$asrResult.normalization
         $asrError = [string]$asrResult.error
         if ($asrResult.success -and (Test-HasValue $asrResult.transcript)) {
             $transcript = [string]$asrResult.transcript
+            $transcriptRaw = [string]$asrResult.transcript_raw
+            $transcriptSegments = @($asrResult.segments)
             $transcriptStatus = 'available_asr'
             $transcriptSource = 'asr_fallback'
             if ($null -ne $metadata) {
@@ -1233,15 +1247,27 @@ function Save-PodcastArtifacts {
             $transcriptSource = 'missing'
         }
     }
+    $transcriptRawPath = ''
     $transcriptPath = ''
+    $transcriptSegmentsPath = ''
+    if (Test-HasValue $transcriptRaw) {
+        $transcriptRawPath = Join-Path $assetDirectory 'transcript.raw.txt'
+        Write-Utf8Text -Path $transcriptRawPath -Content $transcriptRaw
+    }
     if (Test-HasValue $transcript) {
         $transcriptPath = Join-Path $assetDirectory 'transcript.txt'
         Write-Utf8Text -Path $transcriptPath -Content $transcript
     }
+    if (@($transcriptSegments).Count -gt 0) {
+        $transcriptSegmentsPath = Join-Path $assetDirectory 'transcript.segments.json'
+        Write-Utf8Text -Path $transcriptSegmentsPath -Content ((@($transcriptSegments) | ConvertTo-Json -Depth 20))
+    }
 
     $relativeCapturePath = Get-VaultRelativePath -BasePath $ResolvedVaultPath -TargetPath $capturePath
     $relativeMetadataPath = Get-VaultRelativePath -BasePath $ResolvedVaultPath -TargetPath $metadataPath
+    $relativeTranscriptRawPath = if (Test-HasValue $transcriptRawPath) { Get-VaultRelativePath -BasePath $ResolvedVaultPath -TargetPath $transcriptRawPath } else { '' }
     $relativeTranscriptPath = if (Test-HasValue $transcriptPath) { Get-VaultRelativePath -BasePath $ResolvedVaultPath -TargetPath $transcriptPath } else { '' }
+    $relativeTranscriptSegmentsPath = if (Test-HasValue $transcriptSegmentsPath) { Get-VaultRelativePath -BasePath $ResolvedVaultPath -TargetPath $transcriptSegmentsPath } else { '' }
 
     Set-ObjectField -Object $Capture -Name 'sidecar_path' -Value $relativeCapturePath | Out-Null
     Set-ObjectField -Object $Capture -Name 'metadata_path' -Value $relativeMetadataPath | Out-Null
@@ -1253,8 +1279,13 @@ function Save-PodcastArtifacts {
     Set-ObjectField -Object $Capture -Name 'asr_status' -Value $asrStatus | Out-Null
     Set-ObjectField -Object $Capture -Name 'asr_provider' -Value $asrProvider | Out-Null
     Set-ObjectField -Object $Capture -Name 'asr_model' -Value $asrModel | Out-Null
+    Set-ObjectField -Object $Capture -Name 'asr_normalization' -Value $asrNormalization | Out-Null
     Set-ObjectField -Object $Capture -Name 'asr_error' -Value $asrError | Out-Null
+    if (Test-HasValue $transcriptRaw) { Set-ObjectField -Object $Capture -Name 'transcript_raw' -Value $transcriptRaw | Out-Null }
+    if (@($transcriptSegments).Count -gt 0) { Set-ObjectField -Object $Capture -Name 'transcript_segments' -Value @($transcriptSegments) | Out-Null }
+    if (Test-HasValue $relativeTranscriptRawPath) { Set-ObjectField -Object $Capture -Name 'transcript_raw_path' -Value $relativeTranscriptRawPath | Out-Null }
     if (Test-HasValue $relativeTranscriptPath) { Set-ObjectField -Object $Capture -Name 'transcript_path' -Value $relativeTranscriptPath | Out-Null }
+    if (Test-HasValue $relativeTranscriptSegmentsPath) { Set-ObjectField -Object $Capture -Name 'transcript_segments_path' -Value $relativeTranscriptSegmentsPath | Out-Null }
     if ($null -ne $metadata) {
         Set-ObjectField -Object $metadata -Name 'sidecar_path' -Value $relativeCapturePath | Out-Null
         Set-ObjectField -Object $metadata -Name 'metadata_path' -Value $relativeMetadataPath | Out-Null
@@ -1265,8 +1296,11 @@ function Save-PodcastArtifacts {
         Set-ObjectField -Object $metadata -Name 'asr_status' -Value $asrStatus | Out-Null
         Set-ObjectField -Object $metadata -Name 'asr_provider' -Value $asrProvider | Out-Null
         Set-ObjectField -Object $metadata -Name 'asr_model' -Value $asrModel | Out-Null
+        Set-ObjectField -Object $metadata -Name 'asr_normalization' -Value $asrNormalization | Out-Null
         Set-ObjectField -Object $metadata -Name 'asr_error' -Value $asrError | Out-Null
+        if (Test-HasValue $transcriptRaw) { Set-ObjectField -Object $metadata -Name 'transcript_raw_path' -Value $relativeTranscriptRawPath | Out-Null }
         if (Test-HasValue $relativeTranscriptPath) { Set-ObjectField -Object $metadata -Name 'transcript_path' -Value $relativeTranscriptPath | Out-Null }
+        if (Test-HasValue $relativeTranscriptSegmentsPath) { Set-ObjectField -Object $metadata -Name 'transcript_segments_path' -Value $relativeTranscriptSegmentsPath | Out-Null }
     }
 
     Write-Utf8Text -Path $capturePath -Content ($Capture | ConvertTo-Json -Depth 100)
@@ -2182,6 +2216,7 @@ function Get-RunSummaryLines {
     if ($null -ne $Result.PSObject.Properties['audio_download_status']) { $lines.Add("audio    : $($Result.audio_download_status) / $($Result.audio_path)") }
     if ($null -ne $Result.PSObject.Properties['transcript_status']) { $lines.Add("transcript: $($Result.transcript_status) / $($Result.transcript_source)") }
     if ($null -ne $Result.PSObject.Properties['asr_status']) { $lines.Add("asr      : $($Result.asr_status) / $($Result.asr_provider)") }
+    if ($null -ne $Result.PSObject.Properties['asr_normalization'] -and (Test-HasValue ([string]$Result.asr_normalization))) { $lines.Add("asr_norm : $($Result.asr_normalization)") }
     if ($null -ne $Result.PSObject.Properties['final_run_status']) { $lines.Add("result   : $($Result.final_run_status)") }
     if ($null -ne $Result.PSObject.Properties['final_run_status_zh']) { $lines.Add(("{0}     : {1}" -f (Zh '\u7ed3\u679c'), $Result.final_run_status_zh)) }
     if (Test-HasValue $failedStep) {
@@ -2295,6 +2330,8 @@ try {
     if (-not (Test-HasValue $asrStatusForResult) -and $null -ne $captureMetadata) { $asrStatusForResult = Get-StringValue -Data $captureMetadata -Name 'asr_status' -DefaultValue '' }
     $asrProviderForResult = Get-StringValue -Data $capture -Name 'asr_provider' -DefaultValue ''
     if (-not (Test-HasValue $asrProviderForResult) -and $null -ne $captureMetadata) { $asrProviderForResult = Get-StringValue -Data $captureMetadata -Name 'asr_provider' -DefaultValue '' }
+    $asrNormalizationForResult = Get-StringValue -Data $capture -Name 'asr_normalization' -DefaultValue ''
+    if (-not (Test-HasValue $asrNormalizationForResult) -and $null -ne $captureMetadata) { $asrNormalizationForResult = Get-StringValue -Data $captureMetadata -Name 'asr_normalization' -DefaultValue '' }
     $sidecarPathForResult = Get-StringValue -Data $capture -Name 'sidecar_path' -DefaultValue ''
     if (-not (Test-HasValue $sidecarPathForResult) -and $null -ne $captureMetadata) { $sidecarPathForResult = Get-StringValue -Data $captureMetadata -Name 'sidecar_path' -DefaultValue '' }
     $authActionRequiredForResult = Get-StringValue -Data $capture -Name 'auth_action_required' -DefaultValue ''
@@ -2331,6 +2368,7 @@ try {
         transcript_source = $transcriptSourceForResult
         asr_status = $asrStatusForResult
         asr_provider = $asrProviderForResult
+        asr_normalization = $asrNormalizationForResult
         sidecar_path = $sidecarPathForResult
         auth_action_required = $authActionRequiredForResult
         auth_failure_reason = $authFailureReasonForResult

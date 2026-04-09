@@ -21,6 +21,7 @@ When `-NotePath` is provided, the analyzer may also load sidecar files reference
 Minimum fields:
 
 - `analysis_mode`
+- `analysis_goal`
 - `source_note_path`
 - `capture_json_path`
 - `source_url`
@@ -81,6 +82,14 @@ The runtime should produce:
 - a stable JSON result object
 - a stable `analyzer-payload.json` artifact
 - optional debug artifacts and `support-bundle/`
+
+## Step 0 Routing Note
+
+- `analysis_mode` is still the current executable branch selector.
+- `analysis_goal` captures the user's real intent:
+  - `analyze` for viral / short-form breakdown
+  - `knowledge` for knowledge-oriented clipping and study
+- During the transition period, non-short-form inputs may still execute through the legacy `learn` mode while already carrying `analysis_goal = knowledge` in the payload.
 
 ## Phase 1 Constraint
 

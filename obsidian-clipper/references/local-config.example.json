@@ -71,12 +71,13 @@
         "command": "python",
         "script": "E:/REPLACE/WITH/YOUR/obsidian-clipper/scripts/podcast_asr_fallback.py",
         "provider": "faster-whisper",
-        "model": "base",
+        "model": "large-v3",
         "language": "zh",
         "device": "auto",
         "compute_type": "auto",
         "beam_size": 5,
         "vad_filter": true,
+        "normalize_script": "simplified",
         "timeout_sec": 600,
         "mock_transcript_path": "E:/REPLACE/WITH/YOUR/obsidian-clipper/.tmp/mock-transcript.txt"
       }
