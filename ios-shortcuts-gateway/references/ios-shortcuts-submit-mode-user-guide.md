@@ -2,7 +2,7 @@
 
 ## Goal
 
-Use an iPhone shortcut to submit a short-video task to the local Gateway and receive the final result later in Feishu.
+Use an iPhone shortcut to submit a shared content task to the local Gateway and receive the final result later in Feishu.
 
 ## What this mode does
 
@@ -40,7 +40,7 @@ powershell -ExecutionPolicy Bypass -File ".\ios-shortcuts-gateway\scripts\start_
 ### URL
 
 ```text
-http://<tailscale-ip>:8787/short-video/task
+http://<tailscale-ip>:8787/share/task
 ```
 
 ### Method
@@ -93,11 +93,21 @@ The final Feishu message should contain:
 - task status
 - `request_id`
 - `source_url`
+- `route`
+- `platform`
 - `normalized_url`
 - `original_source_text`
 - clipping note path when available
 - breakdown note path when available
 - refresh instruction when auth is required
+
+For Xiaoyuzhou podcast inputs, the final callback may additionally contain:
+
+- `audio_download_status`
+- `transcript_status`
+- `transcript_source`
+- `asr_status`
+- `asr_provider`
 
 ## Failure handling
 

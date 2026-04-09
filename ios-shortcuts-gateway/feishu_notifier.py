@@ -26,6 +26,15 @@ class FeishuCallbackPayload(BaseModel):
     source_url: str | None = None
     normalized_url: str | None = None
     original_source_text: str | None = None
+    route: str | None = None
+    platform: str | None = None
+    content_type: str | None = None
+    source_input_kind: str | None = None
+    audio_download_status: str | None = None
+    transcript_status: str | None = None
+    transcript_source: str | None = None
+    asr_status: str | None = None
+    asr_provider: str | None = None
     clipper_note: str | None = None
     analyzer_note: str | None = None
     failed_step: str | None = None
@@ -49,6 +58,24 @@ def render_feishu_lines(config: FeishuConfig, payload: FeishuCallbackPayload) ->
         lines.append(f"source_url: {payload.source_url}")
     if payload.normalized_url:
         lines.append(f"normalized_url: {payload.normalized_url}")
+    if payload.route or payload.platform:
+        lines.append(f"route: {payload.route or 'unknown'} / {payload.platform or 'unknown'}")
+    if payload.content_type:
+        lines.append(f"content_type: {payload.content_type}")
+    if payload.source_input_kind:
+        lines.append(f"source_input_kind: {payload.source_input_kind}")
+    if payload.audio_download_status:
+        lines.append(f"audio_download_status: {payload.audio_download_status}")
+    if payload.transcript_status:
+        transcript_line = f"transcript_status: {payload.transcript_status}"
+        if payload.transcript_source:
+            transcript_line += f" / {payload.transcript_source}"
+        lines.append(transcript_line)
+    if payload.asr_status:
+        asr_line = f"asr_status: {payload.asr_status}"
+        if payload.asr_provider:
+            asr_line += f" / {payload.asr_provider}"
+        lines.append(asr_line)
     if payload.original_source_text:
         lines.append(f"original_source_text: {payload.original_source_text}")
     if payload.clipper_note:

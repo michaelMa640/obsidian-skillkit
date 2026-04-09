@@ -64,5 +64,5 @@ $body = @{
     wait_for_completion = $true
 } | ConvertTo-Json -Depth 10
 
-$response = Invoke-RestMethod -Uri "$GatewayUrl/short-video/task" -Method Post -Headers $headers -ContentType "application/json; charset=utf-8" -Body $body
+$response = Invoke-RestMethod -Uri "$GatewayUrl/share/task" -Method Post -Headers $headers -ContentType "application/json; charset=utf-8" -Body $body
 [Console]::WriteLine(($response | ConvertTo-Json -Depth 10))

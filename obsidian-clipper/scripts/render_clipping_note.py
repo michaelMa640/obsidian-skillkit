@@ -24,6 +24,10 @@ def load_json(path: str) -> dict[str, Any]:
     return json.loads(Path(path).read_text(encoding="utf-8"))
 
 
+def load_text(path: str) -> str:
+    return Path(path).read_text(encoding="utf-8")
+
+
 def has_value(value: Any) -> bool:
     return value is not None and str(value).strip() != ""
 
@@ -527,11 +531,16 @@ def main() -> int:
     parser.add_argument("--capture-json", required=True)
     parser.add_argument("--source-url", required=True)
     parser.add_argument("--vault-path")
+    parser.add_argument("--vault-path-file")
     parser.add_argument("--category-hint")
     parser.add_argument("--write-note", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--output-json")
     args = parser.parse_args()
+
+    vault_path = args.vault_path
+    if not has_value(vault_path) and has_value(args.vault_path_file):
+        vault_path = load_text(args.vault_path_file).strip()
 
     note = render_note(
         load_json(args.config_json),
@@ -541,9 +550,9 @@ def main() -> int:
         args.category_hint,
     )
     if args.write_note and not args.dry_run:
-        if not has_value(args.vault_path):
+        if not has_value(vault_path):
             raise SystemExit("vault path required when --write-note is set")
-        note["note_path"] = write_note(args.vault_path, note)
+        note["note_path"] = write_note(vault_path, note)
 
     payload = json.dumps(note, ensure_ascii=False)
     if args.output_json:

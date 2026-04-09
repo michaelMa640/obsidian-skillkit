@@ -13,7 +13,7 @@
 
 ## Purpose
 
-`ios-shortcuts-gateway` is the local HTTP entry layer for iPhone-triggered short-video tasks over Tailscale.
+`ios-shortcuts-gateway` is the local HTTP entry layer for iPhone-triggered share tasks over Tailscale.
 
 It bridges:
 
@@ -35,6 +35,12 @@ This module is not a new clipping or analysis engine.
 - `analyze`
 
 No other action is in scope for the current implementation.
+
+## Current supported clipping routes
+
+- `social`
+- `video_metadata`
+- `podcast`
 
 ## References
 
@@ -97,7 +103,7 @@ Clip:
 ```powershell
 powershell -ExecutionPolicy Bypass -File ".\ios-shortcuts-gateway\scripts\test_gateway.ps1" `
   -Action clip `
-  -SourceText "3.53 复制打开抖音，看看…… https://v.douyin.com/xxxxxxx/ ..."
+  -SourceText "来自小宇宙的分享文本 https://www.xiaoyuzhoufm.com/episode/69d1e86bb977fb2c47215ffc"
 ```
 
 Analyze:
@@ -105,12 +111,18 @@ Analyze:
 ```powershell
 powershell -ExecutionPolicy Bypass -File ".\ios-shortcuts-gateway\scripts\test_gateway.ps1" `
   -Action analyze `
-  -SourceText "3.53 复制打开抖音，看看…… https://v.douyin.com/xxxxxxx/ ..."
+  -SourceText "来自抖音或小宇宙的分享文本 https://www.xiaoyuzhoufm.com/episode/69d1e86bb977fb2c47215ffc"
 ```
 
 ## Runtime behavior
 
-### `POST /short-video/task`
+### `POST /share/task`
+
+Preferred generic endpoint for all shared content tasks.
+
+Legacy compatibility:
+
+- `POST /short-video/task`
 
 - validates the request
 - creates `.tmp/gateway/runs/<request_id>/`
@@ -122,7 +134,13 @@ powershell -ExecutionPolicy Bypass -File ".\ios-shortcuts-gateway\scripts\test_g
 
 If the caller explicitly sets `wait_for_completion = true`, the gateway waits for the full workflow and returns the final result. This mode is suitable for local PowerShell smoke tests, not for iPhone shortcut UX.
 
-### `GET /short-video/task/{request_id}`
+### `GET /share/task/{request_id}`
+
+Preferred generic status endpoint.
+
+Legacy compatibility:
+
+- `GET /short-video/task/{request_id}`
 
 - returns the current task state
 - intended for debugging/operator lookup
@@ -176,6 +194,11 @@ Each `status.json` keeps:
 - `updated_at`
 - `source_url`
 - `normalized_url`
+- `route`
+- `platform`
+- `content_type`
+- `source_input_kind`
+- route-specific capture state such as audio / transcript / ASR when available
 - `original_source_text`
 - optional note paths and failure fields
 - optional callback fields:
@@ -233,4 +256,12 @@ Recommended response handling:
 - stop immediately
 - wait for Feishu as the primary result channel
 
-`GET /short-video/task/{request_id}` remains available, but only as a debug or operator endpoint.
+If the source is a Xiaoyuzhou share text, the final callback/status will additionally expose:
+
+- `route = podcast`
+- `platform = xiaoyuzhou`
+- `audio_download_status`
+- `transcript_status`
+- `asr_status`
+
+`GET /share/task/{request_id}` remains available as a debug or operator endpoint, and the legacy `/short-video/task/{request_id}` path remains backward compatible.

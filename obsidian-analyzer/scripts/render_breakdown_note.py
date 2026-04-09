@@ -11,6 +11,10 @@ def load_json(path: str) -> dict[str, Any]:
     return json.loads(Path(path).read_text(encoding="utf-8"))
 
 
+def load_text(path: str) -> str:
+    return Path(path).read_text(encoding="utf-8")
+
+
 def configure_console_output() -> None:
     for stream_name in ("stdout", "stderr"):
         stream = getattr(sys, stream_name, None)
@@ -341,15 +345,27 @@ def main() -> int:
     configure_console_output()
     parser = argparse.ArgumentParser()
     parser.add_argument("--analysis-json", required=True)
-    parser.add_argument("--vault-path")
-    parser.add_argument("--folder", required=True)
+    parser.add_argument("--vault-path", default="")
+    parser.add_argument("--vault-path-file", default="")
+    parser.add_argument("--folder", default="")
+    parser.add_argument("--folder-file", default="")
     parser.add_argument("--output-json")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
     analysis = load_json(args.analysis_json)
+
     vault_path = string_value(args.vault_path)
-    note = build_note(analysis, args.folder, vault_path)
+    if not has_value(vault_path) and has_value(args.vault_path_file):
+        vault_path = load_text(args.vault_path_file).strip()
+
+    folder = string_value(args.folder)
+    if not has_value(folder) and has_value(args.folder_file):
+        folder = load_text(args.folder_file).strip()
+    if not has_value(folder):
+        raise SystemExit("--folder or --folder-file is required")
+
+    note = build_note(analysis, folder, vault_path)
     result = {
         **note,
         "analysis_mode": string_value(analysis.get("analysis_mode"), default="analyze"),
@@ -365,7 +381,7 @@ def main() -> int:
     }
 
     if not args.dry_run and has_value(vault_path):
-        target_dir = Path(vault_path).joinpath(*[part for part in args.folder.replace("\\", "/").split("/") if part])
+        target_dir = Path(vault_path).joinpath(*[part for part in folder.replace("\\", "/").split("/") if part])
         target_dir.mkdir(parents=True, exist_ok=True)
         target_path = target_dir / note["file_name"]
         target_path.write_text(note["note_body"], encoding="utf-8")

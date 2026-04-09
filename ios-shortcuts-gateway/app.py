@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 import subprocess
 import uuid
 from datetime import datetime, timezone
@@ -8,6 +9,7 @@ from typing import Literal
 
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from starlette.responses import JSONResponse
 
 from feishu_notifier import TERMINAL_STATUSES as FEISHU_TERMINAL_STATUSES
 from feishu_notifier import FeishuConfig as NotifierFeishuConfig
@@ -18,6 +20,13 @@ BASE_DIR = Path(__file__).resolve().parent
 REFERENCES_DIR = BASE_DIR / "references"
 DEFAULT_CONFIG_PATH = REFERENCES_DIR / "local-config.json"
 TERMINAL_STATUSES = {"SUCCESS", "PARTIAL", "FAILED", "AUTH_REQUIRED"}
+
+
+class Utf8JSONResponse(JSONResponse):
+    media_type = "application/json; charset=utf-8"
+
+    def render(self, content: object) -> bytes:
+        return json.dumps(content, ensure_ascii=False, allow_nan=False).encode("utf-8")
 
 
 class ServerConfig(BaseModel):
@@ -86,6 +95,18 @@ class ShortVideoTaskResponse(BaseModel):
     refresh_command: str | None = None
     request_id: str | None = None
     display_text: str | None = None
+    source_url: str | None = None
+    normalized_url: str | None = None
+    route: str | None = None
+    platform: str | None = None
+    content_type: str | None = None
+    source_input_kind: str | None = None
+    source_url_extracted: bool | None = None
+    audio_download_status: str | None = None
+    transcript_status: str | None = None
+    transcript_source: str | None = None
+    asr_status: str | None = None
+    asr_provider: str | None = None
 
 
 class TaskStatusRecord(BaseModel):
@@ -106,6 +127,16 @@ class TaskStatusRecord(BaseModel):
     auth_action_required: Literal["refresh_douyin_auth"] | None = None
     refresh_command: str | None = None
     debug_hint: str | None = None
+    route: str | None = None
+    platform: str | None = None
+    content_type: str | None = None
+    source_input_kind: str | None = None
+    source_url_extracted: bool | None = None
+    audio_download_status: str | None = None
+    transcript_status: str | None = None
+    transcript_source: str | None = None
+    asr_status: str | None = None
+    asr_provider: str | None = None
     callback_attempted_at: str | None = None
     callback_sent: bool | None = None
     callback_error: str | None = None
@@ -130,6 +161,59 @@ def write_json(path: Path, payload: dict) -> None:
 
 def read_json(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def has_text(value: object | None) -> bool:
+    return value is not None and str(value).strip() != ""
+
+
+def string_or_none(value: object | None) -> str | None:
+    if not has_text(value):
+        return None
+    return str(value).strip()
+
+
+def first_non_empty(*values: object | None) -> str | None:
+    for value in values:
+        text = string_or_none(value)
+        if text is not None:
+            return text
+    return None
+
+
+def trim_url_candidate(value: str) -> str:
+    trimmed = value.strip()
+    while trimmed and trimmed[-1] in {'"', "'", ")", "]", "}", ",", ";", "!", "?"}:
+        trimmed = trimmed[:-1]
+    return trimmed
+
+
+def preview_source_input(input_text: str) -> dict[str, object | None]:
+    match = re.search(r"https?://[^\s\"'<>]+", input_text, flags=re.IGNORECASE)
+    source_url = trim_url_candidate(match.group(0)) if match else None
+    input_trimmed = input_text.strip()
+    extraction_applied = bool(source_url and input_trimmed != source_url)
+    return {
+        "source_url": source_url,
+        "normalized_url": source_url,
+        "source_input_kind": "share_text" if extraction_applied else "url",
+        "source_url_extracted": extraction_applied,
+    }
+
+
+def build_display_text(record: TaskStatusRecord) -> str:
+    lines = [record.message_zh, f"request_id: {record.request_id}"]
+    if has_text(record.route) or has_text(record.platform):
+        route = first_non_empty(record.route, "unknown")
+        platform = first_non_empty(record.platform, "unknown")
+        lines.append(f"route: {route} / {platform}")
+    if has_text(record.source_url):
+        lines.append(f"source_url: {record.source_url}")
+    if has_text(record.clipper_note):
+        lines.append(f"clipper_note: {record.clipper_note}")
+    if has_text(record.analyzer_note):
+        lines.append(f"analyzer_note: {record.analyzer_note}")
+    return "\n".join(lines)
 
 
 def shorten_path(full_path: str | None, vault_root: str) -> str | None:
@@ -174,7 +258,7 @@ def save_status(path: Path, record: TaskStatusRecord) -> None:
 
 
 def status_to_response(record: TaskStatusRecord) -> ShortVideoTaskResponse:
-    display_text = f"{record.message_zh}\nrequest_id: {record.request_id}"
+    display_text = build_display_text(record)
     return ShortVideoTaskResponse(
         success=record.status in {"SUCCESS", "PARTIAL", "ACCEPTED", "RUNNING"},
         status=record.status,
@@ -188,6 +272,18 @@ def status_to_response(record: TaskStatusRecord) -> ShortVideoTaskResponse:
         refresh_command=record.refresh_command,
         request_id=record.request_id,
         display_text=display_text,
+        source_url=record.source_url,
+        normalized_url=record.normalized_url,
+        route=record.route,
+        platform=record.platform,
+        content_type=record.content_type,
+        source_input_kind=record.source_input_kind,
+        source_url_extracted=record.source_url_extracted,
+        audio_download_status=record.audio_download_status,
+        transcript_status=record.transcript_status,
+        transcript_source=record.transcript_source,
+        asr_status=record.asr_status,
+        asr_provider=record.asr_provider,
     )
 
 
@@ -207,6 +303,16 @@ def build_status_record(
     auth_action_required: Literal["refresh_douyin_auth"] | None = None,
     refresh_command: str | None = None,
     debug_hint: str | None = None,
+    route: str | None = None,
+    platform: str | None = None,
+    content_type: str | None = None,
+    source_input_kind: str | None = None,
+    source_url_extracted: bool | None = None,
+    audio_download_status: str | None = None,
+    transcript_status: str | None = None,
+    transcript_source: str | None = None,
+    asr_status: str | None = None,
+    asr_provider: str | None = None,
     callback_attempted_at: str | None = None,
     callback_sent: bool | None = None,
     callback_error: str | None = None,
@@ -227,6 +333,16 @@ def build_status_record(
         auth_action_required=auth_action_required,
         refresh_command=refresh_command,
         debug_hint=debug_hint,
+        route=route,
+        platform=platform,
+        content_type=content_type,
+        source_input_kind=source_input_kind,
+        source_url_extracted=source_url_extracted,
+        audio_download_status=audio_download_status,
+        transcript_status=transcript_status,
+        transcript_source=transcript_source,
+        asr_status=asr_status,
+        asr_provider=asr_provider,
         callback_attempted_at=callback_attempted_at,
         callback_sent=callback_sent,
         callback_error=callback_error,
@@ -258,10 +374,22 @@ def run_powershell_script(
     )
 
 
-def extract_link_fields(result: dict, original_source_text: str) -> tuple[str | None, str | None, str]:
-    source_url = result.get("source_url")
-    normalized_url = result.get("normalized_url")
-    return source_url, normalized_url, original_source_text
+def extract_clipper_context(result: dict, original_source_text: str) -> dict[str, object | None]:
+    return {
+        "source_url": string_or_none(result.get("source_url")),
+        "normalized_url": string_or_none(result.get("normalized_url")),
+        "original_source_text": original_source_text,
+        "route": string_or_none(result.get("route")),
+        "platform": string_or_none(result.get("platform")),
+        "content_type": string_or_none(result.get("content_type")),
+        "source_input_kind": string_or_none(result.get("source_input_kind")),
+        "source_url_extracted": result.get("source_url_extracted"),
+        "audio_download_status": string_or_none(result.get("audio_download_status")),
+        "transcript_status": string_or_none(result.get("transcript_status")),
+        "transcript_source": string_or_none(result.get("transcript_source")),
+        "asr_status": string_or_none(result.get("asr_status")),
+        "asr_provider": string_or_none(result.get("asr_provider")),
+    }
 
 
 def record_from_clipper_result(
@@ -275,16 +403,13 @@ def record_from_clipper_result(
     debug_hint: str,
 ) -> TaskStatusRecord:
     final_status = str(result.get("final_run_status", "")).upper()
-    source_url, normalized_url, original_text = extract_link_fields(result, original_source_text)
     common = {
         "request_id": request_id,
         "action": action,
         "created_at": created_at,
-        "source_url": source_url,
-        "normalized_url": normalized_url,
-        "original_source_text": original_text,
         "clipper_note": shorten_path(result.get("note_path"), vault_root),
         "debug_hint": debug_hint,
+        **extract_clipper_context(result, original_source_text),
     }
     if result.get("auth_action_required") == "refresh_douyin_auth":
         return build_status_record(
@@ -319,20 +444,19 @@ def record_from_analyzer_result(
     original_source_text: str,
     debug_hint: str,
 ) -> TaskStatusRecord:
-    source_url = clipper_result.get("source_url") or analyzer_result.get("source_url")
-    normalized_url = clipper_result.get("normalized_url") or analyzer_result.get("normalized_url")
     analysis_status = str(analyzer_result.get("analysis_status", "")).lower()
     final_status = str(analyzer_result.get("final_run_status", "")).upper()
     common = {
         "request_id": request_id,
         "action": "analyze",
         "created_at": created_at,
-        "source_url": source_url,
-        "normalized_url": normalized_url,
-        "original_source_text": original_source_text,
-        "clipper_note": shorten_path(clipper_result.get("note_path"), vault_root),
+        "clipper_note": shorten_path(
+            first_non_empty(analyzer_result.get("source_note_path"), clipper_result.get("note_path")),
+            vault_root,
+        ),
         "analyzer_note": shorten_path(analyzer_result.get("note_path"), vault_root),
         "debug_hint": debug_hint,
+        **extract_clipper_context(clipper_result, original_source_text),
     }
     if final_status == "SUCCESS" and analysis_status == "partial":
         return build_status_record(
@@ -364,6 +488,15 @@ def build_callback_payload(record: TaskStatusRecord) -> dict:
         "source_url": record.source_url,
         "normalized_url": record.normalized_url,
         "original_source_text": record.original_source_text,
+        "route": record.route,
+        "platform": record.platform,
+        "content_type": record.content_type,
+        "source_input_kind": record.source_input_kind,
+        "audio_download_status": record.audio_download_status,
+        "transcript_status": record.transcript_status,
+        "transcript_source": record.transcript_source,
+        "asr_status": record.asr_status,
+        "asr_provider": record.asr_provider,
         "clipper_note": record.clipper_note,
         "analyzer_note": record.analyzer_note,
         "failed_step": record.failed_step,
@@ -421,8 +554,6 @@ def execute_task(config: GatewayConfig, request_dir: Path, payload: ShortVideoTa
     clipper_args = [
         "-SourceUrl",
         payload.source_text,
-        "-VaultPath",
-        config.obsidian.vault_path,
         "-OutputJsonPath",
         str(clipper_json),
         "-DebugDirectory",
@@ -492,12 +623,11 @@ def execute_task(config: GatewayConfig, request_dir: Path, payload: ShortVideoTa
             debug_hint=debug_hint,
         )
 
-    absolute_capture_json = str((Path(config.obsidian.vault_path) / Path(capture_json_path)).resolve())
     analyzer_args = [
         "-CaptureJsonPath",
-        absolute_capture_json,
-        "-VaultPath",
-        config.obsidian.vault_path,
+        str(capture_json_path),
+        "-Mode",
+        "analyze",
         "-OutputJsonPath",
         str(analyzer_json),
         "-DebugDirectory",
@@ -551,10 +681,12 @@ def run_task_background(config: GatewayConfig, request_dir: Path, payload_dict: 
         status_value="RUNNING",
         message_zh="任务已接收，正在后台执行。",
         created_at=created_at,
-        source_url=None,
-        normalized_url=None,
+        source_url=accepted_record.source_url if accepted_record else None,
+        normalized_url=accepted_record.normalized_url if accepted_record else None,
         original_source_text=payload.source_text,
         debug_hint=default_debug_hint(request_dir),
+        source_input_kind=accepted_record.source_input_kind if accepted_record else None,
+        source_url_extracted=accepted_record.source_url_extracted if accepted_record else None,
     )
     save_status(status_json, running)
 
@@ -569,10 +701,12 @@ def run_task_background(config: GatewayConfig, request_dir: Path, payload_dict: 
             message_zh=f"后台任务执行失败：{exc}",
             failed_step="gateway",
             created_at=created_at,
-            source_url=None,
-            normalized_url=None,
+            source_url=accepted_record.source_url if accepted_record else None,
+            normalized_url=accepted_record.normalized_url if accepted_record else None,
             original_source_text=payload.source_text,
             debug_hint=default_debug_hint(request_dir),
+            source_input_kind=accepted_record.source_input_kind if accepted_record else None,
+            source_url_extracted=accepted_record.source_url_extracted if accepted_record else None,
         )
 
     final_record = finalize_terminal_record(config, request_dir, final_record)
@@ -587,7 +721,7 @@ def run_task_background(config: GatewayConfig, request_dir: Path, payload_dict: 
 
 
 def build_app(config_path: Path = DEFAULT_CONFIG_PATH) -> FastAPI:
-    app = FastAPI(title="iOS Shortcuts Gateway", version="0.4.0")
+    app = FastAPI(title="iOS Shortcuts Gateway", version="0.4.0", default_response_class=Utf8JSONResponse)
 
     config_error: str | None = None
     try:
@@ -654,6 +788,7 @@ def build_app(config_path: Path = DEFAULT_CONFIG_PATH) -> FastAPI:
             "feishu_enabled": current.feishu.enabled,
         }
 
+    @app.get("/share/task/{request_id}", response_model=ShortVideoTaskResponse)
     @app.get("/short-video/task/{request_id}", response_model=ShortVideoTaskResponse)
     def get_task_status(request_id: str, _: str = Depends(require_bearer_token)) -> ShortVideoTaskResponse:
         request_dir = make_request_directory(log_dir, request_id)
@@ -663,8 +798,9 @@ def build_app(config_path: Path = DEFAULT_CONFIG_PATH) -> FastAPI:
             raise HTTPException(status_code=404, detail="Request ID not found.")
         return status_to_response(record)
 
+    @app.post("/share/task", response_model=ShortVideoTaskResponse)
     @app.post("/short-video/task", response_model=ShortVideoTaskResponse)
-    def short_video_task(
+    def share_task(
         payload: ShortVideoTaskRequest,
         background_tasks: BackgroundTasks,
         _: str = Depends(require_bearer_token),
@@ -680,6 +816,7 @@ def build_app(config_path: Path = DEFAULT_CONFIG_PATH) -> FastAPI:
         request_json = request_dir / "request.json"
         status_json = request_dir / "status.json"
         write_json(request_json, payload.model_dump())
+        initial_context = preview_source_input(payload.source_text)
 
         accepted = build_status_record(
             request_id=request_id,
@@ -687,10 +824,12 @@ def build_app(config_path: Path = DEFAULT_CONFIG_PATH) -> FastAPI:
             status_value="ACCEPTED",
             message_zh="任务已提交，正在后台执行。结果将稍后通过飞书返回。",
             created_at=utc_now_iso(),
-            source_url=None,
-            normalized_url=None,
+            source_url=string_or_none(initial_context.get("source_url")),
+            normalized_url=string_or_none(initial_context.get("normalized_url")),
             original_source_text=payload.source_text,
             debug_hint=default_debug_hint(request_dir),
+            source_input_kind=string_or_none(initial_context.get("source_input_kind")),
+            source_url_extracted=bool(initial_context.get("source_url_extracted")),
         )
         save_status(status_json, accepted)
 
@@ -701,10 +840,12 @@ def build_app(config_path: Path = DEFAULT_CONFIG_PATH) -> FastAPI:
                 status_value="RUNNING",
                 message_zh="任务已接收，正在后台执行。",
                 created_at=accepted.created_at,
-                source_url=None,
-                normalized_url=None,
+                source_url=accepted.source_url,
+                normalized_url=accepted.normalized_url,
                 original_source_text=payload.source_text,
                 debug_hint=default_debug_hint(request_dir),
+                source_input_kind=accepted.source_input_kind,
+                source_url_extracted=accepted.source_url_extracted,
             )
             save_status(status_json, running)
             final_record = execute_task(current, request_dir, payload, logger)

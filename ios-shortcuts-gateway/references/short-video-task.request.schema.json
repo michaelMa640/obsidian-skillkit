@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://obsidian-skillkit.local/ios-shortcuts-gateway/short-video-task.request.schema.json",
-  "title": "Short Video Task Request",
+  "title": "Share Task Request",
   "type": "object",
   "additionalProperties": false,
   "required": [

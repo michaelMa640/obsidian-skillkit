@@ -260,15 +260,36 @@ function Invoke-BreakdownRenderer {
         [string]$ResolvedVaultPath,
         [bool]$DryRun
     )
-    $args = @((Join-Path $PSScriptRoot 'render_breakdown_note.py'), '--analysis-json', $AnalysisJsonPath, '--folder', $TargetFolder, '--output-json', $RendererOutputJsonPath)
-    if (Test-HasValue $ResolvedVaultPath) { $args += @('--vault-path', $ResolvedVaultPath) }
-    if ($DryRun) { $args += '--dry-run' }
-    $rendererOutput = & python @args 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        $detail = (($rendererOutput | Out-String).Trim())
-        throw "render_breakdown_note.py failed with exit code $LASTEXITCODE. Details: $detail"
+    $vaultPathFile = ''
+    $folderFile = ''
+    try {
+        $args = @((Join-Path $PSScriptRoot 'render_breakdown_note.py'), '--analysis-json', $AnalysisJsonPath, '--output-json', $RendererOutputJsonPath)
+        if (Test-HasValue $ResolvedVaultPath) {
+            $vaultPathFile = [System.IO.Path]::GetTempFileName()
+            Write-Utf8Text -Path $vaultPathFile -Content $ResolvedVaultPath
+            $args += @('--vault-path-file', $vaultPathFile)
+        }
+        if (Test-HasValue $TargetFolder) {
+            $folderFile = [System.IO.Path]::GetTempFileName()
+            Write-Utf8Text -Path $folderFile -Content $TargetFolder
+            $args += @('--folder-file', $folderFile)
+        }
+        if ($DryRun) { $args += '--dry-run' }
+        $rendererOutput = & python @args 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            $detail = (($rendererOutput | Out-String).Trim())
+            throw "render_breakdown_note.py failed with exit code $LASTEXITCODE. Details: $detail"
+        }
+        ConvertFrom-JsonCompat -Json (Read-Utf8Text -Path $RendererOutputJsonPath) -Depth 100
+    } finally {
+        foreach ($tempPath in @($vaultPathFile, $folderFile)) {
+            if (Test-HasValue $tempPath) {
+                if (Test-Path -LiteralPath $tempPath) {
+                    Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue
+                }
+            }
+        }
     }
-    ConvertFrom-JsonCompat -Json (Read-Utf8Text -Path $RendererOutputJsonPath) -Depth 100
 }
 
 function Get-ConfigPathResolved {
@@ -347,16 +368,41 @@ function Get-DefaultMode {
 
 function Build-AnalyzerPayloadWithPython {
     param([string]$ResolvedVaultPath, [string]$ResolvedNotePath, [string]$ResolvedCaptureJsonPath, [string]$AnalysisMode, [string]$PayloadJsonPath)
-    $args = @((Join-Path $PSScriptRoot 'build_analyzer_payload.py'), '--mode', $AnalysisMode, '--output-json', $PayloadJsonPath)
-    if (Test-HasValue $ResolvedVaultPath) { $args += @('--vault-path', $ResolvedVaultPath) }
-    if (Test-HasValue $ResolvedNotePath) { $args += @('--note-path', $ResolvedNotePath) }
-    if (Test-HasValue $ResolvedCaptureJsonPath) { $args += @('--capture-json-path', $ResolvedCaptureJsonPath) }
-    $output = & python @args 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        $detail = (($output | Out-String).Trim())
-        throw "build_analyzer_payload.py failed with exit code $LASTEXITCODE. Details: $detail"
+    $vaultPathFile = ''
+    $notePathFile = ''
+    $captureJsonPathFile = ''
+    try {
+        $args = @((Join-Path $PSScriptRoot 'build_analyzer_payload.py'), '--mode', $AnalysisMode, '--output-json', $PayloadJsonPath)
+        if (Test-HasValue $ResolvedVaultPath) {
+            $vaultPathFile = [System.IO.Path]::GetTempFileName()
+            Write-Utf8Text -Path $vaultPathFile -Content $ResolvedVaultPath
+            $args += @('--vault-path-file', $vaultPathFile)
+        }
+        if (Test-HasValue $ResolvedNotePath) {
+            $notePathFile = [System.IO.Path]::GetTempFileName()
+            Write-Utf8Text -Path $notePathFile -Content $ResolvedNotePath
+            $args += @('--note-path-file', $notePathFile)
+        }
+        if (Test-HasValue $ResolvedCaptureJsonPath) {
+            $captureJsonPathFile = [System.IO.Path]::GetTempFileName()
+            Write-Utf8Text -Path $captureJsonPathFile -Content $ResolvedCaptureJsonPath
+            $args += @('--capture-json-path-file', $captureJsonPathFile)
+        }
+        $output = & python @args 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            $detail = (($output | Out-String).Trim())
+            throw "build_analyzer_payload.py failed with exit code $LASTEXITCODE. Details: $detail"
+        }
+        ConvertFrom-JsonCompat -Json (Read-Utf8Text -Path $PayloadJsonPath) -Depth 100
+    } finally {
+        foreach ($tempPath in @($vaultPathFile, $notePathFile, $captureJsonPathFile)) {
+            if (Test-HasValue $tempPath) {
+                if (Test-Path -LiteralPath $tempPath) {
+                    Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue
+                }
+            }
+        }
     }
-    ConvertFrom-JsonCompat -Json (Read-Utf8Text -Path $PayloadJsonPath) -Depth 100
 }
 
 function Test-RealLlmConfigured {
@@ -558,7 +604,11 @@ try {
         $frontmatter = Get-FrontmatterData -NoteText (Read-Utf8Text -Path $resolvedNotePath)
     }
 
-    $resolvedCaptureJsonPath = if (Test-HasValue $CaptureJsonPath) { $CaptureJsonPath } else { Resolve-PathFromVault -VaultRoot $resolvedVaultPath -RelativeOrAbsolutePath (Get-StringValue -Data $frontmatter -Name 'sidecar_path' -DefaultValue '') }
+    $resolvedCaptureJsonPath = if (Test-HasValue $CaptureJsonPath) {
+        Resolve-PathFromVault -VaultRoot $resolvedVaultPath -RelativeOrAbsolutePath $CaptureJsonPath
+    } else {
+        Resolve-PathFromVault -VaultRoot $resolvedVaultPath -RelativeOrAbsolutePath (Get-StringValue -Data $frontmatter -Name 'sidecar_path' -DefaultValue '')
+    }
     $capture = $null
     if (Test-HasValue $resolvedCaptureJsonPath) {
         if (-not (Test-Path $resolvedCaptureJsonPath)) { throw "Capture JSON not found: $resolvedCaptureJsonPath" }

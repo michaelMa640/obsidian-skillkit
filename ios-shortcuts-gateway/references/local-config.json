@@ -28,7 +28,6 @@
     "timeout_seconds": 10,
     "message_prefix": "Gateway 任务结果"
   },
-
   "logging": {
     "level": "info",
     "directory": ".tmp/gateway",

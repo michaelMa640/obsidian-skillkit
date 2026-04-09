@@ -56,6 +56,36 @@
     "normalized_url": {
       "type": "string"
     },
+    "route": {
+      "type": "string"
+    },
+    "platform": {
+      "type": "string"
+    },
+    "content_type": {
+      "type": "string"
+    },
+    "source_input_kind": {
+      "type": "string"
+    },
+    "source_url_extracted": {
+      "type": "boolean"
+    },
+    "audio_download_status": {
+      "type": "string"
+    },
+    "transcript_status": {
+      "type": "string"
+    },
+    "transcript_source": {
+      "type": "string"
+    },
+    "asr_status": {
+      "type": "string"
+    },
+    "asr_provider": {
+      "type": "string"
+    },
     "original_source_text": {
       "type": "string"
     },

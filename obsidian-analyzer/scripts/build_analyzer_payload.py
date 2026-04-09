@@ -52,6 +52,10 @@ def read_text(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
+def load_text(path: str) -> str:
+    return read_text(Path(path))
+
+
 def load_json_file(path: Path, warnings: list[str], label: str) -> Any:
     if not path.exists():
         warnings.append(f"{label}_missing:{path}")
@@ -395,16 +399,31 @@ def main() -> int:
     configure_console_output()
     parser = argparse.ArgumentParser()
     parser.add_argument("--note-path", default="")
+    parser.add_argument("--note-path-file", default="")
     parser.add_argument("--capture-json-path", default="")
+    parser.add_argument("--capture-json-path-file", default="")
     parser.add_argument("--vault-path", default="")
+    parser.add_argument("--vault-path-file", default="")
     parser.add_argument("--mode", required=True)
     parser.add_argument("--output-json")
     args = parser.parse_args()
 
+    note_path = args.note_path
+    if not has_value(note_path) and has_value(args.note_path_file):
+        note_path = load_text(args.note_path_file).strip()
+
+    capture_json_path = args.capture_json_path
+    if not has_value(capture_json_path) and has_value(args.capture_json_path_file):
+        capture_json_path = load_text(args.capture_json_path_file).strip()
+
+    vault_path = args.vault_path
+    if not has_value(vault_path) and has_value(args.vault_path_file):
+        vault_path = load_text(args.vault_path_file).strip()
+
     payload = build_payload(
-        note_path=args.note_path,
-        capture_json_path=args.capture_json_path,
-        vault_path=args.vault_path,
+        note_path=note_path,
+        capture_json_path=capture_json_path,
+        vault_path=vault_path,
         analysis_mode=args.mode,
     )
     output_text = json.dumps(payload, ensure_ascii=False, indent=2)

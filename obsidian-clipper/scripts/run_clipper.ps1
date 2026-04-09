@@ -1755,6 +1755,7 @@ function Invoke-NoteRenderer {
         $detectionJsonPath = Join-Path $tempDir 'renderer-detection.json'
         $captureJsonPath = Join-Path $tempDir 'renderer-capture.json'
         $outputJsonPath = Join-Path $tempDir 'renderer-output.json'
+        $vaultPathFile = Join-Path $tempDir 'renderer-vault-path.txt'
 
         Write-Utf8Text -Path $configJsonPath -Content ($Config | ConvertTo-Json -Depth 20)
         Write-Utf8Text -Path $detectionJsonPath -Content ($Detection | ConvertTo-Json -Depth 20)
@@ -1769,7 +1770,10 @@ function Invoke-NoteRenderer {
             '--output-json', $outputJsonPath
         )
         if (Test-HasValue $CategoryHint) { $arguments += @('--category-hint', $CategoryHint) }
-        if (Test-HasValue $ResolvedVaultPath) { $arguments += @('--vault-path', $ResolvedVaultPath) }
+        if (Test-HasValue $ResolvedVaultPath) {
+            Write-Utf8Text -Path $vaultPathFile -Content $ResolvedVaultPath
+            $arguments += @('--vault-path-file', $vaultPathFile)
+        }
         if (-not $DryRun -and $null -ne $Config.obsidian -and $Config.obsidian.mode -eq 'filesystem') { $arguments += '--write-note' }
         if ($DryRun) { $arguments += '--dry-run' }
 
