@@ -294,6 +294,21 @@ function Invoke-NoteRenderer {
     }
 }
 
+function Get-PythonToolJsonResult {
+    param(
+        [string]$ScriptPath,
+        [string[]]$Arguments,
+        [string]$OutputJsonPath
+    )
+    $toolOutput = & python @Arguments 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        $detail = (($toolOutput | Out-String).Trim())
+        $toolName = [System.IO.Path]::GetFileName($ScriptPath)
+        throw "$toolName failed with exit code $LASTEXITCODE. Details: $detail"
+    }
+    ConvertFrom-JsonCompat -Json (Read-Utf8Text -Path $OutputJsonPath) -Depth 100
+}
+
 function Get-ConfigPathResolved {
     param([string]$RequestedPath)
     if (Test-HasValue $RequestedPath) { return $RequestedPath }
@@ -420,6 +435,136 @@ function Get-TargetFolderForMode {
     }
     if (Test-HasValue $configuredKnowledgeFolder) { return $configuredKnowledgeFolder }
     (Zh 'Insights/\u77e5\u8bc6\u89e3\u8bfb')
+}
+
+function Get-DefaultKnowledgeCardFolder {
+    param($Config)
+    $configuredFolder = if ($null -ne $Config.analyzer) { [string]$Config.analyzer.default_knowledge_card_folder } else { '' }
+    if (Test-HasValue $configuredFolder) { return $configuredFolder }
+    (Zh 'Insights/\u77e5\u8bc6\u5361')
+}
+
+function Get-DefaultTopicMapFolder {
+    param($Config)
+    $configuredFolder = if ($null -ne $Config.analyzer) { [string]$Config.analyzer.default_topic_map_folder } else { '' }
+    if (Test-HasValue $configuredFolder) { return $configuredFolder }
+    (Zh 'Insights/\u4e3b\u9898\u5730\u56fe')
+}
+
+function Invoke-KnowledgeAssetPipeline {
+    param(
+        [string]$AnalysisJsonPath,
+        [string]$InsightNotePath,
+        [string]$ResolvedVaultPath,
+        [string]$KnowledgeCardFolder,
+        [string]$TopicMapFolder,
+        [string]$ArtifactDirectory,
+        [bool]$DryRun
+    )
+
+    $result = [ordered]@{
+        status = 'not_applicable'
+        knowledge_card_count = 0
+        topic_map_count = 0
+        knowledge_card_paths = @()
+        topic_map_paths = @()
+        extract_output_path = ''
+        render_output_path = ''
+        topic_map_output_path = ''
+        error = ''
+    }
+
+    if ($DryRun) {
+        $result.status = 'skipped_dry_run'
+        return [pscustomobject]$result
+    }
+    if (-not (Test-HasValue $InsightNotePath)) {
+        $result.status = 'skipped_no_insight_note'
+        return [pscustomobject]$result
+    }
+    if (-not (Test-HasValue $ResolvedVaultPath)) {
+        $result.status = 'skipped_no_vault'
+        return [pscustomobject]$result
+    }
+
+    $vaultPathFile = ''
+    $knowledgeCardFolderFile = ''
+    $topicMapFolderFile = ''
+    try {
+        $extractScriptPath = Join-Path $PSScriptRoot 'extract_knowledge_cards.py'
+        $renderScriptPath = Join-Path $PSScriptRoot 'render_knowledge_card.py'
+        $topicMapScriptPath = Join-Path $PSScriptRoot 'update_topic_map.py'
+
+        $extractOutputJsonPath = Join-Path $ArtifactDirectory 'knowledge-cards-extracted.json'
+        $renderOutputJsonPath = Join-Path $ArtifactDirectory 'knowledge-cards-rendered.json'
+        $topicMapOutputJsonPath = Join-Path $ArtifactDirectory 'topic-maps-updated.json'
+        $result.extract_output_path = $extractOutputJsonPath
+        $result.render_output_path = $renderOutputJsonPath
+        $result.topic_map_output_path = $topicMapOutputJsonPath
+
+        $extractArgs = @(
+            $extractScriptPath,
+            '--analysis-json', $AnalysisJsonPath,
+            '--insight-note-path', $InsightNotePath,
+            '--output-json', $extractOutputJsonPath
+        )
+        $extractResult = Get-PythonToolJsonResult -ScriptPath $extractScriptPath -Arguments $extractArgs -OutputJsonPath $extractOutputJsonPath
+        if ([int](Get-StringValue -Data $extractResult -Name 'selected_card_count' -DefaultValue '0') -le 0) {
+            $result.status = 'success'
+            return [pscustomobject]$result
+        }
+
+        $vaultPathFile = [System.IO.Path]::GetTempFileName()
+        Write-Utf8Text -Path $vaultPathFile -Content $ResolvedVaultPath
+        $knowledgeCardFolderFile = [System.IO.Path]::GetTempFileName()
+        Write-Utf8Text -Path $knowledgeCardFolderFile -Content $KnowledgeCardFolder
+        $topicMapFolderFile = [System.IO.Path]::GetTempFileName()
+        Write-Utf8Text -Path $topicMapFolderFile -Content $TopicMapFolder
+
+        $renderArgs = @(
+            $renderScriptPath,
+            '--bundle-json', $extractOutputJsonPath,
+            '--vault-path-file', $vaultPathFile,
+            '--folder-file', $knowledgeCardFolderFile,
+            '--topic-map-folder-file', $topicMapFolderFile,
+            '--output-json', $renderOutputJsonPath
+        )
+        $renderResult = Get-PythonToolJsonResult -ScriptPath $renderScriptPath -Arguments $renderArgs -OutputJsonPath $renderOutputJsonPath
+
+        $topicMapArgs = @(
+            $topicMapScriptPath,
+            '--cards-manifest-json', $renderOutputJsonPath,
+            '--vault-path-file', $vaultPathFile,
+            '--folder-file', $topicMapFolderFile,
+            '--output-json', $topicMapOutputJsonPath
+        )
+        $topicMapResult = Get-PythonToolJsonResult -ScriptPath $topicMapScriptPath -Arguments $topicMapArgs -OutputJsonPath $topicMapOutputJsonPath
+
+        $result.status = 'success'
+        $result.knowledge_card_count = [int](Get-StringValue -Data $renderResult -Name 'rendered_card_count' -DefaultValue '0')
+        $result.topic_map_count = [int](Get-StringValue -Data $topicMapResult -Name 'updated_topic_map_count' -DefaultValue '0')
+        $result.knowledge_card_paths = @(
+            @($renderResult.rendered_cards) |
+                ForEach-Object { Get-StringValue -Data $_ -Name 'note_path' -DefaultValue '' } |
+                Where-Object { Test-HasValue $_ }
+        )
+        $result.topic_map_paths = @(
+            @($topicMapResult.topic_maps) |
+                ForEach-Object { Get-StringValue -Data $_ -Name 'note_path' -DefaultValue '' } |
+                Where-Object { Test-HasValue $_ }
+        )
+        return [pscustomobject]$result
+    } catch {
+        $result.status = 'failed'
+        $result.error = $_.Exception.Message
+        return [pscustomobject]$result
+    } finally {
+        foreach ($tempPath in @($vaultPathFile, $knowledgeCardFolderFile, $topicMapFolderFile)) {
+            if ((Test-HasValue $tempPath) -and (Test-Path -LiteralPath $tempPath)) {
+                Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue
+            }
+        }
+    }
 }
 
 function Build-AnalyzerPayloadWithPython {
@@ -643,6 +788,10 @@ function Get-AnalyzerSummaryLines {
     if ($null -ne $Result.PSObject.Properties['source_note_path'] -and (Test-HasValue ([string]$Result.source_note_path))) { $lines.Add("source   : $($Result.source_note_path)") }
     if ($null -ne $Result.PSObject.Properties['clipping_note_marked']) { $lines.Add("marked   : $($Result.clipping_note_marked)") }
     if ($null -ne $Result.PSObject.Properties['clipping_note_mark_warning'] -and (Test-HasValue ([string]$Result.clipping_note_mark_warning))) { $lines.Add("markwarn : $($Result.clipping_note_mark_warning)") }
+    if ($null -ne $Result.PSObject.Properties['knowledge_assets_status']) { $lines.Add("assets   : $($Result.knowledge_assets_status)") }
+    if ($null -ne $Result.PSObject.Properties['knowledge_card_count']) { $lines.Add("cards    : $($Result.knowledge_card_count)") }
+    if ($null -ne $Result.PSObject.Properties['topic_map_count']) { $lines.Add("topics   : $($Result.topic_map_count)") }
+    if ($null -ne $Result.PSObject.Properties['knowledge_assets_error'] -and (Test-HasValue ([string]$Result.knowledge_assets_error))) { $lines.Add("asseterr : $($Result.knowledge_assets_error)") }
     if ($null -ne $Result.PSObject.Properties['support_bundle_path']) { $lines.Add("share    : $($Result.support_bundle_path)") }
     if ($null -ne $Result.PSObject.Properties['debug_directory']) { $lines.Add("debug    : $($Result.debug_directory)") }
     $lines.Add("result   : $($Result.final_run_status)")
@@ -705,6 +854,9 @@ $payloadJsonPath = ''
 $analysisJsonPath = ''
 $llmRequestJsonPath = ''
 $llmResponseJsonPath = ''
+$knowledgeCardExtractJsonPath = ''
+$knowledgeCardRenderJsonPath = ''
+$topicMapUpdateJsonPath = ''
 $analysisMode = ''
 $script:AnalyzerCurrentStep = 'startup'
 
@@ -785,6 +937,28 @@ try {
         }
     }
 
+    $knowledgeAssets = [pscustomobject]@{
+        status = if ($analysisMode -eq 'knowledge') { 'skipped_analysis_status' } else { 'not_applicable' }
+        knowledge_card_count = 0
+        topic_map_count = 0
+        knowledge_card_paths = @()
+        topic_map_paths = @()
+        extract_output_path = ''
+        render_output_path = ''
+        topic_map_output_path = ''
+        error = ''
+    }
+    if ($analysisMode -eq 'knowledge' -and (Test-HasValue ([string]$rendererResult.note_path)) -and $rendererResult.analysis_status -ne 'failed') {
+        $script:AnalyzerCurrentStep = 'knowledge_assets'
+        $knowledgeCardFolder = Get-DefaultKnowledgeCardFolder -Config $config
+        $topicMapFolder = Get-DefaultTopicMapFolder -Config $config
+        $knowledgeAssets = Invoke-KnowledgeAssetPipeline -AnalysisJsonPath $analysisJsonPath -InsightNotePath ([string]$rendererResult.note_path) -ResolvedVaultPath $resolvedVaultPath -KnowledgeCardFolder $knowledgeCardFolder -TopicMapFolder $topicMapFolder -ArtifactDirectory $artifactDirectory -DryRun ([bool]$DryRun)
+        $knowledgeCardExtractJsonPath = Get-StringValue -Data $knowledgeAssets -Name 'extract_output_path' -DefaultValue ''
+        $knowledgeCardRenderJsonPath = Get-StringValue -Data $knowledgeAssets -Name 'render_output_path' -DefaultValue ''
+        $topicMapUpdateJsonPath = Get-StringValue -Data $knowledgeAssets -Name 'topic_map_output_path' -DefaultValue ''
+    }
+
+    $script:AnalyzerCurrentStep = 'result_finalize'
     $result = [pscustomobject]@{
         success = $true
         dry_run = [bool]$DryRun
@@ -804,11 +978,21 @@ try {
         source_note_path = $markedSourceNotePath
         clipping_note_marked = [bool]$clippingNoteMarked
         clipping_note_mark_warning = $clippingNoteMarkWarning
+        knowledge_assets_status = [string]$knowledgeAssets.status
+        knowledge_card_count = [int]$knowledgeAssets.knowledge_card_count
+        topic_map_count = [int]$knowledgeAssets.topic_map_count
+        knowledge_card_paths = @($knowledgeAssets.knowledge_card_paths)
+        topic_map_paths = @($knowledgeAssets.topic_map_paths)
+        knowledge_assets_error = [string]$knowledgeAssets.error
         debug_directory = $artifactDirectory
         support_bundle_path = Join-Path $artifactDirectory 'support-bundle'
     }
     if (Test-HasValue ([string]$rendererResult.note_path)) { $result | Add-Member -NotePropertyName note_path -NotePropertyValue ([string]$rendererResult.note_path) -Force }
     $result = Add-AnalyzerFinalStatusFields -Result $result
+    if ($result.knowledge_assets_status -eq 'failed') {
+        $result.final_message_en = ($result.final_message_en + ' Knowledge cards and topic maps were not updated.').Trim()
+        $result.final_message_zh = ($result.final_message_zh + ' ' + (Zh '\u4f46\u77e5\u8bc6\u5361\u4e0e\u4e3b\u9898\u5730\u56fe\u672a\u6210\u529f\u66f4\u65b0\u3002')).Trim()
+    }
 
     $supportBundleDirectory = New-Directory -Path $result.support_bundle_path
     $summary = (Get-AnalyzerSummaryLines -Result $result) -join "`r`n"
@@ -820,6 +1004,9 @@ try {
     if (Test-ExistingPath $analysisJsonPath) { Write-Utf8Text -Path (Join-Path $supportBundleDirectory 'analysis-input.json') -Content (((Sanitize-Value -Value (ConvertFrom-JsonCompat -Json (Read-Utf8Text -Path $analysisJsonPath) -Depth 100) -VaultPath $resolvedVaultPath) | ConvertTo-Json -Depth 20)) }
     if (Test-ExistingPath $llmRequestJsonPath) { Write-Utf8Text -Path (Join-Path $supportBundleDirectory 'llm-request.json') -Content (((Sanitize-Value -Value (ConvertFrom-JsonCompat -Json (Read-Utf8Text -Path $llmRequestJsonPath) -Depth 100) -VaultPath $resolvedVaultPath) | ConvertTo-Json -Depth 20)) }
     if (Test-ExistingPath $llmResponseJsonPath) { Write-Utf8Text -Path (Join-Path $supportBundleDirectory 'llm-response.json') -Content (((Sanitize-Value -Value (ConvertFrom-JsonCompat -Json (Read-Utf8Text -Path $llmResponseJsonPath) -Depth 100) -VaultPath $resolvedVaultPath) | ConvertTo-Json -Depth 20)) }
+    if (Test-ExistingPath $knowledgeCardExtractJsonPath) { Write-Utf8Text -Path (Join-Path $supportBundleDirectory 'knowledge-cards-extracted.json') -Content (((Sanitize-Value -Value (ConvertFrom-JsonCompat -Json (Read-Utf8Text -Path $knowledgeCardExtractJsonPath) -Depth 100) -VaultPath $resolvedVaultPath) | ConvertTo-Json -Depth 20)) }
+    if (Test-ExistingPath $knowledgeCardRenderJsonPath) { Write-Utf8Text -Path (Join-Path $supportBundleDirectory 'knowledge-cards-rendered.json') -Content (((Sanitize-Value -Value (ConvertFrom-JsonCompat -Json (Read-Utf8Text -Path $knowledgeCardRenderJsonPath) -Depth 100) -VaultPath $resolvedVaultPath) | ConvertTo-Json -Depth 20)) }
+    if (Test-ExistingPath $topicMapUpdateJsonPath) { Write-Utf8Text -Path (Join-Path $supportBundleDirectory 'topic-maps-updated.json') -Content (((Sanitize-Value -Value (ConvertFrom-JsonCompat -Json (Read-Utf8Text -Path $topicMapUpdateJsonPath) -Depth 100) -VaultPath $resolvedVaultPath) | ConvertTo-Json -Depth 20)) }
 
     Write-AnalyzerSummary -Result $result
     $json = $result | ConvertTo-Json -Depth 20
@@ -860,6 +1047,9 @@ try {
     if (Test-ExistingPath $analysisJsonPath) { Write-Utf8Text -Path (Join-Path $supportBundleDirectory 'analysis-input.json') -Content (((Sanitize-Value -Value (ConvertFrom-JsonCompat -Json (Read-Utf8Text -Path $analysisJsonPath) -Depth 100) -VaultPath $resolvedVaultPath) | ConvertTo-Json -Depth 20)) }
     if (Test-ExistingPath $llmRequestJsonPath) { Write-Utf8Text -Path (Join-Path $supportBundleDirectory 'llm-request.json') -Content (((Sanitize-Value -Value (ConvertFrom-JsonCompat -Json (Read-Utf8Text -Path $llmRequestJsonPath) -Depth 100) -VaultPath $resolvedVaultPath) | ConvertTo-Json -Depth 20)) }
     if (Test-ExistingPath $llmResponseJsonPath) { Write-Utf8Text -Path (Join-Path $supportBundleDirectory 'llm-response.json') -Content (((Sanitize-Value -Value (ConvertFrom-JsonCompat -Json (Read-Utf8Text -Path $llmResponseJsonPath) -Depth 100) -VaultPath $resolvedVaultPath) | ConvertTo-Json -Depth 20)) }
+    if (Test-ExistingPath $knowledgeCardExtractJsonPath) { Write-Utf8Text -Path (Join-Path $supportBundleDirectory 'knowledge-cards-extracted.json') -Content (((Sanitize-Value -Value (ConvertFrom-JsonCompat -Json (Read-Utf8Text -Path $knowledgeCardExtractJsonPath) -Depth 100) -VaultPath $resolvedVaultPath) | ConvertTo-Json -Depth 20)) }
+    if (Test-ExistingPath $knowledgeCardRenderJsonPath) { Write-Utf8Text -Path (Join-Path $supportBundleDirectory 'knowledge-cards-rendered.json') -Content (((Sanitize-Value -Value (ConvertFrom-JsonCompat -Json (Read-Utf8Text -Path $knowledgeCardRenderJsonPath) -Depth 100) -VaultPath $resolvedVaultPath) | ConvertTo-Json -Depth 20)) }
+    if (Test-ExistingPath $topicMapUpdateJsonPath) { Write-Utf8Text -Path (Join-Path $supportBundleDirectory 'topic-maps-updated.json') -Content (((Sanitize-Value -Value (ConvertFrom-JsonCompat -Json (Read-Utf8Text -Path $topicMapUpdateJsonPath) -Depth 100) -VaultPath $resolvedVaultPath) | ConvertTo-Json -Depth 20)) }
     Write-AnalyzerSummary -Result $failure
     throw
 }
