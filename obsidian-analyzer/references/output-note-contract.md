@@ -14,16 +14,21 @@ This document defines the note contract emitted by `obsidian-analyzer`.
 ## Required frontmatter
 
 - `title`
+- `note_type`
 - `source_url`
 - `normalized_url`
 - `source_note_path`
+- `source_note_link`
 - `capture_json_path`
 - `video_path`
 - `analysis_mode`
 - `analysis_goal`
 - `platform`
 - `content_type`
+- `route`
 - `capture_id`
+- `author`
+- `published_at`
 - `analyzed_at`
 - `provider`
 - `provider_reported_model`
@@ -32,6 +37,23 @@ This document defines the note contract emitted by `obsidian-analyzer`.
 - `prompt_template`
 - `output_contract_version`
 - `output_language`
+
+## Knowledge note frontmatter additions
+
+Recommended for `knowledge` notes:
+
+- `topic_names`
+- `knowledge_card_titles`
+- `speaker_names`
+- `knowledge_card_candidate_count`
+- `topic_candidate_count`
+- `speaker_count`
+- `timestamp_count`
+- `has_audio`
+- `has_transcript`
+- `has_timestamps`
+- `has_speakers`
+- `tags`
 
 ## Analyze note sections
 
@@ -63,6 +85,8 @@ Required section order:
 
 - Source note, capture JSON, and local video should render as Obsidian links when the files are inside the vault.
 - If the local video is inside the vault, the renderer should include an Obsidian embed in the `来源` section.
+- For `knowledge` notes, the top of the note should provide a direct backlink to the source clipping note.
+- For `knowledge` notes, frontmatter paths should prefer vault-relative paths when the files are inside the vault.
 - Breakdown title should follow the resolved clipping note title when `source_note_path` is available.
 - Output file name is derived from:
   - actual analysis run date
@@ -102,3 +126,24 @@ Object form is preferred:
   "reason": "直接使用问题句式做开头，有助于匹配搜索意图。"
 }
 ```
+
+## Knowledge note sections
+
+Required section order:
+
+- `# 标题`
+- `## 回链入口`
+- `## 分析元数据`
+- `## 内容总结`
+- `## 核心观点`
+- `## 关键概念`
+- `## 提到的方法论`
+- `## 小技巧与小知识点`
+- `## 可沉淀知识卡候选`
+- `## 关联主题`
+- `## 可行动建议`
+- `## 待确认问题`
+- `## 精华引用`
+- `## 时间戳索引`
+- `## 人物与说话人`
+- `## 来源`

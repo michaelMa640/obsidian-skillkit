@@ -993,6 +993,18 @@ function Get-VaultRelativePath {
     [System.Uri]::UnescapeDataString($baseUri.MakeRelativeUri($targetUri).ToString()).Replace('\', '/')
 }
 
+function Resolve-PathFromVault {
+    param(
+        [string]$VaultPath,
+        [string]$RelativeOrAbsolutePath
+    )
+    if (-not (Test-HasValue $RelativeOrAbsolutePath)) { return '' }
+    if ([System.IO.Path]::IsPathRooted($RelativeOrAbsolutePath)) { return $RelativeOrAbsolutePath }
+    if (-not (Test-HasValue $VaultPath)) { return $RelativeOrAbsolutePath }
+    $parts = ($RelativeOrAbsolutePath -replace '\\', '/') -split '/'
+    Join-Path $VaultPath ($parts -join '\')
+}
+
 function Get-UrlFileExtension {
     param(
         [string]$Url,
@@ -1821,6 +1833,189 @@ function Invoke-NoteRenderer {
     }
 }
 
+function Test-ShouldAutoRunKnowledgeSummary {
+    param(
+        $Detection,
+        $Capture,
+        [string]$ResolvedVaultPath,
+        [string]$NotePath,
+        [switch]$DryRun
+    )
+    if ([bool]$DryRun) { return $false }
+    if (-not (Test-HasValue $ResolvedVaultPath)) { return $false }
+    if (-not (Test-HasValue $NotePath)) { return $false }
+    $contentType = if ($null -ne $Detection) { [string]$Detection.content_type } else { '' }
+    if (-not (Test-HasValue $contentType)) { $contentType = Get-StringValue -Data $Capture -Name 'content_type' -DefaultValue '' }
+    if ($contentType -eq 'short_video') { return $false }
+    $metadata = Get-DataValue -Data $Capture -Name 'metadata'
+    $analysisReadyValue = Get-DataValue -Data $Capture -Name 'analysis_ready'
+    if ($null -eq $analysisReadyValue -and $null -ne $metadata) { $analysisReadyValue = Get-DataValue -Data $metadata -Name 'analysis_ready' }
+    if ($null -eq $analysisReadyValue) { return $true }
+    [bool]$analysisReadyValue
+}
+
+function Set-CaptureAnalyzerStatus {
+    param(
+        $Capture,
+        [string]$AnalyzerStatus
+    )
+    if ($null -eq $Capture) { return $Capture }
+    Set-ObjectField -Object $Capture -Name 'analyzer_status' -Value $AnalyzerStatus | Out-Null
+    $metadata = Get-DataValue -Data $Capture -Name 'metadata'
+    if ($null -ne $metadata) {
+        Set-ObjectField -Object $metadata -Name 'analyzer_status' -Value $AnalyzerStatus | Out-Null
+    }
+    $Capture
+}
+
+function Write-CaptureStateFiles {
+    param(
+        $Capture,
+        [string]$ResolvedVaultPath,
+        [string]$CaptureJsonInputPath
+    )
+    if ($null -eq $Capture) { return }
+    $sidecarPath = ''
+    if (Test-HasValue $CaptureJsonInputPath) {
+        $sidecarPath = Resolve-PathFromVault -VaultPath $ResolvedVaultPath -RelativeOrAbsolutePath $CaptureJsonInputPath
+    }
+    if (-not (Test-HasValue $sidecarPath)) {
+        $sidecarPath = Resolve-PathFromVault -VaultPath $ResolvedVaultPath -RelativeOrAbsolutePath (Get-StringValue -Data $Capture -Name 'sidecar_path' -DefaultValue '')
+    }
+    if (Test-HasValue $sidecarPath) {
+        $sidecarDirectory = Split-Path -Parent $sidecarPath
+        if (Test-HasValue $sidecarDirectory) { New-Item -ItemType Directory -Path $sidecarDirectory -Force | Out-Null }
+        Write-Utf8Text -Path $sidecarPath -Content ($Capture | ConvertTo-Json -Depth 100)
+    }
+
+    $metadata = Get-DataValue -Data $Capture -Name 'metadata'
+    if ($null -eq $metadata) { return }
+    $metadataPath = Get-StringValue -Data $Capture -Name 'metadata_path' -DefaultValue ''
+    if (-not (Test-HasValue $metadataPath)) { $metadataPath = Get-StringValue -Data $metadata -Name 'metadata_path' -DefaultValue '' }
+    $metadataPath = Resolve-PathFromVault -VaultPath $ResolvedVaultPath -RelativeOrAbsolutePath $metadataPath
+    if (Test-HasValue $metadataPath) {
+        $metadataDirectory = Split-Path -Parent $metadataPath
+        if (Test-HasValue $metadataDirectory) { New-Item -ItemType Directory -Path $metadataDirectory -Force | Out-Null }
+        Write-Utf8Text -Path $metadataPath -Content ($metadata | ConvertTo-Json -Depth 100)
+    }
+}
+
+function Invoke-KnowledgeAnalyzerFromClipper {
+    param(
+        [string]$NotePath,
+        [string]$ResolvedVaultPath,
+        [string]$ArtifactDirectory
+    )
+    $result = [ordered]@{
+        attempted = $false
+        success = $false
+        analyzer_status = 'skipped'
+        output_json_path = ''
+        analysis_input_path = ''
+        knowledge_note_path = ''
+        debug_directory = ''
+        error_message = ''
+    }
+    if (-not (Test-HasValue $NotePath) -or -not (Test-HasValue $ResolvedVaultPath)) {
+        return [pscustomobject]$result
+    }
+
+    $analyzerScriptPath = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\obsidian-analyzer\scripts\run_analyzer.ps1'))
+    if (-not (Test-Path $analyzerScriptPath)) {
+        $result.error_message = "Analyzer script not found: $analyzerScriptPath"
+        return [pscustomobject]$result
+    }
+
+    $result.attempted = $true
+    $result.output_json_path = Join-Path $ArtifactDirectory 'knowledge-analyzer-run.json'
+    $result.debug_directory = Join-Path $ArtifactDirectory 'knowledge-analyzer'
+
+    try {
+        $null = & $analyzerScriptPath -NotePath $NotePath -VaultPath $ResolvedVaultPath -Mode knowledge -OutputJsonPath $result.output_json_path -DebugDirectory $result.debug_directory 2>&1 | Out-String
+        $analyzerRun = $null
+        if (Test-Path $result.output_json_path) {
+            $analyzerRun = ConvertFrom-JsonCompat -Json (Read-Utf8Text -Path $result.output_json_path) -Depth 100
+        }
+        if ($null -eq $analyzerRun) {
+            $result.error_message = 'Analyzer did not produce an output JSON file.'
+            return [pscustomobject]$result
+        }
+        $result.analysis_input_path = Get-StringValue -Data $analyzerRun -Name 'analysis_input_path' -DefaultValue ''
+        $result.knowledge_note_path = Get-StringValue -Data $analyzerRun -Name 'note_path' -DefaultValue ''
+        $result.analyzer_status = Get-StringValue -Data $analyzerRun -Name 'analysis_status' -DefaultValue ''
+        if ($analyzerRun.success -and ((Get-StringValue -Data $analyzerRun -Name 'final_run_status' -DefaultValue '') -eq 'SUCCESS')) {
+            $result.success = $true
+            if (-not (Test-HasValue $result.analyzer_status)) { $result.analyzer_status = 'done' }
+        } else {
+            $result.success = $false
+            $result.error_message = Get-StringValue -Data $analyzerRun -Name 'final_message_zh' -DefaultValue (Get-StringValue -Data $analyzerRun -Name 'final_message_en' -DefaultValue 'Knowledge analyzer failed.')
+            if (-not (Test-HasValue $result.analyzer_status)) { $result.analyzer_status = 'failed' }
+        }
+        return [pscustomobject]$result
+    } catch {
+        $result.error_message = $_.Exception.Message
+        return [pscustomobject]$result
+    }
+}
+
+function Invoke-KnowledgeSummaryUpdater {
+    param(
+        [string]$NotePath,
+        [string]$ResolvedVaultPath,
+        [string]$ArtifactDirectory,
+        [string]$AnalyzerStatus,
+        [string]$AnalysisJsonPath,
+        [string]$KnowledgeNotePath
+    )
+    $result = [ordered]@{
+        success = $false
+        note_path = $NotePath
+        analyzer_status = $AnalyzerStatus
+        knowledge_section_written = $false
+        output_json_path = ''
+        error_message = ''
+    }
+    if (-not (Test-HasValue $NotePath) -or -not (Test-Path $NotePath)) {
+        $result.error_message = "Clipping note not found: $NotePath"
+        return [pscustomobject]$result
+    }
+
+    $updaterScriptPath = Join-Path $PSScriptRoot 'update_clipping_note_with_knowledge.py'
+    if (-not (Test-Path $updaterScriptPath)) {
+        $result.error_message = "Knowledge summary updater not found: $updaterScriptPath"
+        return [pscustomobject]$result
+    }
+
+    $result.output_json_path = Join-Path $ArtifactDirectory 'knowledge-summary-update.json'
+    try {
+        $args = @(
+            $updaterScriptPath,
+            '--note-path', $NotePath,
+            '--vault-path', $ResolvedVaultPath,
+            '--analyzer-status', $AnalyzerStatus,
+            '--output-json', $result.output_json_path
+        )
+        if (Test-HasValue $AnalysisJsonPath) { $args += @('--analysis-json', $AnalysisJsonPath) }
+        if (Test-HasValue $KnowledgeNotePath) { $args += @('--knowledge-note-path', $KnowledgeNotePath) }
+        $null = & python @args 2>&1 | Out-String
+        if (-not (Test-Path $result.output_json_path)) {
+            $result.error_message = 'Knowledge summary updater did not produce an output JSON file.'
+            return [pscustomobject]$result
+        }
+        $updaterResult = ConvertFrom-JsonCompat -Json (Read-Utf8Text -Path $result.output_json_path) -Depth 100
+        $result.success = [bool]$updaterResult.success
+        $result.note_path = Get-StringValue -Data $updaterResult -Name 'note_path' -DefaultValue $NotePath
+        $result.knowledge_section_written = [bool](Get-DataValue -Data $updaterResult -Name 'knowledge_section_written')
+        if (-not $result.success) {
+            $result.error_message = Get-StringValue -Data $updaterResult -Name 'error_message' -DefaultValue 'Knowledge summary updater failed.'
+        }
+        return [pscustomobject]$result
+    } catch {
+        $result.error_message = $_.Exception.Message
+        return [pscustomobject]$result
+    }
+}
+
 function Get-MarkdownDisplayTitle {
     param([string]$Title)
     if (-not (Test-HasValue $Title)) { return 'Untitled Clip' }
@@ -2119,6 +2314,8 @@ function Add-RunFinalStatusFields {
     $platform = Get-StringValue -Data $Result -Name 'platform' -DefaultValue ''
     $captureLevel = Get-StringValue -Data $Result -Name 'capture_level' -DefaultValue ''
     $fallbackReason = Get-StringValue -Data $Result -Name 'fallback_reason' -DefaultValue ''
+    $knowledgeSummaryStatus = Get-StringValue -Data $Result -Name 'knowledge_summary_status' -DefaultValue ''
+    $knowledgeSummaryError = Get-StringValue -Data $Result -Name 'knowledge_summary_error' -DefaultValue ''
 
     if (-not [bool]$Result.success) {
         Set-ObjectField -Object $Result -Name 'final_run_status' -Value 'FAILED' | Out-Null
@@ -2185,6 +2382,20 @@ function Add-RunFinalStatusFields {
 
     Set-ObjectField -Object $Result -Name 'final_run_status' -Value 'SUCCESS' | Out-Null
     Set-ObjectField -Object $Result -Name 'final_run_status_zh' -Value (Zh '\u6210\u529f') | Out-Null
+    if ($knowledgeSummaryStatus -eq 'failed') {
+        $knowledgeSummaryMessageEn = 'The clipper run completed successfully, but the knowledge summary step failed.'
+        if (Test-HasValue $knowledgeSummaryError) {
+            $knowledgeSummaryMessageEn = '{0} Details: {1}' -f $knowledgeSummaryMessageEn, $knowledgeSummaryError
+        }
+        $knowledgeSummaryMessageZh = Zh '\u672c\u6b21 Clipper \u4e3b\u6d41\u7a0b\u5df2\u6210\u529f\u5b8c\u6210\uff0c\u4f46\u77e5\u8bc6\u901f\u89c8\u56de\u5199\u5931\u8d25\u3002'
+        if (Test-HasValue $knowledgeSummaryError) {
+            $knowledgeSummaryMessageZh = '{0} {1}{2}' -f $knowledgeSummaryMessageZh, (Zh '\u8be6\u60c5\uff1a'), $knowledgeSummaryError
+        }
+        Set-ObjectField -Object $Result -Name 'final_message_en' -Value $knowledgeSummaryMessageEn | Out-Null
+        Set-ObjectField -Object $Result -Name 'final_message_zh' -Value $knowledgeSummaryMessageZh | Out-Null
+        return $Result
+    }
+
     Set-ObjectField -Object $Result -Name 'final_message_en' -Value 'The clipper run completed successfully.' | Out-Null
     Set-ObjectField -Object $Result -Name 'final_message_zh' -Value (Zh '\u672c\u6b21 Clipper \u8fd0\u884c\u6210\u529f\u5b8c\u6210\u3002') | Out-Null
     $Result
@@ -2217,6 +2428,13 @@ function Get-RunSummaryLines {
     if ($null -ne $Result.PSObject.Properties['transcript_status']) { $lines.Add("transcript: $($Result.transcript_status) / $($Result.transcript_source)") }
     if ($null -ne $Result.PSObject.Properties['asr_status']) { $lines.Add("asr      : $($Result.asr_status) / $($Result.asr_provider)") }
     if ($null -ne $Result.PSObject.Properties['asr_normalization'] -and (Test-HasValue ([string]$Result.asr_normalization))) { $lines.Add("asr_norm : $($Result.asr_normalization)") }
+    if ($null -ne $Result.PSObject.Properties['knowledge_summary_status']) {
+        $knowledgeLine = [string]$Result.knowledge_summary_status
+        if ($null -ne $Result.PSObject.Properties['knowledge_summary_note_updated']) {
+            $knowledgeLine = '{0} / note_updated={1}' -f $knowledgeLine, ([bool]$Result.knowledge_summary_note_updated).ToString().ToLowerInvariant()
+        }
+        $lines.Add("knowledge: $knowledgeLine")
+    }
     if ($null -ne $Result.PSObject.Properties['final_run_status']) { $lines.Add("result   : $($Result.final_run_status)") }
     if ($null -ne $Result.PSObject.Properties['final_run_status_zh']) { $lines.Add(("{0}     : {1}" -f (Zh '\u7ed3\u679c'), $Result.final_run_status_zh)) }
     if (Test-HasValue $failedStep) {
@@ -2225,6 +2443,9 @@ function Get-RunSummaryLines {
     }
     if ($null -ne $Result.PSObject.Properties['note_path']) {
         $lines.Add("note     : $($Result.note_path)")
+    }
+    if ($null -ne $Result.PSObject.Properties['knowledge_note_path'] -and (Test-HasValue ([string]$Result.knowledge_note_path))) {
+        $lines.Add("insight  : $($Result.knowledge_note_path)")
     }
     if ($null -ne $Result.PSObject.Properties['support_bundle_path']) {
         $lines.Add("share    : $($Result.support_bundle_path)")
@@ -2241,6 +2462,9 @@ function Get-RunSummaryLines {
     }
     if ($null -ne $Result.PSObject.Properties['errors'] -and @($Result.errors).Count -gt 0) {
         $lines.Add("error    : $((@($Result.errors) | Select-Object -First 1))")
+    }
+    if ($null -ne $Result.PSObject.Properties['knowledge_summary_error'] -and (Test-HasValue ([string]$Result.knowledge_summary_error))) {
+        $lines.Add("knowledge_err: $($Result.knowledge_summary_error)")
     }
     if ($null -ne $Result.PSObject.Properties['final_message_en']) { $lines.Add("detail_en: $($Result.final_message_en)") }
     if ($null -ne $Result.PSObject.Properties['final_message_zh']) { $lines.Add(("{0}     : {1}" -f (Zh '\u8be6\u60c5'), $Result.final_message_zh)) }
@@ -2348,6 +2572,97 @@ try {
     $authSessionLikelyValidForResult = Get-DataValue -Data $capture -Name 'auth_session_likely_valid'
     $captureLevelForResult = if ($null -ne $captureMetadata) { Get-StringValue -Data $captureMetadata -Name 'capture_level' -DefaultValue '' } else { '' }
     $fallbackReasonForResult = if ($null -ne $captureMetadata) { Get-StringValue -Data $captureMetadata -Name 'fallback_reason' -DefaultValue '' } else { '' }
+    $notePathFromRenderer = Get-StringValue -Data $note -Name 'note_path' -DefaultValue ''
+    $knowledgeSummaryAttempted = $false
+    $knowledgeSummaryStatus = 'skipped'
+    $knowledgeSummaryNoteUpdated = $false
+    $knowledgeSummaryError = ''
+    $knowledgeNotePathForResult = ''
+    $knowledgeAnalyzerOutputJsonPath = ''
+    $knowledgeAnalysisInputPath = ''
+
+    if (Test-ShouldAutoRunKnowledgeSummary -Detection $detection -Capture $capture -ResolvedVaultPath $resolvedVaultPath -NotePath $notePathFromRenderer -DryRun:$DryRun) {
+        $knowledgeSummaryAttempted = $true
+        try {
+            $script:ClipperCurrentStep = 'knowledge_summary_prepare'
+            $knowledgeSummaryStatus = 'running'
+            $capture = Set-CaptureAnalyzerStatus -Capture $capture -AnalyzerStatus 'running'
+            Write-CaptureStateFiles -Capture $capture -ResolvedVaultPath $resolvedVaultPath -CaptureJsonInputPath $CaptureJsonPath
+
+            $script:ClipperCurrentStep = 'knowledge_summary_analyze'
+            $knowledgeAnalyzerResult = Invoke-KnowledgeAnalyzerFromClipper -NotePath $notePathFromRenderer -ResolvedVaultPath $resolvedVaultPath -ArtifactDirectory $artifactDirectory
+            $knowledgeAnalyzerOutputJsonPath = Get-StringValue -Data $knowledgeAnalyzerResult -Name 'output_json_path' -DefaultValue ''
+            $knowledgeAnalysisInputPath = Get-StringValue -Data $knowledgeAnalyzerResult -Name 'analysis_input_path' -DefaultValue ''
+            $knowledgeNotePathForResult = Get-StringValue -Data $knowledgeAnalyzerResult -Name 'knowledge_note_path' -DefaultValue ''
+
+            if ([bool]$knowledgeAnalyzerResult.success) {
+                $capture = Set-CaptureAnalyzerStatus -Capture $capture -AnalyzerStatus 'done'
+                Write-CaptureStateFiles -Capture $capture -ResolvedVaultPath $resolvedVaultPath -CaptureJsonInputPath $CaptureJsonPath
+
+                $script:ClipperCurrentStep = 'knowledge_summary_update'
+                $knowledgeUpdateResult = Invoke-KnowledgeSummaryUpdater -NotePath $notePathFromRenderer -ResolvedVaultPath $resolvedVaultPath -ArtifactDirectory $artifactDirectory -AnalyzerStatus 'done' -AnalysisJsonPath $knowledgeAnalysisInputPath -KnowledgeNotePath $knowledgeNotePathForResult
+                if ([bool]$knowledgeUpdateResult.success) {
+                    $knowledgeSummaryStatus = 'done'
+                    $knowledgeSummaryNoteUpdated = [bool]$knowledgeUpdateResult.knowledge_section_written
+                    $updatedNotePath = Get-StringValue -Data $knowledgeUpdateResult -Name 'note_path' -DefaultValue ''
+                    if (Test-HasValue $updatedNotePath) { $notePathFromRenderer = $updatedNotePath }
+                } else {
+                    $knowledgeSummaryStatus = 'failed'
+                    $knowledgeSummaryError = Get-StringValue -Data $knowledgeUpdateResult -Name 'error_message' -DefaultValue 'Knowledge summary updater failed after analyzer success.'
+                    $capture = Set-CaptureAnalyzerStatus -Capture $capture -AnalyzerStatus 'failed'
+                    Write-CaptureStateFiles -Capture $capture -ResolvedVaultPath $resolvedVaultPath -CaptureJsonInputPath $CaptureJsonPath
+                }
+            } else {
+                $knowledgeSummaryStatus = 'failed'
+                $knowledgeSummaryError = Get-StringValue -Data $knowledgeAnalyzerResult -Name 'error_message' -DefaultValue 'Knowledge analyzer failed.'
+                $knowledgeNotePathForResult = ''
+                $capture = Set-CaptureAnalyzerStatus -Capture $capture -AnalyzerStatus 'failed'
+                Write-CaptureStateFiles -Capture $capture -ResolvedVaultPath $resolvedVaultPath -CaptureJsonInputPath $CaptureJsonPath
+
+                $script:ClipperCurrentStep = 'knowledge_summary_update'
+                $knowledgeUpdateResult = Invoke-KnowledgeSummaryUpdater -NotePath $notePathFromRenderer -ResolvedVaultPath $resolvedVaultPath -ArtifactDirectory $artifactDirectory -AnalyzerStatus 'failed' -AnalysisJsonPath '' -KnowledgeNotePath ''
+                if ([bool]$knowledgeUpdateResult.success) {
+                    $updatedNotePath = Get-StringValue -Data $knowledgeUpdateResult -Name 'note_path' -DefaultValue ''
+                    if (Test-HasValue $updatedNotePath) { $notePathFromRenderer = $updatedNotePath }
+                } else {
+                    $updaterError = Get-StringValue -Data $knowledgeUpdateResult -Name 'error_message' -DefaultValue ''
+                    if (Test-HasValue $updaterError) {
+                        $knowledgeSummaryError = if (Test-HasValue $knowledgeSummaryError) { '{0} | updater: {1}' -f $knowledgeSummaryError, $updaterError } else { $updaterError }
+                    }
+                }
+            }
+        } catch {
+            $knowledgeSummaryStatus = 'failed'
+            if (-not (Test-HasValue $knowledgeSummaryError)) {
+                $knowledgeSummaryError = $_.Exception.Message
+            }
+
+            try {
+                $capture = Set-CaptureAnalyzerStatus -Capture $capture -AnalyzerStatus 'failed'
+                Write-CaptureStateFiles -Capture $capture -ResolvedVaultPath $resolvedVaultPath -CaptureJsonInputPath $CaptureJsonPath
+            } catch {
+            }
+
+            try {
+                $knowledgeUpdateResult = Invoke-KnowledgeSummaryUpdater -NotePath $notePathFromRenderer -ResolvedVaultPath $resolvedVaultPath -ArtifactDirectory $artifactDirectory -AnalyzerStatus 'failed' -AnalysisJsonPath '' -KnowledgeNotePath ''
+                if ([bool]$knowledgeUpdateResult.success) {
+                    $updatedNotePath = Get-StringValue -Data $knowledgeUpdateResult -Name 'note_path' -DefaultValue ''
+                    if (Test-HasValue $updatedNotePath) { $notePathFromRenderer = $updatedNotePath }
+                } else {
+                    $updaterError = Get-StringValue -Data $knowledgeUpdateResult -Name 'error_message' -DefaultValue ''
+                    if (Test-HasValue $updaterError) {
+                        $knowledgeSummaryError = if (Test-HasValue $knowledgeSummaryError) { '{0} | updater: {1}' -f $knowledgeSummaryError, $updaterError } else { $updaterError }
+                    }
+                }
+            } catch {
+                if (-not (Test-HasValue $knowledgeSummaryError)) {
+                    $knowledgeSummaryError = $_.Exception.Message
+                }
+            }
+        } finally {
+            $script:ClipperCurrentStep = 'result_finalize'
+        }
+    }
 
     $result = [ordered]@{
         success = $true
@@ -2385,11 +2700,17 @@ try {
         source_url = $SourceUrl
         source_input_kind = $resolvedSourceInput.input_kind
         source_url_extracted = [bool]$resolvedSourceInput.extraction_applied
+        knowledge_summary_attempted = $knowledgeSummaryAttempted
+        knowledge_summary_status = $knowledgeSummaryStatus
+        knowledge_summary_note_updated = $knowledgeSummaryNoteUpdated
+        knowledge_note_path = $knowledgeNotePathForResult
+        knowledge_analyzer_output_json_path = $knowledgeAnalyzerOutputJsonPath
+        knowledge_analysis_input_path = $knowledgeAnalysisInputPath
     }
     $captureErrors = Get-DataValue -Data $capture -Name 'errors'
     if ($null -ne $captureErrors -and @($captureErrors).Count -gt 0) { $result.errors = @($captureErrors) }
-    $notePathFromRenderer = Get-StringValue -Data $note -Name 'note_path' -DefaultValue ''
     if (Test-HasValue $notePathFromRenderer) { $result.note_path = $notePathFromRenderer }
+    if (Test-HasValue $knowledgeSummaryError) { $result.knowledge_summary_error = $knowledgeSummaryError }
     if (Test-HasValue $artifactDirectory) {
         $result.debug_directory = $artifactDirectory
         $result.support_bundle_path = Join-Path $artifactDirectory 'support-bundle'

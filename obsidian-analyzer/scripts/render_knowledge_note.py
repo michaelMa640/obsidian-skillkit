@@ -42,6 +42,14 @@ def yaml_scalar(value: Any) -> str:
     return "'" + str(value).replace("'", "''") + "'"
 
 
+def yaml_frontmatter_value(value: Any) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return str(value)
+    return yaml_scalar(value)
+
+
 def safe_file_name(value: str) -> str:
     invalid = set('<>:"/\\|?*')
     sanitized = "".join("_" if ch in invalid else ch for ch in value)
@@ -94,14 +102,21 @@ def relative_vault_path(path_value: str, vault_path: str) -> str:
         return ""
 
 
-def obsidian_link(path_value: str, vault_path: str, embed: bool = False) -> str:
+def vault_path_or_original(path_value: str, vault_path: str) -> str:
     relative = relative_vault_path(path_value, vault_path)
+    if has_value(relative):
+        return relative
+    return string_value(path_value)
+
+
+def obsidian_link(path_value: str, vault_path: str, embed: bool = False) -> str:
+    relative = vault_path_or_original(path_value, vault_path)
     if not has_value(relative):
         return string_value(path_value, default="n/a")
+    target = relative[:-3] if relative.lower().endswith(".md") else relative
     if embed:
-        return f"![[{relative}]]"
-    label = Path(relative).name
-    return f"[{label}](<{relative}>)"
+        return f"![[{target}]]"
+    return f"[[{target}]]"
 
 
 def normalize_list(values: Any) -> list[Any]:
@@ -275,6 +290,64 @@ def lines_from_speaker_map(values: Any, empty_text: str) -> list[str]:
     return lines or [empty_text]
 
 
+def dedupe_strings(values: list[str]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        normalized = string_value(value)
+        if not has_value(normalized):
+            continue
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        result.append(normalized)
+    return result
+
+
+def extract_named_values(values: Any, *keys: str) -> list[str]:
+    items = normalize_list(values)
+    names: list[str] = []
+    for item in items:
+        if isinstance(item, dict):
+            candidates = [item.get(key) for key in keys]
+            text = string_value(*candidates)
+        else:
+            text = string_value(item)
+        if has_value(text):
+            names.append(text)
+    return dedupe_strings(names)
+
+
+def append_yaml_list(lines: list[str], key: str, values: list[str]) -> None:
+    normalized = dedupe_strings(values)
+    if not normalized:
+        return
+    lines.append(f"{key}:")
+    lines.extend([f"  - {yaml_scalar(item)}" for item in normalized])
+
+
+def build_navigation_lines(analysis: dict[str, Any], vault_path: str) -> list[str]:
+    source_note_path = string_value(analysis.get("source_note_path"))
+    capture_json_path = string_value(analysis.get("capture_json_path"))
+    audio_path = string_value(analysis.get("audio_path"))
+    transcript_path = string_value(analysis.get("transcript_path"))
+    source_url = string_value(analysis.get("source_url"))
+    normalized_url = string_value(analysis.get("normalized_url"))
+
+    lines = [f"- 来源剪藏: {obsidian_link(source_note_path, vault_path)}"]
+    if has_value(source_url):
+        lines.append(f"- 原始链接: {source_url}")
+    if has_value(normalized_url) and normalized_url != source_url:
+        lines.append(f"- 规范化链接: {normalized_url}")
+    if has_value(capture_json_path):
+        lines.append(f"- Capture JSON: {obsidian_link(capture_json_path, vault_path)}")
+    if has_value(transcript_path):
+        lines.append(f"- 转录文本: {obsidian_link(transcript_path, vault_path)}")
+    if has_value(audio_path):
+        lines.append(f"- 音频文件: {obsidian_link(audio_path, vault_path)}")
+    return lines
+
+
 def build_source_lines(analysis: dict[str, Any], vault_path: str) -> list[str]:
     source_note_path = string_value(analysis.get("source_note_path"))
     capture_json_path = string_value(analysis.get("capture_json_path"))
@@ -284,9 +357,13 @@ def build_source_lines(analysis: dict[str, Any], vault_path: str) -> list[str]:
     transcript_segments_path = string_value(analysis.get("transcript_segments_path"))
     video_path = string_value(analysis.get("video_path"))
     asr_normalization = string_value(analysis.get("asr_normalization"))
+    source_url = string_value(analysis.get("source_url"))
+    normalized_url = string_value(analysis.get("normalized_url"))
 
     lines = [
         f"- 来源笔记: {obsidian_link(source_note_path, vault_path)}",
+        f"- 原始链接: {source_url if has_value(source_url) else 'n/a'}",
+        f"- 规范化链接: {normalized_url if has_value(normalized_url) else 'n/a'}",
         f"- Capture JSON: {obsidian_link(capture_json_path, vault_path)}",
         f"- 音频文件: {obsidian_link(audio_path, vault_path)}",
         f"- 文本稿: {obsidian_link(transcript_path, vault_path)}",
@@ -317,6 +394,14 @@ def build_note(analysis: dict[str, Any], folder: str, vault_path: str) -> dict[s
     provider = string_value(analysis.get("provider"), default="mock")
     provider_reported_model = string_value(analysis.get("provider_reported_model"))
     analysis_status = string_value(analysis.get("analysis_status"), default="mock_generated")
+    route = string_value(analysis.get("route"))
+    author = string_value(analysis.get("author"))
+    published_at = string_value(analysis.get("published_at"))
+    podcast_title = string_value(analysis.get("podcast_title"))
+    podcast_author = string_value(analysis.get("podcast_author"))
+    episode_url = string_value(analysis.get("episode_url"))
+    episode_id = string_value(analysis.get("episode_id"))
+    duration_seconds = string_value(analysis.get("duration_seconds"))
     capture_json_path = string_value(analysis.get("capture_json_path"))
     audio_path = string_value(analysis.get("audio_path"))
     transcript_path = string_value(analysis.get("transcript_path"))
@@ -324,24 +409,52 @@ def build_note(analysis: dict[str, Any], folder: str, vault_path: str) -> dict[s
     transcript_segments_path = string_value(analysis.get("transcript_segments_path"))
     video_path = string_value(analysis.get("video_path"))
     file_name = safe_file_name(f"{analyzed_at} {title}.md")
+    source_note_link = obsidian_link(source_note_path, vault_path)
+    source_note_path_value = vault_path_or_original(source_note_path, vault_path)
+    capture_json_path_value = vault_path_or_original(capture_json_path, vault_path)
+    audio_path_value = vault_path_or_original(audio_path, vault_path)
+    transcript_path_value = vault_path_or_original(transcript_path, vault_path)
+    transcript_raw_path_value = vault_path_or_original(transcript_raw_path, vault_path)
+    transcript_segments_path_value = vault_path_or_original(transcript_segments_path, vault_path)
+    video_path_value = vault_path_or_original(video_path, vault_path)
+    topic_names = extract_named_values(analysis.get("topic_candidates"), "name", "title", "topic")
+    knowledge_card_titles = extract_named_values(analysis.get("knowledge_cards"), "title", "name")
+    speaker_names = extract_named_values(analysis.get("speaker_map"), "speaker", "name", "title")
+    insight_tags = dedupe_strings(
+        ["insight", "knowledge", *[string_value(item) for item in normalize_list(analysis.get("tags"))]]
+    )
+    has_audio = has_value(audio_path_value)
+    has_transcript = has_value(transcript_path_value)
+    has_timestamps = len(normalize_list(analysis.get("timestamp_index"))) > 0
+    has_speakers = len(speaker_names) > 0
 
     lines = [
         "---",
         f"title: {yaml_scalar(title)}",
+        "note_type: 'knowledge_insight'",
         f"source_url: {yaml_scalar(string_value(analysis.get('source_url')))}",
         f"normalized_url: {yaml_scalar(string_value(analysis.get('normalized_url')))}",
-        f"source_note_path: {yaml_scalar(source_note_path)}",
-        f"capture_json_path: {yaml_scalar(capture_json_path)}",
-        f"audio_path: {yaml_scalar(audio_path)}",
-        f"transcript_path: {yaml_scalar(transcript_path)}",
-        f"transcript_raw_path: {yaml_scalar(transcript_raw_path)}",
-        f"transcript_segments_path: {yaml_scalar(transcript_segments_path)}",
-        f"video_path: {yaml_scalar(video_path)}",
+        f"source_note_path: {yaml_scalar(source_note_path_value)}",
+        f"source_note_link: {yaml_scalar(source_note_link)}",
+        f"capture_json_path: {yaml_scalar(capture_json_path_value)}",
+        f"audio_path: {yaml_scalar(audio_path_value)}",
+        f"transcript_path: {yaml_scalar(transcript_path_value)}",
+        f"transcript_raw_path: {yaml_scalar(transcript_raw_path_value)}",
+        f"transcript_segments_path: {yaml_scalar(transcript_segments_path_value)}",
+        f"video_path: {yaml_scalar(video_path_value)}",
         f"analysis_mode: {yaml_scalar(mode)}",
         f"analysis_goal: {yaml_scalar(goal)}",
         f"platform: {yaml_scalar(string_value(analysis.get('platform')))}",
         f"content_type: {yaml_scalar(string_value(analysis.get('content_type')))}",
+        f"route: {yaml_scalar(route)}",
         f"capture_id: {yaml_scalar(string_value(analysis.get('capture_id')))}",
+        f"author: {yaml_scalar(author)}",
+        f"published_at: {yaml_scalar(published_at)}",
+        f"podcast_title: {yaml_scalar(podcast_title)}",
+        f"podcast_author: {yaml_scalar(podcast_author)}",
+        f"episode_url: {yaml_scalar(episode_url)}",
+        f"episode_id: {yaml_scalar(episode_id)}",
+        f"duration_seconds: {yaml_scalar(duration_seconds)}",
         f"analyzed_at: {yaml_scalar(analyzed_at)}",
         f"provider: {yaml_scalar(provider)}",
         f"provider_reported_model: {yaml_scalar(provider_reported_model)}",
@@ -350,18 +463,49 @@ def build_note(analysis: dict[str, Any], folder: str, vault_path: str) -> dict[s
         f"prompt_template: {yaml_scalar(string_value(analysis.get('prompt_template')))}",
         f"output_contract_version: {yaml_scalar(string_value(analysis.get('output_contract_version')))}",
         f"output_language: {yaml_scalar(output_language)}",
+        f"knowledge_card_candidate_count: {yaml_frontmatter_value(len(knowledge_card_titles))}",
+        f"topic_candidate_count: {yaml_frontmatter_value(len(topic_names))}",
+        f"speaker_count: {yaml_frontmatter_value(len(speaker_names))}",
+        f"timestamp_count: {yaml_frontmatter_value(len(normalize_list(analysis.get('timestamp_index'))))}",
+        f"has_audio: {yaml_frontmatter_value(has_audio)}",
+        f"has_transcript: {yaml_frontmatter_value(has_transcript)}",
+        f"has_timestamps: {yaml_frontmatter_value(has_timestamps)}",
+        f"has_speakers: {yaml_frontmatter_value(has_speakers)}",
+    ]
+    append_yaml_list(lines, "topic_names", topic_names)
+    append_yaml_list(lines, "knowledge_card_titles", knowledge_card_titles)
+    append_yaml_list(lines, "speaker_names", speaker_names)
+    append_yaml_list(lines, "tags", insight_tags)
+    lines.extend([
         "---",
         "",
         f"# {markdown_title(title, '未命名知识解读')}",
         "",
+        "## 回链入口",
+        *build_navigation_lines(analysis, vault_path),
+        "",
         "## 分析元数据",
         f"- 平台: {string_value(analysis.get('platform'), default='n/a')}",
+        f"- 路由: {route if has_value(route) else 'n/a'}",
+        f"- 内容类型: {string_value(analysis.get('content_type'), default='n/a')}",
         f"- 模式: {mode}",
         f"- 目标: {goal}",
+        f"- 作者: {author if has_value(author) else 'n/a'}",
+        f"- 发布时间: {published_at if has_value(published_at) else 'n/a'}",
         f"- 提供方: {provider}",
         f"- 模型: {model}",
         f"- 状态: {analysis_status}",
         f"- Capture ID: {string_value(analysis.get('capture_id'), default='n/a')}",
+    ])
+    if has_value(podcast_title):
+        lines.append(f"- 播客名称: {podcast_title}")
+    if has_value(podcast_author):
+        lines.append(f"- 播客作者: {podcast_author}")
+    if has_value(episode_id):
+        lines.append(f"- 单集 ID: {episode_id}")
+    if has_value(duration_seconds):
+        lines.append(f"- 时长（秒）: {duration_seconds}")
+    lines.extend([
         "",
         "## 内容总结",
         string_value(analysis.get("content_summary"), default="暂无"),
@@ -401,7 +545,7 @@ def build_note(analysis: dict[str, Any], folder: str, vault_path: str) -> dict[s
         "",
         "## 来源",
         *build_source_lines(analysis, vault_path),
-    ]
+    ])
     return {
         "title": title,
         "raw_title": raw_title,
