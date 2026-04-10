@@ -252,8 +252,9 @@ function Mark-ClippingNoteAsAnalyzed {
     [pscustomobject]$result
 }
 
-function Invoke-BreakdownRenderer {
+function Invoke-NoteRenderer {
     param(
+        [string]$RendererScriptPath,
         [string]$AnalysisJsonPath,
         [string]$TargetFolder,
         [string]$RendererOutputJsonPath,
@@ -263,7 +264,7 @@ function Invoke-BreakdownRenderer {
     $vaultPathFile = ''
     $folderFile = ''
     try {
-        $args = @((Join-Path $PSScriptRoot 'render_breakdown_note.py'), '--analysis-json', $AnalysisJsonPath, '--output-json', $RendererOutputJsonPath)
+        $args = @($RendererScriptPath, '--analysis-json', $AnalysisJsonPath, '--output-json', $RendererOutputJsonPath)
         if (Test-HasValue $ResolvedVaultPath) {
             $vaultPathFile = [System.IO.Path]::GetTempFileName()
             Write-Utf8Text -Path $vaultPathFile -Content $ResolvedVaultPath
@@ -278,7 +279,8 @@ function Invoke-BreakdownRenderer {
         $rendererOutput = & python @args 2>&1
         if ($LASTEXITCODE -ne 0) {
             $detail = (($rendererOutput | Out-String).Trim())
-            throw "render_breakdown_note.py failed with exit code $LASTEXITCODE. Details: $detail"
+            $rendererName = [System.IO.Path]::GetFileName($RendererScriptPath)
+            throw "$rendererName failed with exit code $LASTEXITCODE. Details: $detail"
         }
         ConvertFrom-JsonCompat -Json (Read-Utf8Text -Path $RendererOutputJsonPath) -Depth 100
     } finally {
@@ -363,7 +365,61 @@ function Get-DefaultMode {
     if (-not (Test-HasValue $contentType) -and $null -ne $Capture) { $contentType = Get-StringValue -Data $Capture -Name 'content_type' -DefaultValue '' }
     if ($route -eq 'social' -and $contentType -eq 'short_video') { return 'analyze' }
     if ($platform -in @('douyin', 'xiaohongshu')) { return 'analyze' }
-    'learn'
+    'knowledge'
+}
+
+function Get-NormalizedAnalysisMode {
+    param([string]$Mode)
+    $normalized = if (Test-HasValue $Mode) { $Mode.Trim().ToLowerInvariant() } else { '' }
+    switch ($normalized) {
+        'learn' { 'knowledge' }
+        'analyze' { 'analyze' }
+        'knowledge' { 'knowledge' }
+        default {
+            if (Test-HasValue $normalized) { $normalized } else { 'knowledge' }
+        }
+    }
+}
+
+function Get-PromptPathForMode {
+    param([string]$AnalysisMode)
+    switch (Get-NormalizedAnalysisMode -Mode $AnalysisMode) {
+        'analyze' { Join-Path $PSScriptRoot '..\references\prompts\analyze.md' }
+        default { Join-Path $PSScriptRoot '..\references\prompts\knowledge.md' }
+    }
+}
+
+function Get-SchemaPathForMode {
+    param([string]$AnalysisMode)
+    switch (Get-NormalizedAnalysisMode -Mode $AnalysisMode) {
+        'analyze' { Join-Path $PSScriptRoot '..\references\analyze-output.schema.json' }
+        default { Join-Path $PSScriptRoot '..\references\knowledge-output.schema.json' }
+    }
+}
+
+function Get-RendererScriptPathForMode {
+    param([string]$AnalysisMode)
+    switch (Get-NormalizedAnalysisMode -Mode $AnalysisMode) {
+        'analyze' { Join-Path $PSScriptRoot 'render_breakdown_note.py' }
+        default { Join-Path $PSScriptRoot 'render_knowledge_note.py' }
+    }
+}
+
+function Get-TargetFolderForMode {
+    param($Config, [string]$AnalysisMode)
+    $normalizedMode = Get-NormalizedAnalysisMode -Mode $AnalysisMode
+    if ($normalizedMode -eq 'analyze') {
+        $configuredFolder = if ($null -ne $Config.analyzer) { [string]$Config.analyzer.default_analyze_folder } else { '' }
+        if (Test-HasValue $configuredFolder) { return $configuredFolder }
+        return (Zh '\u7206\u6b3e\u62c6\u89e3')
+    }
+
+    $configuredKnowledgeFolder = if ($null -ne $Config.analyzer) { [string]$Config.analyzer.default_knowledge_folder } else { '' }
+    if (-not (Test-HasValue $configuredKnowledgeFolder) -and $null -ne $Config.analyzer) {
+        $configuredKnowledgeFolder = [string]$Config.analyzer.default_learn_folder
+    }
+    if (Test-HasValue $configuredKnowledgeFolder) { return $configuredKnowledgeFolder }
+    (Zh 'Insights/\u77e5\u8bc6\u89e3\u8bfb')
 }
 
 function Build-AnalyzerPayloadWithPython {
@@ -428,10 +484,56 @@ function Invoke-AnalyzerLlmWithPython {
 
 function Build-MockAnalysisResult {
     param($Payload, [string]$OutputLanguage = 'zh-CN')
+    $analysisMode = Get-NormalizedAnalysisMode -Mode (Get-StringValue -Data $Payload -Name 'analysis_mode' -DefaultValue 'knowledge')
+    $analysisGoal = if ($analysisMode -eq 'analyze') { 'analyze' } else { 'knowledge' }
+
+    if ($analysisMode -eq 'analyze') {
+        return [pscustomobject]@{
+            title = Get-StringValue -Data $Payload -Name 'title' -DefaultValue 'Untitled'
+            analysis_mode = 'analyze'
+            analysis_goal = $analysisGoal
+            source_note_path = Get-StringValue -Data $Payload -Name 'source_note_path' -DefaultValue ''
+            capture_json_path = Get-StringValue -Data $Payload -Name 'capture_json_path' -DefaultValue ''
+            source_url = Get-StringValue -Data $Payload -Name 'source_url' -DefaultValue ''
+            normalized_url = Get-StringValue -Data $Payload -Name 'normalized_url' -DefaultValue ''
+            platform = Get-StringValue -Data $Payload -Name 'platform' -DefaultValue ''
+            content_type = Get-StringValue -Data $Payload -Name 'content_type' -DefaultValue ''
+            capture_id = Get-StringValue -Data $Payload -Name 'capture_id' -DefaultValue ''
+            analyzed_at = Get-Date -Format 'yyyy-MM-dd'
+            provider = 'mock'
+            provider_reported_model = ''
+            model = 'mock:analyze'
+            analysis_status = 'mock_generated'
+            prompt_template = 'references/prompts/analyze.md'
+            output_contract_version = 'analyze-v1'
+            output_language = $OutputLanguage
+            core_conclusion = 'This is mock output generated because no real model was invoked.'
+            hook_breakdown = Get-StringValue -Data $Payload -Name 'summary' -DefaultValue ''
+            structure_breakdown = @()
+            emotion_trust_signals = @()
+            comment_feedback = @()
+            engagement_insights = @()
+            reusable_formula = @()
+            risk_flags = @('Mock output only.')
+            source_highlights = @()
+            metrics_like = Get-StringValue -Data $Payload -Name 'metrics_like' -DefaultValue '0'
+            metrics_comment = Get-StringValue -Data $Payload -Name 'metrics_comment' -DefaultValue '0'
+            metrics_share = Get-StringValue -Data $Payload -Name 'metrics_share' -DefaultValue '0'
+            metrics_collect = Get-StringValue -Data $Payload -Name 'metrics_collect' -DefaultValue '0'
+            comments_count = Get-StringValue -Data $Payload -Name 'comments_count' -DefaultValue '0'
+            video_path = Get-StringValue -Data $Payload -Name 'video_path' -DefaultValue ''
+            audio_path = Get-StringValue -Data $Payload -Name 'audio_path' -DefaultValue ''
+            transcript_path = Get-StringValue -Data $Payload -Name 'transcript_path' -DefaultValue ''
+            transcript_raw_path = Get-StringValue -Data $Payload -Name 'transcript_raw_path' -DefaultValue ''
+            transcript_segments_path = Get-StringValue -Data $Payload -Name 'transcript_segments_path' -DefaultValue ''
+            asr_normalization = Get-StringValue -Data $Payload -Name 'asr_normalization' -DefaultValue ''
+        }
+    }
+
     [pscustomobject]@{
         title = Get-StringValue -Data $Payload -Name 'title' -DefaultValue 'Untitled'
-        analysis_mode = Get-StringValue -Data $Payload -Name 'analysis_mode' -DefaultValue 'analyze'
-        analysis_goal = Get-StringValue -Data $Payload -Name 'analysis_goal' -DefaultValue 'analyze'
+        analysis_mode = 'knowledge'
+        analysis_goal = $analysisGoal
         source_note_path = Get-StringValue -Data $Payload -Name 'source_note_path' -DefaultValue ''
         capture_json_path = Get-StringValue -Data $Payload -Name 'capture_json_path' -DefaultValue ''
         source_url = Get-StringValue -Data $Payload -Name 'source_url' -DefaultValue ''
@@ -442,26 +544,30 @@ function Build-MockAnalysisResult {
         analyzed_at = Get-Date -Format 'yyyy-MM-dd'
         provider = 'mock'
         provider_reported_model = ''
-        model = 'mock:analyze'
+        model = 'mock:knowledge'
         analysis_status = 'mock_generated'
-        prompt_template = 'references/prompts/analyze.md'
-        output_contract_version = 'analyze-v1'
+        prompt_template = 'references/prompts/knowledge.md'
+        output_contract_version = 'knowledge-v1'
         output_language = $OutputLanguage
-        core_conclusion = 'This is mock output generated because no real model was invoked.'
-        hook_breakdown = Get-StringValue -Data $Payload -Name 'summary' -DefaultValue ''
-        structure_breakdown = @()
-        emotion_trust_signals = @()
-        comment_feedback = @()
-        engagement_insights = @()
-        reusable_formula = @()
-        risk_flags = @('Mock output only.')
+        content_summary = Get-StringValue -Data $Payload -Name 'summary' -DefaultValue (Get-StringValue -Data $Payload -Name 'description' -DefaultValue 'This is mock output generated because no real model was invoked.')
+        core_points = @()
+        methods = @()
+        tips_and_facts = @()
+        concepts = @()
+        knowledge_cards = @()
+        topic_candidates = @()
+        action_items = @()
+        open_questions = @()
+        quotes = @()
+        timestamp_index = @()
+        speaker_map = @()
         source_highlights = @()
-        metrics_like = Get-StringValue -Data $Payload -Name 'metrics_like' -DefaultValue '0'
-        metrics_comment = Get-StringValue -Data $Payload -Name 'metrics_comment' -DefaultValue '0'
-        metrics_share = Get-StringValue -Data $Payload -Name 'metrics_share' -DefaultValue '0'
-        metrics_collect = Get-StringValue -Data $Payload -Name 'metrics_collect' -DefaultValue '0'
-        comments_count = Get-StringValue -Data $Payload -Name 'comments_count' -DefaultValue '0'
         video_path = Get-StringValue -Data $Payload -Name 'video_path' -DefaultValue ''
+        audio_path = Get-StringValue -Data $Payload -Name 'audio_path' -DefaultValue ''
+        transcript_path = Get-StringValue -Data $Payload -Name 'transcript_path' -DefaultValue ''
+        transcript_raw_path = Get-StringValue -Data $Payload -Name 'transcript_raw_path' -DefaultValue ''
+        transcript_segments_path = Get-StringValue -Data $Payload -Name 'transcript_segments_path' -DefaultValue ''
+        asr_normalization = Get-StringValue -Data $Payload -Name 'asr_normalization' -DefaultValue ''
     }
 }
 
@@ -477,13 +583,16 @@ function Add-AnalyzerFinalStatusFields {
         if (-not (Test-HasValue $failedStep)) { Set-ObjectField -Object $Result -Name 'failed_step' -Value 'unknown' | Out-Null }
         return $Result
     }
-    if ([bool]$Result.dry_run -or $status -eq 'success' -or $status -eq 'partial') {
+    if ([bool]$Result.dry_run -or $status -in @('success', 'partial', 'completed')) {
         if ([bool]$Result.dry_run) {
             $messageEn = 'Dry run completed successfully.'
             $messageZh = Zh 'DryRun \u5df2\u6210\u529f\u5b8c\u6210\u3002'
         } elseif ($status -eq 'partial') {
             $messageEn = 'The analyzer run completed with partial output.'
             $messageZh = Zh '\u672c\u6b21 Analyzer \u8fd0\u884c\u5df2\u5b8c\u6210\uff0c\u4f46\u8f93\u51fa\u4e3a partial\u3002'
+        } elseif ($status -eq 'completed') {
+            $messageEn = 'The analyzer run completed successfully.'
+            $messageZh = Zh '\u672c\u6b21 Analyzer \u8fd0\u884c\u6210\u529f\u5b8c\u6210\u3002'
         } else {
             $messageEn = 'The analyzer run completed successfully.'
             $messageZh = Zh '\u672c\u6b21 Analyzer \u8fd0\u884c\u6210\u529f\u5b8c\u6210\u3002'
@@ -587,6 +696,7 @@ $payloadJsonPath = ''
 $analysisJsonPath = ''
 $llmRequestJsonPath = ''
 $llmResponseJsonPath = ''
+$analysisMode = ''
 $script:AnalyzerCurrentStep = 'startup'
 
 try {
@@ -616,7 +726,7 @@ try {
         if (-not (Test-Path $resolvedCaptureJsonPath)) { throw "Capture JSON not found: $resolvedCaptureJsonPath" }
         $capture = ConvertFrom-JsonCompat -Json (Read-Utf8Text -Path $resolvedCaptureJsonPath) -Depth 100
     }
-    $analysisMode = if (Test-HasValue $Mode) { $Mode } else { Get-DefaultMode -Frontmatter $frontmatter -Capture $capture }
+    $analysisMode = if (Test-HasValue $Mode) { Get-NormalizedAnalysisMode -Mode $Mode } else { Get-NormalizedAnalysisMode -Mode (Get-DefaultMode -Frontmatter $frontmatter -Capture $capture) }
 
     $script:AnalyzerCurrentStep = 'debug_prepare'
     $artifactDirectory = New-Directory -Path $resolvedDebugDirectory
@@ -628,11 +738,11 @@ try {
     $analysisJsonPath = Join-Path $artifactDirectory 'analysis-input.json'
     $llmRequestJsonPath = Join-Path $artifactDirectory 'llm-request.json'
     $llmResponseJsonPath = Join-Path $artifactDirectory 'llm-response.json'
-    $promptPath = if ($analysisMode -eq 'analyze') { Join-Path $PSScriptRoot '..\references\prompts\analyze.md' } else { Join-Path $PSScriptRoot '..\references\prompts\learn.md' }
-    $schemaPath = if ($analysisMode -eq 'analyze') { Join-Path $PSScriptRoot '..\references\analyze-output.schema.json' } else { '' }
+    $promptPath = Get-PromptPathForMode -AnalysisMode $analysisMode
+    $schemaPath = Get-SchemaPathForMode -AnalysisMode $analysisMode
 
     $script:AnalyzerCurrentStep = 'llm_invoke'
-    if ($analysisMode -eq 'analyze' -and (Test-RealLlmConfigured -Config $config)) {
+    if (Test-RealLlmConfigured -Config $config) {
         try {
             $analysis = Invoke-AnalyzerLlmWithPython -PayloadJsonPath $payloadJsonPath -ConfigJsonPath $configPathResolved -PromptPath $promptPath -SchemaPath $schemaPath -OutputPath $analysisJsonPath -RequestJsonPath $llmRequestJsonPath -ResponseJsonPath $llmResponseJsonPath
         } catch {
@@ -645,15 +755,15 @@ try {
     Write-Utf8Text -Path $analysisJsonPath -Content ($analysis | ConvertTo-Json -Depth 20)
 
     $script:AnalyzerCurrentStep = 'note_render'
-    $targetFolder = if ($analysisMode -eq 'analyze') { [string]$config.analyzer.default_analyze_folder } else { [string]$config.analyzer.default_learn_folder }
-    if (-not (Test-HasValue $targetFolder)) { $targetFolder = if ($analysisMode -eq 'analyze') { Zh '\u7206\u6b3e\u62c6\u89e3' } else { 'Insights' } }
+    $targetFolder = Get-TargetFolderForMode -Config $config -AnalysisMode $analysisMode
+    $rendererScriptPath = Get-RendererScriptPathForMode -AnalysisMode $analysisMode
     $rendererOutputJsonPath = Join-Path $artifactDirectory 'run-analyzer.json'
-    $rendererResult = Invoke-BreakdownRenderer -AnalysisJsonPath $analysisJsonPath -TargetFolder $targetFolder -RendererOutputJsonPath $rendererOutputJsonPath -ResolvedVaultPath $resolvedVaultPath -DryRun ([bool]$DryRun)
+    $rendererResult = Invoke-NoteRenderer -RendererScriptPath $rendererScriptPath -AnalysisJsonPath $analysisJsonPath -TargetFolder $targetFolder -RendererOutputJsonPath $rendererOutputJsonPath -ResolvedVaultPath $resolvedVaultPath -DryRun ([bool]$DryRun)
 
     $markedSourceNotePath = Get-StringValue -Data $payload -Name 'source_note_path' -DefaultValue ''
     $clippingNoteMarked = $false
     $clippingNoteMarkWarning = ''
-    if (-not [bool]$DryRun -and $analysisMode -eq 'analyze' -and $rendererResult.analysis_status -in @('success', 'partial')) {
+    if (-not [bool]$DryRun -and $analysisMode -eq 'analyze' -and $rendererResult.analysis_status -in @('success', 'partial', 'completed')) {
         $markResult = Mark-ClippingNoteAsAnalyzed -NotePath $markedSourceNotePath
         $markedSourceNotePath = [string]$markResult.note_path
         $clippingNoteMarked = [bool]$markResult.changed
@@ -662,7 +772,7 @@ try {
             Set-ObjectField -Object $payload -Name 'source_note_path' -Value $markedSourceNotePath | Out-Null
             Set-ObjectField -Object $analysis -Name 'source_note_path' -Value $markedSourceNotePath | Out-Null
             Write-Utf8Text -Path $analysisJsonPath -Content ($analysis | ConvertTo-Json -Depth 20)
-            $rendererResult = Invoke-BreakdownRenderer -AnalysisJsonPath $analysisJsonPath -TargetFolder $targetFolder -RendererOutputJsonPath $rendererOutputJsonPath -ResolvedVaultPath $resolvedVaultPath -DryRun $false
+            $rendererResult = Invoke-NoteRenderer -RendererScriptPath $rendererScriptPath -AnalysisJsonPath $analysisJsonPath -TargetFolder $targetFolder -RendererOutputJsonPath $rendererOutputJsonPath -ResolvedVaultPath $resolvedVaultPath -DryRun $false
         }
     }
 
@@ -714,8 +824,8 @@ try {
     $failure = [pscustomobject]@{
         success = $false
         dry_run = [bool]$DryRun
-        analysis_mode = if (Test-HasValue $Mode) { $Mode } else { '' }
-        analysis_goal = if ((if (Test-HasValue $Mode) { $Mode } else { '' }) -eq 'analyze') { 'analyze' } else { 'knowledge' }
+        analysis_mode = if (Test-HasValue $analysisMode) { $analysisMode } else { Get-NormalizedAnalysisMode -Mode $Mode }
+        analysis_goal = if ((if (Test-HasValue $analysisMode) { $analysisMode } else { Get-NormalizedAnalysisMode -Mode $Mode }) -eq 'analyze') { 'analyze' } else { 'knowledge' }
         analysis_status = 'failed'
         failed_step = $script:AnalyzerCurrentStep
         title = ''

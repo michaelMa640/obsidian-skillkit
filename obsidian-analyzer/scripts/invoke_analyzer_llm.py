@@ -82,11 +82,29 @@ def language_instruction(language: str) -> str:
 def default_analysis_title(payload: dict[str, Any], language: str, mode: str = "analyze") -> str:
     base_title = string_value(payload.get("title"), default="Untitled")
     normalized = (language or "").strip().lower()
-    if mode == "learn":
-        suffix = "Learn Note" if normalized in {"en", "en-us", "english"} else "学习笔记"
-    else:
+    if mode == "analyze":
         suffix = "Breakdown" if normalized in {"en", "en-us", "english"} else "爆款拆解"
+        return f"{base_title} - {suffix}"
+    suffix = "Knowledge Note" if normalized in {"en", "en-us", "english"} else "知识解读"
     return f"{base_title} - {suffix}"
+
+
+def normalize_analysis_mode(value: Any) -> str:
+    mode = string_value(value).lower()
+    if mode == "learn":
+        return "knowledge"
+    if mode in {"analyze", "knowledge"}:
+        return mode
+    return mode or "knowledge"
+
+
+def normalize_analysis_goal(value: Any, analysis_mode: str) -> str:
+    goal = string_value(value).lower()
+    if goal in {"analyze", "knowledge"}:
+        return goal
+    if normalize_analysis_mode(analysis_mode) == "analyze":
+        return "analyze"
+    return "knowledge"
 
 
 def should_inline_video(video_path: str, max_inline_mb: float) -> bool:
@@ -208,11 +226,229 @@ def resolve_api_key(llm: dict[str, Any]) -> tuple[str, str]:
     return "", f"env:{api_key_env}"
 
 
-def ensure_defaults(result: dict[str, Any], payload: dict[str, Any], model: str, output_language: str) -> dict[str, Any]:
+def as_list(value: Any) -> list[Any]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    return [value]
+
+
+def normalize_text_list(values: Any, *field_names: str) -> list[str]:
+    normalized: list[str] = []
+    for item in as_list(values):
+        if isinstance(item, dict):
+            candidates = [item.get(field_name) for field_name in field_names]
+            text = string_value(*candidates)
+        else:
+            text = string_value(item)
+        if has_value(text):
+            normalized.append(text)
+    return normalized
+
+
+def normalize_methods(values: Any) -> list[Any]:
+    normalized: list[Any] = []
+    for item in as_list(values):
+        if isinstance(item, dict):
+            name = string_value(item.get("name"), item.get("title"), item.get("method"))
+            summary = string_value(item.get("summary"), item.get("detail"), item.get("description"))
+            applicability = string_value(item.get("applicability"), item.get("applicable_to"), item.get("scenario"))
+            steps = normalize_text_list(item.get("steps"), "text", "step")
+            entry: dict[str, Any] = {}
+            if has_value(name):
+                entry["name"] = name
+            if has_value(summary):
+                entry["summary"] = summary
+            if steps:
+                entry["steps"] = steps
+            if has_value(applicability):
+                entry["applicability"] = applicability
+            if entry:
+                normalized.append(entry if "name" in entry else " | ".join([value for value in [summary, applicability] if has_value(value)]))
+            continue
+        text = string_value(item)
+        if has_value(text):
+            normalized.append(text)
+    return normalized
+
+
+def normalize_named_points(values: Any, *, primary_keys: tuple[str, ...], detail_keys: tuple[str, ...]) -> list[Any]:
+    normalized: list[Any] = []
+    for item in as_list(values):
+        if isinstance(item, dict):
+            primary = string_value(*[item.get(key) for key in primary_keys])
+            detail = string_value(*[item.get(key) for key in detail_keys])
+            if has_value(primary) and has_value(detail):
+                normalized.append({"point": primary, "detail": detail})
+            elif has_value(primary):
+                normalized.append(primary)
+            elif has_value(detail):
+                normalized.append(detail)
+            continue
+        text = string_value(item)
+        if has_value(text):
+            normalized.append(text)
+    return normalized
+
+
+def normalize_concepts(values: Any) -> list[Any]:
+    normalized: list[Any] = []
+    for item in as_list(values):
+        if isinstance(item, dict):
+            name = string_value(item.get("name"), item.get("title"), item.get("concept"))
+            summary = string_value(item.get("summary"), item.get("detail"), item.get("description"))
+            if has_value(name) and has_value(summary):
+                normalized.append({"name": name, "summary": summary})
+            elif has_value(name):
+                normalized.append(name)
+            elif has_value(summary):
+                normalized.append(summary)
+            continue
+        text = string_value(item)
+        if has_value(text):
+            normalized.append(text)
+    return normalized
+
+
+def normalize_knowledge_cards(values: Any) -> list[Any]:
+    normalized: list[Any] = []
+    for item in as_list(values):
+        if isinstance(item, dict):
+            title = string_value(item.get("title"), item.get("name"), item.get("question"))
+            summary = string_value(item.get("summary"), item.get("detail"), item.get("answer"), item.get("description"))
+            evidence = string_value(item.get("evidence"), item.get("reason"))
+            tags = normalize_text_list(item.get("tags"))
+            entry: dict[str, Any] = {}
+            if has_value(title):
+                entry["title"] = title
+            if has_value(summary):
+                entry["summary"] = summary
+            if has_value(evidence):
+                entry["evidence"] = evidence
+            if tags:
+                entry["tags"] = tags
+            if entry:
+                normalized.append(entry if "title" in entry else summary)
+            continue
+        text = string_value(item)
+        if has_value(text):
+            normalized.append(text)
+    return normalized
+
+
+def normalize_topic_candidates(values: Any) -> list[Any]:
+    normalized: list[Any] = []
+    for item in as_list(values):
+        if isinstance(item, dict):
+            name = string_value(item.get("name"), item.get("title"), item.get("topic"))
+            reason = string_value(item.get("reason"), item.get("summary"), item.get("detail"))
+            if has_value(name) and has_value(reason):
+                normalized.append({"name": name, "reason": reason})
+            elif has_value(name):
+                normalized.append(name)
+            elif has_value(reason):
+                normalized.append(reason)
+            continue
+        text = string_value(item)
+        if has_value(text):
+            normalized.append(text)
+    return normalized
+
+
+def normalize_quotes(values: Any) -> list[Any]:
+    normalized: list[Any] = []
+    for item in as_list(values):
+        if isinstance(item, dict):
+            quote = string_value(item.get("quote"), item.get("text"), item.get("content"))
+            timestamp = string_value(item.get("timestamp"), item.get("time"))
+            speaker = string_value(item.get("speaker"), item.get("name"))
+            reason = string_value(item.get("reason"), item.get("note"))
+            entry: dict[str, Any] = {}
+            if has_value(quote):
+                entry["quote"] = quote
+            if has_value(timestamp):
+                entry["timestamp"] = timestamp
+            if has_value(speaker):
+                entry["speaker"] = speaker
+            if has_value(reason):
+                entry["reason"] = reason
+            if entry:
+                normalized.append(entry if "quote" in entry else reason)
+            continue
+        text = string_value(item)
+        if has_value(text):
+            normalized.append(text)
+    return normalized
+
+
+def normalize_timestamp_index(values: Any) -> list[Any]:
+    normalized: list[Any] = []
+    for item in as_list(values):
+        if isinstance(item, dict):
+            timestamp = string_value(item.get("timestamp"), item.get("time"), item.get("start"))
+            topic = string_value(item.get("topic"), item.get("text"), item.get("title"))
+            note = string_value(item.get("note"), item.get("detail"), item.get("summary"))
+            if has_value(timestamp) and has_value(topic):
+                entry: dict[str, Any] = {"timestamp": timestamp, "topic": topic}
+                if has_value(note):
+                    entry["note"] = note
+                normalized.append(entry)
+            elif has_value(timestamp):
+                normalized.append(timestamp)
+            continue
+        text = string_value(item)
+        if has_value(text):
+            normalized.append(text)
+    return normalized
+
+
+def normalize_speaker_map(values: Any) -> list[Any]:
+    normalized: list[Any] = []
+    for item in as_list(values):
+        if isinstance(item, dict):
+            speaker = string_value(item.get("speaker"), item.get("name"), item.get("label"))
+            role = string_value(item.get("role"), item.get("identity"))
+            notes = string_value(item.get("notes"), item.get("detail"), item.get("description"))
+            if has_value(speaker):
+                entry: dict[str, Any] = {"speaker": speaker}
+                if has_value(role):
+                    entry["role"] = role
+                if has_value(notes):
+                    entry["notes"] = notes
+                normalized.append(entry)
+            continue
+        text = string_value(item)
+        if has_value(text):
+            normalized.append(text)
+    return normalized
+
+
+def normalize_source_highlights(values: Any) -> list[Any]:
+    normalized: list[Any] = []
+    for item in as_list(values):
+        if isinstance(item, dict):
+            quote = string_value(item.get("quote"), item.get("text"), item.get("content"))
+            reason = string_value(item.get("reason"), item.get("note"))
+            if has_value(quote) and has_value(reason):
+                normalized.append({"quote": quote, "reason": reason})
+            elif has_value(quote):
+                normalized.append({"quote": quote})
+            elif has_value(reason):
+                normalized.append(reason)
+            continue
+        text = string_value(item)
+        if has_value(text):
+            normalized.append(text)
+    return normalized
+
+
+def ensure_defaults_analyze(result: dict[str, Any], payload: dict[str, Any], model: str, output_language: str) -> dict[str, Any]:
     analysis_run_date = datetime.now().strftime("%Y-%m-%d")
     return {
         "title": string_value(payload.get("title"), result.get("title"), default=default_analysis_title(payload, output_language, "analyze")),
         "analysis_mode": "analyze",
+        "analysis_goal": "analyze",
         "source_note_path": string_value(payload.get("source_note_path"), result.get("source_note_path")),
         "capture_json_path": string_value(payload.get("capture_json_path"), result.get("capture_json_path")),
         "source_url": string_value(payload.get("source_url"), result.get("source_url")),
@@ -241,6 +477,62 @@ def ensure_defaults(result: dict[str, Any], payload: dict[str, Any], model: str,
         "metrics_collect": string_value(result.get("metrics_collect"), payload.get("metrics_collect")),
         "comments_count": result.get("comments_count", payload.get("comments_count")),
         "video_path": string_value(payload.get("video_path"), result.get("video_path")),
+        "audio_path": string_value(payload.get("audio_path"), result.get("audio_path")),
+        "transcript_path": string_value(payload.get("transcript_path"), result.get("transcript_path")),
+        "transcript_raw_path": string_value(payload.get("transcript_raw_path"), result.get("transcript_raw_path")),
+        "transcript_segments_path": string_value(payload.get("transcript_segments_path"), result.get("transcript_segments_path")),
+        "asr_normalization": string_value(payload.get("asr_normalization"), result.get("asr_normalization")),
+        "output_language": output_language,
+    }
+
+
+def ensure_defaults_knowledge(result: dict[str, Any], payload: dict[str, Any], model: str, output_language: str) -> dict[str, Any]:
+    analysis_run_date = datetime.now().strftime("%Y-%m-%d")
+    return {
+        "title": string_value(payload.get("title"), result.get("title"), default=default_analysis_title(payload, output_language, "knowledge")),
+        "analysis_mode": "knowledge",
+        "analysis_goal": "knowledge",
+        "source_note_path": string_value(payload.get("source_note_path"), result.get("source_note_path")),
+        "capture_json_path": string_value(payload.get("capture_json_path"), result.get("capture_json_path")),
+        "source_url": string_value(payload.get("source_url"), result.get("source_url")),
+        "normalized_url": string_value(payload.get("normalized_url"), result.get("normalized_url")),
+        "platform": string_value(payload.get("platform"), result.get("platform")),
+        "content_type": string_value(payload.get("content_type"), result.get("content_type")),
+        "capture_id": string_value(payload.get("capture_id"), result.get("capture_id")),
+        "analyzed_at": analysis_run_date,
+        "model": string_value(model),
+        "provider_reported_model": string_value(result.get("model")),
+        "analysis_status": string_value(result.get("analysis_status"), default="success"),
+        "prompt_template": string_value(result.get("prompt_template"), default="references/prompts/knowledge.md"),
+        "output_contract_version": string_value(result.get("output_contract_version"), default="knowledge-v1"),
+        "content_summary": string_value(
+            result.get("content_summary"),
+            result.get("summary"),
+            payload.get("summary"),
+            payload.get("description"),
+        ),
+        "core_points": normalize_text_list(result.get("core_points"), "text", "point", "summary"),
+        "methods": normalize_methods(result.get("methods")),
+        "tips_and_facts": normalize_named_points(
+            result.get("tips_and_facts"),
+            primary_keys=("point", "name", "title"),
+            detail_keys=("detail", "summary", "description"),
+        ),
+        "concepts": normalize_concepts(result.get("concepts")),
+        "knowledge_cards": normalize_knowledge_cards(result.get("knowledge_cards")),
+        "topic_candidates": normalize_topic_candidates(result.get("topic_candidates")),
+        "action_items": normalize_text_list(result.get("action_items"), "text", "action", "step"),
+        "open_questions": normalize_text_list(result.get("open_questions"), "text", "question", "issue"),
+        "quotes": normalize_quotes(result.get("quotes")),
+        "timestamp_index": normalize_timestamp_index(result.get("timestamp_index")),
+        "speaker_map": normalize_speaker_map(result.get("speaker_map")),
+        "source_highlights": normalize_source_highlights(result.get("source_highlights")),
+        "video_path": string_value(payload.get("video_path"), result.get("video_path")),
+        "audio_path": string_value(payload.get("audio_path"), result.get("audio_path")),
+        "transcript_path": string_value(payload.get("transcript_path"), result.get("transcript_path")),
+        "transcript_raw_path": string_value(payload.get("transcript_raw_path"), result.get("transcript_raw_path")),
+        "transcript_segments_path": string_value(payload.get("transcript_segments_path"), result.get("transcript_segments_path")),
+        "asr_normalization": string_value(payload.get("asr_normalization"), result.get("asr_normalization")),
         "output_language": output_language,
     }
 
@@ -258,6 +550,9 @@ def main() -> int:
     args = parser.parse_args()
 
     payload = load_json(args.payload_json)
+    normalized_mode = normalize_analysis_mode(payload.get("analysis_mode"))
+    payload["analysis_mode"] = normalized_mode
+    payload["analysis_goal"] = normalize_analysis_goal(payload.get("analysis_goal"), normalized_mode)
     config = load_json(args.config_json)
     llm = config.get("llm") or {}
 
@@ -332,7 +627,10 @@ def main() -> int:
 
     content = extract_content(response_json)
     result_json = json.loads(content)
-    final_result = ensure_defaults(result_json, payload=payload, model=model, output_language=output_language)
+    if normalized_mode == "analyze":
+        final_result = ensure_defaults_analyze(result_json, payload=payload, model=model, output_language=output_language)
+    else:
+        final_result = ensure_defaults_knowledge(result_json, payload=payload, model=model, output_language=output_language)
     final_result["provider"] = provider
     final_result["input_warnings"] = input_warnings
     final_result["usage"] = response_json.get("usage") or {}

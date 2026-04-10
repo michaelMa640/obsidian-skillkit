@@ -249,6 +249,7 @@ def build_note(analysis: dict[str, Any], folder: str, vault_path: str) -> dict[s
     title = clean_note_title(raw_title)
     analyzed_at = datetime.now().strftime("%Y-%m-%d")
     mode = string_value(analysis.get("analysis_mode"), default="analyze")
+    goal = string_value(analysis.get("analysis_goal"), default="analyze")
     model = string_value(analysis.get("model"), default="mock-analyzer")
     provider = string_value(analysis.get("provider"), default="mock")
     provider_reported_model = string_value(analysis.get("provider_reported_model"))
@@ -266,6 +267,7 @@ def build_note(analysis: dict[str, Any], folder: str, vault_path: str) -> dict[s
         f"capture_json_path: {yaml_scalar(capture_json_path)}",
         f"video_path: {yaml_scalar(video_path)}",
         f"analysis_mode: {yaml_scalar(mode)}",
+        f"analysis_goal: {yaml_scalar(goal)}",
         f"platform: {yaml_scalar(string_value(analysis.get('platform')))}",
         f"content_type: {yaml_scalar(string_value(analysis.get('content_type')))}",
         f"capture_id: {yaml_scalar(string_value(analysis.get('capture_id')))}",
@@ -284,6 +286,7 @@ def build_note(analysis: dict[str, Any], folder: str, vault_path: str) -> dict[s
         f"## {labels['sections.meta']}",
         f"- {labels['meta.platform']}: {string_value(analysis.get('platform'), default='n/a')}",
         f"- {labels['meta.mode']}: {mode}",
+        f"- Goal: {goal}",
         f"- {labels['meta.provider']}: {provider}",
         f"- {labels['meta.model']}: {model}",
         f"- {labels['meta.status']}: {analysis_status}",
@@ -369,6 +372,7 @@ def main() -> int:
     result = {
         **note,
         "analysis_mode": string_value(analysis.get("analysis_mode"), default="analyze"),
+        "analysis_goal": string_value(analysis.get("analysis_goal"), default="analyze"),
         "analysis_status": string_value(analysis.get("analysis_status"), default="mock_generated"),
         "model": string_value(analysis.get("model"), default="mock-analyzer"),
         "provider": string_value(analysis.get("provider"), default="mock"),

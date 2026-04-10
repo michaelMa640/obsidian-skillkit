@@ -14,7 +14,7 @@
   "properties": {
     "analysis_mode": {
       "type": "string",
-      "enum": ["analyze", "learn"]
+      "enum": ["analyze", "knowledge", "learn"]
     },
     "analysis_goal": {
       "type": "string",
@@ -125,6 +125,9 @@
     "video_path": {
       "type": "string"
     },
+    "audio_path": {
+      "type": "string"
+    },
     "cover_path": {
       "type": "string"
     },
@@ -135,6 +138,33 @@
       "type": "string"
     },
     "metadata_path": {
+      "type": "string"
+    },
+    "transcript_status": {
+      "type": "string"
+    },
+    "transcript_source": {
+      "type": "string"
+    },
+    "transcript_raw_path": {
+      "type": "string"
+    },
+    "transcript_path": {
+      "type": "string"
+    },
+    "transcript_segments_path": {
+      "type": "string"
+    },
+    "asr_status": {
+      "type": "string"
+    },
+    "asr_provider": {
+      "type": "string"
+    },
+    "asr_model": {
+      "type": "string"
+    },
+    "asr_normalization": {
       "type": "string"
     },
     "source_files": {

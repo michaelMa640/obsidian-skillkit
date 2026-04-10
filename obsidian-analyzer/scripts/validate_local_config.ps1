@@ -65,6 +65,23 @@ if (-not (Test-HasValue $defaultAnalyzeFolder)) {
     }) | Out-Null
 }
 
+$defaultKnowledgeFolder = ''
+if ($null -ne $config.analyzer) {
+    $defaultKnowledgeFolder = [string]$config.analyzer.default_knowledge_folder
+}
+if (-not (Test-HasValue $defaultKnowledgeFolder) -and $null -ne $config.analyzer) {
+    $defaultKnowledgeFolder = [string]$config.analyzer.default_learn_folder
+    if (Test-HasValue $defaultKnowledgeFolder) {
+        $warnings.Add('analyzer.default_learn_folder is being used as the knowledge output folder. Prefer analyzer.default_knowledge_folder for Step 2 and later.') | Out-Null
+    }
+}
+if (-not (Test-HasValue $defaultKnowledgeFolder)) {
+    $missingRequired.Add([pscustomobject]@{
+        field = 'analyzer.default_knowledge_folder'
+        message = 'Set the output folder for knowledge-oriented analysis notes.'
+    }) | Out-Null
+}
+
 $provider = if ($null -ne $config.llm) { [string]$config.llm.provider } else { '' }
 $model = if ($null -ne $config.llm) { [string]$config.llm.model } else { '' }
 if (-not (Test-HasValue $provider)) {

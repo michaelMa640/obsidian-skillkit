@@ -1,0 +1,226 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openclaw.local/obsidian-analyzer/knowledge-output.schema.json",
+  "title": "Knowledge Output Contract",
+  "type": "object",
+  "required": [
+    "title",
+    "analysis_mode",
+    "analysis_goal",
+    "source_note_path",
+    "source_url",
+    "platform",
+    "content_type",
+    "capture_id",
+    "analyzed_at",
+    "model",
+    "analysis_status",
+    "content_summary",
+    "core_points",
+    "methods",
+    "tips_and_facts",
+    "knowledge_cards",
+    "topic_candidates",
+    "action_items",
+    "open_questions",
+    "quotes",
+    "timestamp_index",
+    "speaker_map"
+  ],
+  "properties": {
+    "title": { "type": "string" },
+    "analysis_mode": { "type": "string", "const": "knowledge" },
+    "analysis_goal": { "type": "string", "const": "knowledge" },
+    "source_note_path": { "type": "string" },
+    "capture_json_path": { "type": "string" },
+    "source_url": { "type": "string" },
+    "normalized_url": { "type": "string" },
+    "platform": { "type": "string" },
+    "content_type": { "type": "string" },
+    "capture_id": { "type": "string" },
+    "analyzed_at": { "type": "string" },
+    "model": { "type": "string" },
+    "analysis_status": { "type": "string" },
+    "prompt_template": { "type": "string" },
+    "output_contract_version": { "type": "string" },
+    "content_summary": { "type": "string" },
+    "core_points": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "methods": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          { "type": "string" },
+          {
+            "type": "object",
+            "properties": {
+              "name": { "type": "string" },
+              "summary": { "type": "string" },
+              "steps": {
+                "type": "array",
+                "items": { "type": "string" }
+              },
+              "applicability": { "type": "string" }
+            },
+            "required": ["name"]
+          }
+        ]
+      }
+    },
+    "tips_and_facts": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          { "type": "string" },
+          {
+            "type": "object",
+            "properties": {
+              "point": { "type": "string" },
+              "detail": { "type": "string" }
+            },
+            "required": ["point"]
+          }
+        ]
+      }
+    },
+    "concepts": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          { "type": "string" },
+          {
+            "type": "object",
+            "properties": {
+              "name": { "type": "string" },
+              "summary": { "type": "string" }
+            },
+            "required": ["name"]
+          }
+        ]
+      }
+    },
+    "knowledge_cards": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          { "type": "string" },
+          {
+            "type": "object",
+            "properties": {
+              "title": { "type": "string" },
+              "summary": { "type": "string" },
+              "evidence": { "type": "string" },
+              "tags": {
+                "type": "array",
+                "items": { "type": "string" }
+              }
+            },
+            "required": ["title"]
+          }
+        ]
+      }
+    },
+    "topic_candidates": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          { "type": "string" },
+          {
+            "type": "object",
+            "properties": {
+              "name": { "type": "string" },
+              "reason": { "type": "string" }
+            },
+            "required": ["name"]
+          }
+        ]
+      }
+    },
+    "action_items": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "open_questions": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "quotes": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          { "type": "string" },
+          {
+            "type": "object",
+            "properties": {
+              "quote": { "type": "string" },
+              "timestamp": { "type": "string" },
+              "speaker": { "type": "string" },
+              "reason": { "type": "string" }
+            },
+            "required": ["quote"]
+          }
+        ]
+      }
+    },
+    "timestamp_index": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          { "type": "string" },
+          {
+            "type": "object",
+            "properties": {
+              "timestamp": { "type": "string" },
+              "topic": { "type": "string" },
+              "note": { "type": "string" }
+            },
+            "required": ["timestamp", "topic"]
+          }
+        ]
+      }
+    },
+    "speaker_map": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          { "type": "string" },
+          {
+            "type": "object",
+            "properties": {
+              "speaker": { "type": "string" },
+              "role": { "type": "string" },
+              "notes": { "type": "string" }
+            },
+            "required": ["speaker"]
+          }
+        ]
+      }
+    },
+    "source_highlights": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          { "type": "string" },
+          {
+            "type": "object",
+            "properties": {
+              "quote": { "type": "string" },
+              "reason": { "type": "string" }
+            },
+            "required": ["quote"]
+          }
+        ]
+      }
+    },
+    "video_path": { "type": "string" },
+    "audio_path": { "type": "string" },
+    "transcript_path": { "type": "string" },
+    "transcript_raw_path": { "type": "string" },
+    "transcript_segments_path": { "type": "string" },
+    "asr_normalization": { "type": "string" },
+    "output_language": { "type": "string" }
+  },
+  "additionalProperties": true
+}

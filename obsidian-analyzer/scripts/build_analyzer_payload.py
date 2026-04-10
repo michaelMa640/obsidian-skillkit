@@ -224,6 +224,15 @@ def normalize_analysis_goal(raw_value: Any, analysis_mode: str) -> str:
     return "knowledge"
 
 
+def normalize_analysis_mode(raw_value: Any) -> str:
+    mode = string_value(raw_value).lower()
+    if mode == "learn":
+        return "knowledge"
+    if mode in {"analyze", "knowledge"}:
+        return mode
+    return mode or "knowledge"
+
+
 def load_note(note_path: str, warnings: list[str]) -> tuple[dict[str, Any], str, dict[str, str]]:
     if not has_value(note_path):
         return {}, "", {}
@@ -279,6 +288,7 @@ def derive_capture_path(note_frontmatter: dict[str, Any], capture_json_path: str
 
 def build_payload(note_path: str, capture_json_path: str, vault_path: str, analysis_mode: str) -> dict[str, Any]:
     warnings: list[str] = []
+    normalized_analysis_mode = normalize_analysis_mode(analysis_mode)
     frontmatter, note_body, note_sections = load_note(note_path, warnings)
     resolved_capture_path = derive_capture_path(frontmatter, capture_json_path, vault_path)
     capture = load_json_file(Path(resolved_capture_path), warnings, "capture_json") if has_value(resolved_capture_path) else None
@@ -347,10 +357,10 @@ def build_payload(note_path: str, capture_json_path: str, vault_path: str, analy
     )
     analysis_goal = normalize_analysis_goal(
         frontmatter.get("analysis_goal"),
-        analysis_mode=analysis_mode,
+        analysis_mode=normalized_analysis_mode,
     )
     if not has_value(frontmatter.get("analysis_goal")):
-        analysis_goal = normalize_analysis_goal(capture.get("analysis_goal"), analysis_mode=analysis_mode)
+        analysis_goal = normalize_analysis_goal(capture.get("analysis_goal"), analysis_mode=normalized_analysis_mode)
     comments_count_value = capture.get("comments_count")
     if not has_value(comments_count_value):
         comments_count_value = metadata.get("comment_count_visible")
@@ -358,7 +368,7 @@ def build_payload(note_path: str, capture_json_path: str, vault_path: str, analy
         comments_count_value = len(comments)
 
     payload = {
-        "analysis_mode": analysis_mode,
+        "analysis_mode": normalized_analysis_mode,
         "analysis_goal": analysis_goal,
         "source_note_path": resolved_note_path,
         "capture_json_path": resolved_capture_path,
@@ -397,10 +407,20 @@ def build_payload(note_path: str, capture_json_path: str, vault_path: str, analy
             "collect": metrics_collect,
         },
         "video_path": resolve_path(vault_path, string_value(frontmatter.get("video_path"), capture.get("video_path"), metadata.get("video_path"))),
+        "audio_path": resolve_path(vault_path, string_value(frontmatter.get("audio_path"), capture.get("audio_path"), metadata.get("audio_path"))),
         "cover_path": resolve_path(vault_path, string_value(capture.get("cover_path"), metadata.get("cover_path"))),
         "sidecar_path": resolve_path(vault_path, string_value(frontmatter.get("sidecar_path"), capture.get("sidecar_path"), resolved_capture_path)),
         "comments_path": comments_path,
         "metadata_path": metadata_path,
+        "transcript_status": string_value(frontmatter.get("transcript_status"), capture.get("transcript_status"), metadata.get("transcript_status")),
+        "transcript_source": string_value(frontmatter.get("transcript_source"), capture.get("transcript_source"), metadata.get("transcript_source")),
+        "transcript_raw_path": resolve_path(vault_path, string_value(frontmatter.get("transcript_raw_path"), capture.get("transcript_raw_path"), metadata.get("transcript_raw_path"))),
+        "transcript_path": resolve_path(vault_path, string_value(frontmatter.get("transcript_path"), capture.get("transcript_path"), metadata.get("transcript_path"))),
+        "transcript_segments_path": resolve_path(vault_path, string_value(frontmatter.get("transcript_segments_path"), capture.get("transcript_segments_path"), metadata.get("transcript_segments_path"))),
+        "asr_status": string_value(frontmatter.get("asr_status"), capture.get("asr_status"), metadata.get("asr_status")),
+        "asr_provider": string_value(frontmatter.get("asr_provider"), capture.get("asr_provider"), metadata.get("asr_provider")),
+        "asr_model": string_value(frontmatter.get("asr_model"), capture.get("asr_model"), metadata.get("asr_model")),
+        "asr_normalization": string_value(frontmatter.get("asr_normalization"), capture.get("asr_normalization"), metadata.get("asr_normalization")),
         "source_files": {
             "note_exists": has_value(note_path) and Path(note_path).exists(),
             "capture_exists": has_value(resolved_capture_path) and Path(resolved_capture_path).exists(),
