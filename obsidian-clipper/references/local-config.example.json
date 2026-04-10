@@ -80,6 +80,17 @@
         "normalize_script": "simplified",
         "timeout_sec": 600,
         "mock_transcript_path": "E:/REPLACE/WITH/YOUR/obsidian-clipper/.tmp/mock-transcript.txt"
+      },
+      "diarization": {
+        "enabled": false,
+        "command": "python",
+        "script": "E:/REPLACE/WITH/YOUR/obsidian-clipper/scripts/podcast_speaker_diarization.py",
+        "provider": "pyannote",
+        "model": "pyannote/speaker-diarization-3.1",
+        "device": "cpu",
+        "hf_token_env": "HF_TOKEN",
+        "min_overlap_ratio": 0.35,
+        "mock_diarization_path": "E:/REPLACE/WITH/YOUR/obsidian-clipper/.tmp/mock-diarization.json"
       }
     }
   }

@@ -62,7 +62,9 @@
     "cover_path": { "type": "string" },
     "transcript_raw_path": { "type": "string" },
     "transcript_path": { "type": "string" },
+    "speaker_annotated_transcript_path": { "type": "string" },
     "transcript_segments_path": { "type": "string" },
+    "speakers_path": { "type": "string" },
     "metadata_path": { "type": "string" },
     "sidecar_path": { "type": "string" },
     "video_duration_seconds": { "type": "number", "minimum": 0 },
@@ -90,10 +92,30 @@
           "end": { "type": ["number", "integer"] },
           "timestamp": { "type": "string" },
           "raw_text": { "type": "string" },
-          "text": { "type": "string" }
+          "text": { "type": "string" },
+          "speaker_id": { "type": "string" },
+          "speaker": { "type": "string" }
         }
       }
     },
+    "speaker_map": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "speaker_id": { "type": "string" },
+          "speaker": { "type": "string" },
+          "display_name": { "type": "string" },
+          "role": { "type": "string" },
+          "notes": { "type": "string" },
+          "segment_count": { "type": ["integer", "number"] },
+          "total_seconds": { "type": ["integer", "number"] },
+          "first_timestamp": { "type": "string" }
+        }
+      }
+    },
+    "speaker_count": { "type": ["integer", "number"] },
     "podcast_platform": { "type": "string" },
     "episode_url": { "type": "string" },
     "episode_id": { "type": "string" },
@@ -155,6 +177,10 @@
       "enum": ["pending", "running", "done", "failed", "skipped"]
     },
     "asr_normalization": { "type": "string" },
+    "diarization_status": { "type": "string" },
+    "diarization_provider": { "type": "string" },
+    "diarization_model": { "type": "string" },
+    "diarization_error": { "type": "string" },
     "bitable_sync_status": {
       "type": "string",
       "enum": ["pending", "done", "failed", "skipped"]

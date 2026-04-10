@@ -142,6 +142,13 @@ if ($null -ne $podcastRoute) {
         $podcastAsr = $podcastAsrProp.Value
     }
 }
+$podcastDiarization = $null
+if ($null -ne $podcastRoute) {
+    $podcastDiarizationProp = $podcastRoute.PSObject.Properties['diarization']
+    if ($null -ne $podcastDiarizationProp) {
+        $podcastDiarization = $podcastDiarizationProp.Value
+    }
+}
 if ($null -ne $podcastAsr) {
     $asrEnabled = $false
     if ($null -ne $podcastAsr.PSObject.Properties['enabled']) {
@@ -172,6 +179,36 @@ if ($null -ne $podcastAsr) {
         }
     }
 }
+if ($null -ne $podcastDiarization) {
+    $diarizationEnabled = $false
+    if ($null -ne $podcastDiarization.PSObject.Properties['enabled']) {
+        $rawEnabled = $podcastDiarization.PSObject.Properties['enabled'].Value
+        if ($rawEnabled -is [bool]) {
+            $diarizationEnabled = [bool]$rawEnabled
+        } else {
+            $diarizationEnabled = ([string]$rawEnabled).Trim().ToLowerInvariant() -in @('true', '1', 'yes', 'on')
+        }
+    }
+
+    if ($diarizationEnabled) {
+        $diarizationScript = ''
+        $diarizationScriptProp = $podcastDiarization.PSObject.Properties['script']
+        if ($null -ne $diarizationScriptProp) {
+            $diarizationScript = [string]$diarizationScriptProp.Value
+        }
+        if (Is-PlaceholderValue $diarizationScript) {
+            $missingRequired.Add([pscustomobject]@{
+                field = 'routes.podcast.diarization.script'
+                message = 'Podcast diarization is enabled, but the diarization script path is not configured.'
+            }) | Out-Null
+        } elseif (-not (Test-Path $diarizationScript)) {
+            $missingRequired.Add([pscustomobject]@{
+                field = 'routes.podcast.diarization.script'
+                message = "Configured podcast diarization script does not exist: $diarizationScript"
+            }) | Out-Null
+        }
+    }
+}
 
 $result = [pscustomobject]@{
     success = ($missingRequired.Count -eq 0)
@@ -182,6 +219,7 @@ $result = [pscustomobject]@{
         'If auth warnings exist, refresh Douyin login state with scripts/bootstrap_social_auth.py --platform douyin.',
         'If Xiaohongshu auth warnings exist, refresh Xiaohongshu login state with scripts/bootstrap_social_auth.py --platform xiaohongshu.',
         'If podcast ASR fallback is enabled, verify routes.podcast.asr.script points to podcast_asr_fallback.py and that the target Python environment has the chosen ASR dependency installed.',
+        'If podcast diarization is enabled, verify routes.podcast.diarization.script points to podcast_speaker_diarization.py and that the selected provider plus HF token are available.',
         'After config is valid, run scripts/run_clipper.ps1 or let OpenClaw call the skill normally.'
     )
 }

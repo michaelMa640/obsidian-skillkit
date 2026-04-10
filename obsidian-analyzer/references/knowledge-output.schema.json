@@ -231,6 +231,8 @@
     "transcript_path": { "type": "string" },
     "transcript_raw_path": { "type": "string" },
     "transcript_segments_path": { "type": "string" },
+    "speaker_annotated_transcript_path": { "type": "string" },
+    "speakers_path": { "type": "string" },
     "asr_normalization": { "type": "string" },
     "output_language": { "type": "string" }
   },

@@ -155,6 +155,12 @@
     "transcript_segments_path": {
       "type": "string"
     },
+    "speaker_annotated_transcript_path": {
+      "type": "string"
+    },
+    "speakers_path": {
+      "type": "string"
+    },
     "asr_status": {
       "type": "string"
     },
@@ -165,6 +171,12 @@
       "type": "string"
     },
     "asr_normalization": {
+      "type": "string"
+    },
+    "diarization_status": {
+      "type": "string"
+    },
+    "diarization_provider": {
       "type": "string"
     },
     "source_files": {

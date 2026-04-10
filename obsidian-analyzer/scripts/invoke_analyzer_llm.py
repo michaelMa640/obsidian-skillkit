@@ -481,6 +481,8 @@ def ensure_defaults_analyze(result: dict[str, Any], payload: dict[str, Any], mod
         "transcript_path": string_value(payload.get("transcript_path"), result.get("transcript_path")),
         "transcript_raw_path": string_value(payload.get("transcript_raw_path"), result.get("transcript_raw_path")),
         "transcript_segments_path": string_value(payload.get("transcript_segments_path"), result.get("transcript_segments_path")),
+        "speaker_annotated_transcript_path": string_value(payload.get("speaker_annotated_transcript_path"), result.get("speaker_annotated_transcript_path")),
+        "speakers_path": string_value(payload.get("speakers_path"), result.get("speakers_path")),
         "asr_normalization": string_value(payload.get("asr_normalization"), result.get("asr_normalization")),
         "output_language": output_language,
     }
@@ -541,6 +543,8 @@ def ensure_defaults_knowledge(result: dict[str, Any], payload: dict[str, Any], m
         "transcript_path": string_value(payload.get("transcript_path"), result.get("transcript_path")),
         "transcript_raw_path": string_value(payload.get("transcript_raw_path"), result.get("transcript_raw_path")),
         "transcript_segments_path": string_value(payload.get("transcript_segments_path"), result.get("transcript_segments_path")),
+        "speaker_annotated_transcript_path": string_value(payload.get("speaker_annotated_transcript_path"), result.get("speaker_annotated_transcript_path")),
+        "speakers_path": string_value(payload.get("speakers_path"), result.get("speakers_path")),
         "asr_normalization": string_value(payload.get("asr_normalization"), result.get("asr_normalization")),
         "output_language": output_language,
     }

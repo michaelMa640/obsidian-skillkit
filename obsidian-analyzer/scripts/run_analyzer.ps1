@@ -671,6 +671,8 @@ function Build-MockAnalysisResult {
             transcript_path = Get-StringValue -Data $Payload -Name 'transcript_path' -DefaultValue ''
             transcript_raw_path = Get-StringValue -Data $Payload -Name 'transcript_raw_path' -DefaultValue ''
             transcript_segments_path = Get-StringValue -Data $Payload -Name 'transcript_segments_path' -DefaultValue ''
+            speaker_annotated_transcript_path = Get-StringValue -Data $Payload -Name 'speaker_annotated_transcript_path' -DefaultValue ''
+            speakers_path = Get-StringValue -Data $Payload -Name 'speakers_path' -DefaultValue ''
             asr_normalization = Get-StringValue -Data $Payload -Name 'asr_normalization' -DefaultValue ''
         }
     }
@@ -721,6 +723,8 @@ function Build-MockAnalysisResult {
         transcript_path = Get-StringValue -Data $Payload -Name 'transcript_path' -DefaultValue ''
         transcript_raw_path = Get-StringValue -Data $Payload -Name 'transcript_raw_path' -DefaultValue ''
         transcript_segments_path = Get-StringValue -Data $Payload -Name 'transcript_segments_path' -DefaultValue ''
+        speaker_annotated_transcript_path = Get-StringValue -Data $Payload -Name 'speaker_annotated_transcript_path' -DefaultValue ''
+        speakers_path = Get-StringValue -Data $Payload -Name 'speakers_path' -DefaultValue ''
         asr_normalization = Get-StringValue -Data $Payload -Name 'asr_normalization' -DefaultValue ''
     }
 }

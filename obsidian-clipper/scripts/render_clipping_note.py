@@ -218,7 +218,9 @@ def attachment_lines(capture: dict[str, Any]) -> list[str]:
         ("cover_path", "封面图"),
         ("transcript_raw_path", "转录原稿"),
         ("transcript_path", "转录文本"),
+        ("speaker_annotated_transcript_path", "说话人转录文本"),
         ("transcript_segments_path", "转录分段 JSON"),
+        ("speakers_path", "说话人映射 JSON"),
         ("sidecar_path", "Capture JSON"),
         ("comments_path", "Comments JSON"),
         ("metadata_path", "Metadata JSON"),
@@ -279,6 +281,9 @@ def status_lines(capture: dict[str, Any]) -> list[str]:
     asr_model = string_value(capture.get("asr_model"), metadata.get("asr_model"))
     asr_normalization = string_value(capture.get("asr_normalization"), metadata.get("asr_normalization"))
     asr_error = string_value(capture.get("asr_error"), metadata.get("asr_error"))
+    diarization_status = string_value(capture.get("diarization_status"), metadata.get("diarization_status"), default="not_attempted")
+    diarization_provider = string_value(capture.get("diarization_provider"), metadata.get("diarization_provider"))
+    speaker_count = string_value(capture.get("speaker_count"), metadata.get("speaker_count"))
     analyzer_status = string_value(capture.get("analyzer_status"), default="pending")
     bitable_sync_status = string_value(capture.get("bitable_sync_status"), default="pending")
     analysis_ready = bool_value(capture.get("analysis_ready"), bool_value(metadata.get("analysis_ready"), True))
@@ -293,6 +298,7 @@ def status_lines(capture: dict[str, Any]) -> list[str]:
         f"- 视频已落盘: {'是' if media_downloaded else '否'}",
         f"- 转录状态: {transcript_status}",
         f"- ASR 状态: {asr_status}",
+        f"- Speaker 状态: {diarization_status}",
         f"- Analyzer 状态: {analyzer_status}",
         f"- 多维表格同步: {bitable_sync_status}",
         f"- 分析就绪: {'是' if analysis_ready else '否'}",
@@ -305,6 +311,10 @@ def status_lines(capture: dict[str, Any]) -> list[str]:
         lines.append(f"- ASR 规范化: {asr_normalization}")
     if has_value(asr_error):
         lines.append(f"- ASR 错误: {asr_error}")
+    if has_value(diarization_provider):
+        lines.append(f"- Speaker Provider: {diarization_provider}")
+    if has_value(speaker_count):
+        lines.append(f"- 说话人数: {speaker_count}")
     if access_blocked:
         block_label = "IP 风险拦截" if access_block_type == "ip_risk" else "站点访问受限"
         lines.insert(0, f"- 访问状态: {block_label}")

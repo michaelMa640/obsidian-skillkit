@@ -1171,6 +1171,128 @@ function Invoke-PodcastAsrFallback {
     }
 }
 
+function Invoke-PodcastSpeakerDiarization {
+    param(
+        $Config,
+        [string]$AudioPath,
+        [string]$SegmentsJsonPath,
+        [string]$AssetDirectory,
+        [string]$ManualSpeakersPath
+    )
+
+    $result = [ordered]@{
+        enabled = $false
+        attempted = $false
+        success = $false
+        status = 'disabled'
+        provider = ''
+        model = ''
+        segments = @()
+        speaker_map = @()
+        speaker_transcript = ''
+        error = ''
+    }
+
+    $podcastRoute = if ($null -ne $Config.routes) { Get-DataValue -Data $Config.routes -Name 'podcast' } else { $null }
+    $diarizationConfig = if ($null -ne $podcastRoute) { Get-DataValue -Data $podcastRoute -Name 'diarization' } else { $null }
+    if ($null -eq $diarizationConfig) { return [pscustomobject]$result }
+
+    $enabled = Get-BoolValueFromData -Data $diarizationConfig -Name 'enabled' -DefaultValue $false
+    $result.enabled = $enabled
+    $provider = Get-StringValue -Data $diarizationConfig -Name 'provider' -DefaultValue 'pyannote'
+    $model = Get-StringValue -Data $diarizationConfig -Name 'model' -DefaultValue ''
+    $result.provider = $provider
+    $result.model = $model
+    if (-not $enabled) { return [pscustomobject]$result }
+
+    if (-not (Test-HasValue $AudioPath) -or -not (Test-Path $AudioPath)) {
+        $result.status = 'missing_audio'
+        $result.error = 'Speaker diarization could not start because no local audio file was available.'
+        return [pscustomobject]$result
+    }
+    if (-not (Test-HasValue $SegmentsJsonPath) -or -not (Test-Path $SegmentsJsonPath)) {
+        $result.status = 'missing_segments'
+        $result.error = 'Speaker diarization could not start because transcript segments were not available.'
+        return [pscustomobject]$result
+    }
+
+    $command = Get-ConfiguredPathValue -Object $diarizationConfig -PropertyName 'command'
+    if (-not (Test-HasValue $command)) { $command = 'python' }
+    $scriptPath = Get-ConfiguredPathValue -Object $diarizationConfig -PropertyName 'script'
+    if (($command -match 'python(?:\.exe)?$') -and -not (Test-HasValue $scriptPath)) {
+        $result.status = 'not_configured'
+        $result.error = 'Podcast diarization is enabled, but routes.podcast.diarization.script is not configured.'
+        return [pscustomobject]$result
+    }
+
+    $device = Get-StringValue -Data $diarizationConfig -Name 'device' -DefaultValue 'cpu'
+    $hfTokenEnv = Get-StringValue -Data $diarizationConfig -Name 'hf_token_env' -DefaultValue 'HF_TOKEN'
+    $mockDiarizationPath = Get-ConfiguredPathValue -Object $diarizationConfig -PropertyName 'mock_diarization_path'
+    $minOverlapRatio = Get-StringValue -Data $diarizationConfig -Name 'min_overlap_ratio' -DefaultValue '0.35'
+    $outputJsonPath = Join-Path $AssetDirectory 'speaker-diarization-output.json'
+    $arguments = @()
+    if (Test-HasValue $scriptPath) { $arguments += @($scriptPath) }
+    $arguments += @(
+        '--audio-path', $AudioPath,
+        '--segments-json', $SegmentsJsonPath,
+        '--output-json', $outputJsonPath,
+        '--provider', $provider,
+        '--device', $device,
+        '--hf-token-env', $hfTokenEnv,
+        '--min-overlap-ratio', $minOverlapRatio
+    )
+    if (Test-HasValue $model) { $arguments += @('--model', $model) }
+    if (Test-HasValue $mockDiarizationPath) { $arguments += @('--mock-diarization-path', $mockDiarizationPath) }
+    if (Test-HasValue $ManualSpeakersPath) { $arguments += @('--manual-speakers-path', $ManualSpeakersPath) }
+
+    try {
+        $result.attempted = $true
+        $commandOutput = & $command @arguments 2>&1 | Out-String
+        $exitCode = $LASTEXITCODE
+        $payload = $null
+        if (Test-Path $outputJsonPath) {
+            try {
+                $payload = ConvertFrom-JsonCompat -Json (Read-Utf8Text -Path $outputJsonPath) -Depth 100
+            } catch {
+                $payload = $null
+            }
+        }
+
+        if ($null -ne $payload) {
+            $result.provider = Get-StringValue -Data $payload -Name 'provider' -DefaultValue $provider
+            $result.model = Get-StringValue -Data $payload -Name 'model' -DefaultValue $model
+            $result.status = Get-StringValue -Data $payload -Name 'status' -DefaultValue 'failed'
+            $result.error = Get-StringValue -Data $payload -Name 'error' -DefaultValue ''
+            $segments = Get-DataValue -Data $payload -Name 'segments'
+            if ($null -ne $segments) { $result.segments = @($segments) }
+            $speakerMap = Get-DataValue -Data $payload -Name 'speaker_map'
+            if ($null -ne $speakerMap) { $result.speaker_map = @($speakerMap) }
+            $result.speaker_transcript = Get-StringValue -Data $payload -Name 'speaker_transcript' -DefaultValue ''
+        }
+
+        if ($exitCode -eq 0 -and @($result.speaker_map).Count -gt 0) {
+            $result.success = $true
+            if (-not (Test-HasValue $result.status)) { $result.status = 'success' }
+            return [pscustomobject]$result
+        }
+
+        if (-not (Test-HasValue $result.status)) { $result.status = 'failed' }
+        if (-not (Test-HasValue $result.error)) {
+            $trimmedOutput = ($commandOutput | Out-String).Trim()
+            if (Test-HasValue $trimmedOutput) {
+                $result.error = $trimmedOutput
+            } else {
+                $result.error = "Speaker diarization command exited with code $exitCode."
+            }
+        }
+        return [pscustomobject]$result
+    } catch {
+        $result.status = 'failed'
+        $result.error = $_.Exception.Message
+        return [pscustomobject]$result
+    }
+}
+
 function Save-PodcastArtifacts {
     param(
         $Config,
@@ -1275,11 +1397,51 @@ function Save-PodcastArtifacts {
         Write-Utf8Text -Path $transcriptSegmentsPath -Content ((@($transcriptSegments) | ConvertTo-Json -Depth 20))
     }
 
+    $diarizationStatus = if ($null -ne $metadata) { Get-StringValue -Data $metadata -Name 'diarization_status' -DefaultValue 'not_attempted' } else { 'not_attempted' }
+    $diarizationProvider = if ($null -ne $metadata) { Get-StringValue -Data $metadata -Name 'diarization_provider' -DefaultValue '' } else { '' }
+    $diarizationModel = if ($null -ne $metadata) { Get-StringValue -Data $metadata -Name 'diarization_model' -DefaultValue '' } else { '' }
+    $diarizationError = if ($null -ne $metadata) { Get-StringValue -Data $metadata -Name 'diarization_error' -DefaultValue '' } else { '' }
+    $speakerMap = @()
+    $speakerAnnotatedTranscript = ''
+    $speakersPath = Join-Path $assetDirectory 'speakers.json'
+    $speakerAnnotatedTranscriptPath = ''
+
+    if ((Test-HasValue $audioLocalPath) -and (Test-HasValue $transcriptSegmentsPath)) {
+        $diarizationResult = Invoke-PodcastSpeakerDiarization -Config $Config -AudioPath $audioLocalPath -SegmentsJsonPath $transcriptSegmentsPath -AssetDirectory $assetDirectory -ManualSpeakersPath $speakersPath
+        $diarizationStatus = [string]$diarizationResult.status
+        $diarizationProvider = [string]$diarizationResult.provider
+        $diarizationModel = [string]$diarizationResult.model
+        $diarizationError = [string]$diarizationResult.error
+        if ($diarizationResult.success -and @($diarizationResult.segments).Count -gt 0) {
+            $transcriptSegments = @($diarizationResult.segments)
+            $speakerMap = @($diarizationResult.speaker_map)
+            $speakerAnnotatedTranscript = [string]$diarizationResult.speaker_transcript
+            Write-Utf8Text -Path $transcriptSegmentsPath -Content ((@($transcriptSegments) | ConvertTo-Json -Depth 20))
+            if (Test-HasValue $speakerAnnotatedTranscript) {
+                $speakerAnnotatedTranscriptPath = Join-Path $assetDirectory 'transcript.speakers.txt'
+                Write-Utf8Text -Path $speakerAnnotatedTranscriptPath -Content $speakerAnnotatedTranscript
+            }
+        }
+    }
+
+    $speakerManifest = [ordered]@{
+        version = 'speaker-map-v1'
+        diarization_status = $diarizationStatus
+        diarization_provider = $diarizationProvider
+        diarization_model = $diarizationModel
+        generated_at = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
+        speaker_count = @($speakerMap).Count
+        speaker_map = @($speakerMap)
+    }
+    Write-Utf8Text -Path $speakersPath -Content (($speakerManifest | ConvertTo-Json -Depth 20))
+
     $relativeCapturePath = Get-VaultRelativePath -BasePath $ResolvedVaultPath -TargetPath $capturePath
     $relativeMetadataPath = Get-VaultRelativePath -BasePath $ResolvedVaultPath -TargetPath $metadataPath
     $relativeTranscriptRawPath = if (Test-HasValue $transcriptRawPath) { Get-VaultRelativePath -BasePath $ResolvedVaultPath -TargetPath $transcriptRawPath } else { '' }
     $relativeTranscriptPath = if (Test-HasValue $transcriptPath) { Get-VaultRelativePath -BasePath $ResolvedVaultPath -TargetPath $transcriptPath } else { '' }
     $relativeTranscriptSegmentsPath = if (Test-HasValue $transcriptSegmentsPath) { Get-VaultRelativePath -BasePath $ResolvedVaultPath -TargetPath $transcriptSegmentsPath } else { '' }
+    $relativeSpeakersPath = if (Test-HasValue $speakersPath) { Get-VaultRelativePath -BasePath $ResolvedVaultPath -TargetPath $speakersPath } else { '' }
+    $relativeSpeakerAnnotatedTranscriptPath = if (Test-HasValue $speakerAnnotatedTranscriptPath) { Get-VaultRelativePath -BasePath $ResolvedVaultPath -TargetPath $speakerAnnotatedTranscriptPath } else { '' }
 
     Set-ObjectField -Object $Capture -Name 'sidecar_path' -Value $relativeCapturePath | Out-Null
     Set-ObjectField -Object $Capture -Name 'metadata_path' -Value $relativeMetadataPath | Out-Null
@@ -1293,11 +1455,19 @@ function Save-PodcastArtifacts {
     Set-ObjectField -Object $Capture -Name 'asr_model' -Value $asrModel | Out-Null
     Set-ObjectField -Object $Capture -Name 'asr_normalization' -Value $asrNormalization | Out-Null
     Set-ObjectField -Object $Capture -Name 'asr_error' -Value $asrError | Out-Null
+    Set-ObjectField -Object $Capture -Name 'diarization_status' -Value $diarizationStatus | Out-Null
+    Set-ObjectField -Object $Capture -Name 'diarization_provider' -Value $diarizationProvider | Out-Null
+    Set-ObjectField -Object $Capture -Name 'diarization_model' -Value $diarizationModel | Out-Null
+    Set-ObjectField -Object $Capture -Name 'diarization_error' -Value $diarizationError | Out-Null
+    Set-ObjectField -Object $Capture -Name 'speaker_count' -Value @($speakerMap).Count | Out-Null
+    if (@($speakerMap).Count -gt 0) { Set-ObjectField -Object $Capture -Name 'speaker_map' -Value @($speakerMap) | Out-Null }
     if (Test-HasValue $transcriptRaw) { Set-ObjectField -Object $Capture -Name 'transcript_raw' -Value $transcriptRaw | Out-Null }
     if (@($transcriptSegments).Count -gt 0) { Set-ObjectField -Object $Capture -Name 'transcript_segments' -Value @($transcriptSegments) | Out-Null }
     if (Test-HasValue $relativeTranscriptRawPath) { Set-ObjectField -Object $Capture -Name 'transcript_raw_path' -Value $relativeTranscriptRawPath | Out-Null }
     if (Test-HasValue $relativeTranscriptPath) { Set-ObjectField -Object $Capture -Name 'transcript_path' -Value $relativeTranscriptPath | Out-Null }
     if (Test-HasValue $relativeTranscriptSegmentsPath) { Set-ObjectField -Object $Capture -Name 'transcript_segments_path' -Value $relativeTranscriptSegmentsPath | Out-Null }
+    if (Test-HasValue $relativeSpeakersPath) { Set-ObjectField -Object $Capture -Name 'speakers_path' -Value $relativeSpeakersPath | Out-Null }
+    if (Test-HasValue $relativeSpeakerAnnotatedTranscriptPath) { Set-ObjectField -Object $Capture -Name 'speaker_annotated_transcript_path' -Value $relativeSpeakerAnnotatedTranscriptPath | Out-Null }
     if ($null -ne $metadata) {
         Set-ObjectField -Object $metadata -Name 'sidecar_path' -Value $relativeCapturePath | Out-Null
         Set-ObjectField -Object $metadata -Name 'metadata_path' -Value $relativeMetadataPath | Out-Null
@@ -1310,9 +1480,17 @@ function Save-PodcastArtifacts {
         Set-ObjectField -Object $metadata -Name 'asr_model' -Value $asrModel | Out-Null
         Set-ObjectField -Object $metadata -Name 'asr_normalization' -Value $asrNormalization | Out-Null
         Set-ObjectField -Object $metadata -Name 'asr_error' -Value $asrError | Out-Null
+        Set-ObjectField -Object $metadata -Name 'diarization_status' -Value $diarizationStatus | Out-Null
+        Set-ObjectField -Object $metadata -Name 'diarization_provider' -Value $diarizationProvider | Out-Null
+        Set-ObjectField -Object $metadata -Name 'diarization_model' -Value $diarizationModel | Out-Null
+        Set-ObjectField -Object $metadata -Name 'diarization_error' -Value $diarizationError | Out-Null
+        Set-ObjectField -Object $metadata -Name 'speaker_count' -Value @($speakerMap).Count | Out-Null
+        if (@($speakerMap).Count -gt 0) { Set-ObjectField -Object $metadata -Name 'speaker_map' -Value @($speakerMap) | Out-Null }
         if (Test-HasValue $transcriptRaw) { Set-ObjectField -Object $metadata -Name 'transcript_raw_path' -Value $relativeTranscriptRawPath | Out-Null }
         if (Test-HasValue $relativeTranscriptPath) { Set-ObjectField -Object $metadata -Name 'transcript_path' -Value $relativeTranscriptPath | Out-Null }
         if (Test-HasValue $relativeTranscriptSegmentsPath) { Set-ObjectField -Object $metadata -Name 'transcript_segments_path' -Value $relativeTranscriptSegmentsPath | Out-Null }
+        if (Test-HasValue $relativeSpeakersPath) { Set-ObjectField -Object $metadata -Name 'speakers_path' -Value $relativeSpeakersPath | Out-Null }
+        if (Test-HasValue $relativeSpeakerAnnotatedTranscriptPath) { Set-ObjectField -Object $metadata -Name 'speaker_annotated_transcript_path' -Value $relativeSpeakerAnnotatedTranscriptPath | Out-Null }
     }
 
     Write-Utf8Text -Path $capturePath -Content ($Capture | ConvertTo-Json -Depth 100)
@@ -2428,6 +2606,7 @@ function Get-RunSummaryLines {
     if ($null -ne $Result.PSObject.Properties['transcript_status']) { $lines.Add("transcript: $($Result.transcript_status) / $($Result.transcript_source)") }
     if ($null -ne $Result.PSObject.Properties['asr_status']) { $lines.Add("asr      : $($Result.asr_status) / $($Result.asr_provider)") }
     if ($null -ne $Result.PSObject.Properties['asr_normalization'] -and (Test-HasValue ([string]$Result.asr_normalization))) { $lines.Add("asr_norm : $($Result.asr_normalization)") }
+    if ($null -ne $Result.PSObject.Properties['diarization_status']) { $lines.Add("speaker  : $($Result.diarization_status) / $($Result.diarization_provider)") }
     if ($null -ne $Result.PSObject.Properties['knowledge_summary_status']) {
         $knowledgeLine = [string]$Result.knowledge_summary_status
         if ($null -ne $Result.PSObject.Properties['knowledge_summary_note_updated']) {
@@ -2556,6 +2735,10 @@ try {
     if (-not (Test-HasValue $asrProviderForResult) -and $null -ne $captureMetadata) { $asrProviderForResult = Get-StringValue -Data $captureMetadata -Name 'asr_provider' -DefaultValue '' }
     $asrNormalizationForResult = Get-StringValue -Data $capture -Name 'asr_normalization' -DefaultValue ''
     if (-not (Test-HasValue $asrNormalizationForResult) -and $null -ne $captureMetadata) { $asrNormalizationForResult = Get-StringValue -Data $captureMetadata -Name 'asr_normalization' -DefaultValue '' }
+    $diarizationStatusForResult = Get-StringValue -Data $capture -Name 'diarization_status' -DefaultValue ''
+    if (-not (Test-HasValue $diarizationStatusForResult) -and $null -ne $captureMetadata) { $diarizationStatusForResult = Get-StringValue -Data $captureMetadata -Name 'diarization_status' -DefaultValue '' }
+    $diarizationProviderForResult = Get-StringValue -Data $capture -Name 'diarization_provider' -DefaultValue ''
+    if (-not (Test-HasValue $diarizationProviderForResult) -and $null -ne $captureMetadata) { $diarizationProviderForResult = Get-StringValue -Data $captureMetadata -Name 'diarization_provider' -DefaultValue '' }
     $sidecarPathForResult = Get-StringValue -Data $capture -Name 'sidecar_path' -DefaultValue ''
     if (-not (Test-HasValue $sidecarPathForResult) -and $null -ne $captureMetadata) { $sidecarPathForResult = Get-StringValue -Data $captureMetadata -Name 'sidecar_path' -DefaultValue '' }
     $authActionRequiredForResult = Get-StringValue -Data $capture -Name 'auth_action_required' -DefaultValue ''
@@ -2684,6 +2867,8 @@ try {
         asr_status = $asrStatusForResult
         asr_provider = $asrProviderForResult
         asr_normalization = $asrNormalizationForResult
+        diarization_status = $diarizationStatusForResult
+        diarization_provider = $diarizationProviderForResult
         sidecar_path = $sidecarPathForResult
         auth_action_required = $authActionRequiredForResult
         auth_failure_reason = $authFailureReasonForResult

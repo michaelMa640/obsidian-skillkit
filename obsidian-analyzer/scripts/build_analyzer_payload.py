@@ -40,7 +40,7 @@ def list_value(value: Any) -> list[Any]:
 
 
 def read_text(path: Path) -> str:
-    encodings = ("utf-8", "utf-8-sig", "gb18030")
+    encodings = ("utf-8-sig", "utf-8", "gb18030")
     last_error: Exception | None = None
     for encoding in encodings:
         try:
@@ -71,6 +71,17 @@ def load_json_file(path: Path, warnings: list[str], label: str) -> Any:
         return None
 
 
+def load_optional_text(path: Path, warnings: list[str], label: str) -> str:
+    if not path.exists():
+        warnings.append(f"{label}_missing:{path}")
+        return ""
+    text = read_text(path)
+    if not text.strip():
+        warnings.append(f"{label}_empty:{path}")
+        return ""
+    return text
+
+
 def parse_frontmatter(note_text: str) -> tuple[dict[str, Any], str]:
     if not note_text.startswith("---"):
         return {}, note_text.strip()
@@ -92,7 +103,7 @@ def parse_frontmatter(note_text: str) -> tuple[dict[str, Any], str]:
             break
 
         if current_key and line.startswith("  - "):
-            value = line[4:].strip().strip("'")
+            value = line[4:].strip().strip("'").strip('"')
             frontmatter.setdefault(current_key, [])
             if isinstance(frontmatter[current_key], list):
                 frontmatter[current_key].append(value)
@@ -110,7 +121,7 @@ def parse_frontmatter(note_text: str) -> tuple[dict[str, Any], str]:
             frontmatter[key] = []
             continue
 
-        cleaned = value.strip().strip("'")
+        cleaned = value.strip().strip("'").strip('"')
         lowered = cleaned.lower()
         if lowered == "true":
             frontmatter[key] = True
@@ -321,6 +332,30 @@ def build_payload(note_path: str, capture_json_path: str, vault_path: str, analy
 
     metadata = metadata or {}
     comments = to_comment_list(comments_raw if comments_raw is not None else capture.get("comments"))
+    transcript_segments_path = resolve_path(
+        vault_path,
+        string_value(frontmatter.get("transcript_segments_path"), capture.get("transcript_segments_path"), metadata.get("transcript_segments_path")),
+    )
+    transcript_segments = load_json_file(Path(transcript_segments_path), warnings, "transcript_segments_json") if has_value(transcript_segments_path) else None
+    transcript_segments = transcript_segments if isinstance(transcript_segments, list) else []
+    speakers_path = resolve_path(
+        vault_path,
+        string_value(frontmatter.get("speakers_path"), capture.get("speakers_path"), metadata.get("speakers_path")),
+    )
+    speakers_reference = load_json_file(Path(speakers_path), warnings, "speakers_json") if has_value(speakers_path) else None
+    speaker_annotated_transcript_path = resolve_path(
+        vault_path,
+        string_value(
+            frontmatter.get("speaker_annotated_transcript_path"),
+            capture.get("speaker_annotated_transcript_path"),
+            metadata.get("speaker_annotated_transcript_path"),
+        ),
+    )
+    speaker_annotated_transcript = (
+        load_optional_text(Path(speaker_annotated_transcript_path), warnings, "speaker_transcript")
+        if has_value(speaker_annotated_transcript_path)
+        else ""
+    )
     top_comments = [
         string_value(item.get("display_text"), item.get("text"))
         for item in comments[:5]
@@ -421,11 +456,20 @@ def build_payload(note_path: str, capture_json_path: str, vault_path: str, analy
         "transcript_source": string_value(frontmatter.get("transcript_source"), capture.get("transcript_source"), metadata.get("transcript_source")),
         "transcript_raw_path": resolve_path(vault_path, string_value(frontmatter.get("transcript_raw_path"), capture.get("transcript_raw_path"), metadata.get("transcript_raw_path"))),
         "transcript_path": resolve_path(vault_path, string_value(frontmatter.get("transcript_path"), capture.get("transcript_path"), metadata.get("transcript_path"))),
-        "transcript_segments_path": resolve_path(vault_path, string_value(frontmatter.get("transcript_segments_path"), capture.get("transcript_segments_path"), metadata.get("transcript_segments_path"))),
+        "transcript_segments_path": transcript_segments_path,
+        "transcript_segments": transcript_segments,
+        "speakers_path": speakers_path,
+        "speakers_reference": speakers_reference or {},
+        "speaker_annotated_transcript_path": speaker_annotated_transcript_path,
+        "speaker_annotated_transcript": speaker_annotated_transcript,
+        "speaker_count": len(list_value((speakers_reference or {}).get("speaker_map"))),
+        "speaker_map_seed": (speakers_reference or {}).get("speaker_map") or capture.get("speaker_map") or metadata.get("speaker_map") or [],
         "asr_status": string_value(frontmatter.get("asr_status"), capture.get("asr_status"), metadata.get("asr_status")),
         "asr_provider": string_value(frontmatter.get("asr_provider"), capture.get("asr_provider"), metadata.get("asr_provider")),
         "asr_model": string_value(frontmatter.get("asr_model"), capture.get("asr_model"), metadata.get("asr_model")),
         "asr_normalization": string_value(frontmatter.get("asr_normalization"), capture.get("asr_normalization"), metadata.get("asr_normalization")),
+        "diarization_status": string_value(frontmatter.get("diarization_status"), capture.get("diarization_status"), metadata.get("diarization_status")),
+        "diarization_provider": string_value(frontmatter.get("diarization_provider"), capture.get("diarization_provider"), metadata.get("diarization_provider")),
         "source_files": {
             "note_exists": has_value(note_path) and Path(note_path).exists(),
             "capture_exists": has_value(resolved_capture_path) and Path(resolved_capture_path).exists(),

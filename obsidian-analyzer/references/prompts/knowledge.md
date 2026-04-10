@@ -20,6 +20,7 @@ Output rules:
    - topic connections that help later map related notes
 6. If the source is weak or incomplete, keep fields empty or brief instead of hallucinating.
 7. When timestamps or speakers are missing, leave those arrays empty.
+8. If `transcript_segments`, `speaker_annotated_transcript`, or `speaker_map_seed` exist in the payload, prefer them over guessing from plain transcript text.
 
 Field guidance:
 
@@ -57,7 +58,9 @@ Field guidance:
 
 - `timestamp_index`:
   Use timestamps only when the payload provides transcript timestamps or segment timing.
+  If `transcript_segments` contains `speaker` values, preserve them in each timestamp item when relevant.
 
 - `speaker_map`:
   Only identify speakers when the payload explicitly supports it.
+  Prefer `speaker_map_seed` and the `speaker` fields already present in `transcript_segments`.
   If the source does not identify speakers, return an empty array.

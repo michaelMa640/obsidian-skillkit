@@ -355,6 +355,8 @@ def build_source_lines(analysis: dict[str, Any], vault_path: str) -> list[str]:
     transcript_path = string_value(analysis.get("transcript_path"))
     transcript_raw_path = string_value(analysis.get("transcript_raw_path"))
     transcript_segments_path = string_value(analysis.get("transcript_segments_path"))
+    speaker_annotated_transcript_path = string_value(analysis.get("speaker_annotated_transcript_path"))
+    speakers_path = string_value(analysis.get("speakers_path"))
     video_path = string_value(analysis.get("video_path"))
     asr_normalization = string_value(analysis.get("asr_normalization"))
     source_url = string_value(analysis.get("source_url"))
@@ -368,7 +370,9 @@ def build_source_lines(analysis: dict[str, Any], vault_path: str) -> list[str]:
         f"- 音频文件: {obsidian_link(audio_path, vault_path)}",
         f"- 文本稿: {obsidian_link(transcript_path, vault_path)}",
         f"- 原始文本稿: {obsidian_link(transcript_raw_path, vault_path)}",
+        f"- 说话人文本稿: {obsidian_link(speaker_annotated_transcript_path, vault_path)}",
         f"- 分段文本 JSON: {obsidian_link(transcript_segments_path, vault_path)}",
+        f"- 说话人映射 JSON: {obsidian_link(speakers_path, vault_path)}",
         f"- 本地视频: {obsidian_link(video_path, vault_path)}",
     ]
     if has_value(asr_normalization):
@@ -407,6 +411,8 @@ def build_note(analysis: dict[str, Any], folder: str, vault_path: str) -> dict[s
     transcript_path = string_value(analysis.get("transcript_path"))
     transcript_raw_path = string_value(analysis.get("transcript_raw_path"))
     transcript_segments_path = string_value(analysis.get("transcript_segments_path"))
+    speaker_annotated_transcript_path = string_value(analysis.get("speaker_annotated_transcript_path"))
+    speakers_path = string_value(analysis.get("speakers_path"))
     video_path = string_value(analysis.get("video_path"))
     file_name = safe_file_name(f"{analyzed_at} {title}.md")
     source_note_link = obsidian_link(source_note_path, vault_path)
@@ -416,6 +422,8 @@ def build_note(analysis: dict[str, Any], folder: str, vault_path: str) -> dict[s
     transcript_path_value = vault_path_or_original(transcript_path, vault_path)
     transcript_raw_path_value = vault_path_or_original(transcript_raw_path, vault_path)
     transcript_segments_path_value = vault_path_or_original(transcript_segments_path, vault_path)
+    speaker_annotated_transcript_path_value = vault_path_or_original(speaker_annotated_transcript_path, vault_path)
+    speakers_path_value = vault_path_or_original(speakers_path, vault_path)
     video_path_value = vault_path_or_original(video_path, vault_path)
     topic_names = extract_named_values(analysis.get("topic_candidates"), "name", "title", "topic")
     knowledge_card_titles = extract_named_values(analysis.get("knowledge_cards"), "title", "name")
@@ -441,6 +449,8 @@ def build_note(analysis: dict[str, Any], folder: str, vault_path: str) -> dict[s
         f"transcript_path: {yaml_scalar(transcript_path_value)}",
         f"transcript_raw_path: {yaml_scalar(transcript_raw_path_value)}",
         f"transcript_segments_path: {yaml_scalar(transcript_segments_path_value)}",
+        f"speaker_annotated_transcript_path: {yaml_scalar(speaker_annotated_transcript_path_value)}",
+        f"speakers_path: {yaml_scalar(speakers_path_value)}",
         f"video_path: {yaml_scalar(video_path_value)}",
         f"analysis_mode: {yaml_scalar(mode)}",
         f"analysis_goal: {yaml_scalar(goal)}",
