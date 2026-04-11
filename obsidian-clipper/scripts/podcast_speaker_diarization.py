@@ -2,6 +2,7 @@ import argparse
 import json
 import os
 import sys
+import tempfile
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any
@@ -15,6 +16,13 @@ def configure_console_output() -> None:
         reconfigure = getattr(stream, "reconfigure", None)
         if callable(reconfigure):
             reconfigure(encoding="utf-8", errors="backslashreplace")
+
+
+def configure_runtime_environment() -> None:
+    if not has_value(os.environ.get("MPLCONFIGDIR")):
+        matplotlib_dir = Path(tempfile.gettempdir()) / "pyannote-matplotlib"
+        matplotlib_dir.mkdir(parents=True, exist_ok=True)
+        os.environ["MPLCONFIGDIR"] = str(matplotlib_dir)
 
 
 def has_value(value: Any) -> bool:
@@ -291,6 +299,46 @@ def run_mock_provider(mock_path: str) -> list[dict[str, Any]]:
     return normalize_turns(load_json(path))
 
 
+def load_audio_input(audio_path: str) -> dict[str, Any]:
+    try:
+        import av
+        import numpy as np
+        import torch
+    except ImportError as exc:
+        raise RuntimeError("PyAV, numpy, and torch are required to preload audio for pyannote diarization.") from exc
+
+    decoded_chunks: list[Any] = []
+    sample_rate = 0
+    try:
+        with av.open(audio_path) as container:
+            for frame in container.decode(audio=0):
+                array = frame.to_ndarray()
+                if getattr(array, "ndim", 0) == 1:
+                    array = array.reshape(1, -1)
+                decoded_chunks.append(array)
+                sample_rate = int(getattr(frame, "sample_rate", 0) or sample_rate)
+    except Exception as exc:
+        raise RuntimeError(f"Failed to decode audio for diarization: {exc}") from exc
+
+    if not decoded_chunks or sample_rate <= 0:
+        raise RuntimeError(f"No decodable audio frames were found in: {audio_path}")
+
+    waveform = np.concatenate(decoded_chunks, axis=1)
+    if waveform.shape[0] > 1:
+        waveform = waveform.mean(axis=0, keepdims=True)
+    if np.issubdtype(waveform.dtype, np.integer):
+        info = np.iinfo(waveform.dtype)
+        max_abs = float(max(abs(info.min), info.max)) or 1.0
+        waveform = waveform.astype("float32") / max_abs
+    else:
+        waveform = waveform.astype("float32")
+
+    return {
+        "waveform": torch.from_numpy(waveform),
+        "sample_rate": sample_rate,
+    }
+
+
 def run_pyannote_provider(audio_path: str, model_name: str, token_env: str, device: str) -> list[dict[str, Any]]:
     try:
         from pyannote.audio import Pipeline
@@ -310,7 +358,7 @@ def run_pyannote_provider(audio_path: str, model_name: str, token_env: str, devi
         except Exception:
             pass
 
-    diarization = pipeline(audio_path)
+    diarization = pipeline(load_audio_input(audio_path))
     turns: list[dict[str, Any]] = []
     for turn, _, speaker in diarization.itertracks(yield_label=True):
         turns.append(
@@ -373,6 +421,7 @@ def build_result(
 
 def main() -> int:
     configure_console_output()
+    configure_runtime_environment()
 
     parser = argparse.ArgumentParser(description="Enhance podcast transcript segments with diarization speakers.")
     parser.add_argument("--audio-path", required=True)
