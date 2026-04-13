@@ -2,10 +2,13 @@
 
 ## Document Status
 
-- Last Updated: `2026-04-08`
+- Last Updated: `2026-04-13`
 
 ## Change Log
 
+- `2026-04-13`
+  - documented the first-run podcast runtime profile flow
+  - documented that a new machine should complete the first podcast setup from a local entry before iOS Shortcut is used
 - `2026-04-08`
   - reviewed the README against the current verified runtime behavior
   - fixed the landed-video rendering note so it now correctly refers to `video_path`
@@ -153,8 +156,43 @@ Important config points:
 - `routes.social.xiaohongshu_adapter.server_url`
   - default `http://127.0.0.1:5556/xhs/detail`
 - `routes.podcast.download_audio`
+- `routes.podcast.runtime_profile`
+  - recommended `prompt` on a new machine
 - `routes.podcast.asr.*`
   - optional transcript fallback configuration for Phase 3
+- `routes.podcast.diarization.*`
+  - optional speaker diarization configuration for Step 6
+
+### Podcast runtime profile
+
+Podcast runtime now supports a first-run device selection flow.
+
+Recommended setup on a new machine:
+
+1. keep `routes.podcast.runtime_profile = "prompt"`
+2. start the first podcast task from a local entry that can show terminal interaction
+3. choose the detected runtime profile
+4. let `run_clipper.ps1` write the selected values back into `local-config.json`
+
+The selected profile updates these fields:
+
+- `routes.podcast.runtime_profile`
+- `routes.podcast.asr.device`
+- `routes.podcast.asr.compute_type`
+- `routes.podcast.diarization.device`
+
+Why this matters:
+
+- ASR and diarization may not share the same hardware capability on the same machine
+- some machines support GPU ASR but only CPU diarization
+- first-run selection avoids forcing users to hand-edit device flags before their first successful podcast run
+
+Important:
+
+- if the machine has never handled podcast clipping before, do the first run from Feishu/OpenClaw or local terminal
+- do not use iPhone Shortcut as the first podcast entry, because it cannot reliably present the CPU/GPU selection step
+- after the local machine has written the selected runtime profile into `local-config.json`, iPhone Shortcut can use that machine normally
+- on Windows, GPU ASR also requires CUDA runtime DLLs to be available inside the active Python environment; installing `faster-whisper` alone is not enough
 
 Validate config with:
 

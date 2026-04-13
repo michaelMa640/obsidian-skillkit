@@ -2,7 +2,7 @@
 
 ## Document Status
 
-- Last Updated: `2026-04-08`
+- Last Updated: `2026-04-13`
 
 ## 中文说明
 
@@ -176,6 +176,20 @@ The optional remote/mobile entry is:
 
 - `iPhone Shortcut -> ios-shortcuts-gateway -> skills`
 
+### Important podcast first-run rule
+
+Podcast clipping now includes a first-run runtime profile step for ASR / speaker processing.
+
+This means:
+
+- the first podcast run on a new machine must be started from a local entry that can show a device-selection prompt
+- recommended first-run entries are:
+  - `Feishu -> OpenClaw -> skills`
+  - direct local terminal execution such as `obsidian-clipper/scripts/run_clipper.ps1`
+- after that first local run writes the selected device profile into `references/local-config.json`, iPhone Shortcut can use the same machine normally
+
+iOS Shortcut is not the right place for the first podcast setup because it cannot reliably present the local machine's CPU / GPU choice flow.
+
 ### Who this is for
 
 This repository is written mainly for end users:
@@ -252,6 +266,23 @@ The system then:
   - helper tools, including `XHS-Downloader` launch scripts
 
 ### What end users should know
+
+#### Podcast first setup must be local
+
+If this is the first time a machine is handling podcast content, do not start from iPhone Shortcut first.
+
+Use one of these local entries first:
+
+- `Feishu -> OpenClaw -> skills`
+- local terminal / PowerShell entry into `obsidian-clipper`
+
+Why:
+
+- podcast ASR and diarization now support first-run device detection
+- the machine may need to choose a runtime profile such as `GPU ASR + CPU diarization` or `CPU compatibility`
+- that choice is written back into `references/local-config.json`
+
+After the first local setup is completed, the same machine can accept podcast tasks from iPhone Shortcut normally.
 
 #### Feishu is the main entry
 

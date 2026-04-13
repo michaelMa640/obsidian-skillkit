@@ -2,10 +2,12 @@
 
 ## Document Status
 
-- Last Updated: `2026-04-08`
+- Last Updated: `2026-04-13`
 
 ## Change Log
 
+- `2026-04-13`
+  - documented that first-time podcast setup must be completed from a local entry before iPhone Shortcut should submit podcast tasks
 - `2026-04-08`
   - reviewed the gateway README against the current repository structure and kept it aligned with the optional iPhone entry role
 - `2026-04-05`
@@ -75,6 +77,22 @@ No other action is in scope for the current implementation.
 ```powershell
 python -m pip install -r .\ios-shortcuts-gateway\requirements.txt
 ```
+
+### Podcast first-run requirement
+
+If the target machine has never processed podcast content before, complete the first podcast run locally before using iPhone Shortcut.
+
+Recommended first-run entry:
+
+- `Feishu -> OpenClaw -> skills`
+- or direct local terminal execution of `obsidian-clipper/scripts/run_clipper.ps1`
+
+Why:
+
+- podcast workflow now supports first-run runtime detection
+- the local machine may need to choose a CPU/GPU profile for ASR and diarization
+- that choice is written back into `references/local-config.json`
+- iPhone Shortcut should reuse that saved machine profile, not perform the first hardware-selection step itself
 
 ## Local startup
 
@@ -226,6 +244,11 @@ openclaw message send --channel feishu --target <open_id or chat_id> --message <
 `webhook` remains available as a compatibility fallback.
 
 ## iPhone shortcut behavior
+
+Important for podcast tasks:
+
+- use iPhone Shortcut only after the target machine has already completed the first local podcast setup
+- once the machine has written its runtime profile into `local-config.json`, Shortcut submission works as a normal remote trigger
 
 Recommended request body:
 

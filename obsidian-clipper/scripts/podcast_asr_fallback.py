@@ -1,11 +1,15 @@
 import argparse
 import json
+import os
 import re
+import site
+import sys
 from pathlib import Path
 from typing import Any
 
 
 TIMESTAMP_RE = re.compile(r"^(?P<ts>(?:\d{2}:)?\d{2}:\d{2})\s+(?P<text>.+?)\s*$")
+CUDA_DLL_HANDLES: list[Any] = []
 
 
 def parse_bool(value: str | bool) -> bool:
@@ -46,6 +50,40 @@ def parse_timestamp_seconds(value: str) -> float:
         hours, minutes, seconds = parts
         return float(hours * 3600 + minutes * 60 + seconds)
     raise ValueError(f"Unsupported timestamp format: {value}")
+
+
+def configure_cuda_runtime(device: str) -> None:
+    if str(device).strip().lower() != "cuda":
+        return
+    if sys.platform != "win32":
+        return
+
+    add_dll_directory = getattr(os, "add_dll_directory", None)
+    dll_dirs: list[str] = []
+    seen: set[str] = set()
+
+    for site_path in site.getsitepackages():
+        nvidia_root = Path(site_path) / "nvidia"
+        if not nvidia_root.exists():
+            continue
+        for child in nvidia_root.iterdir():
+            candidate = child / "bin"
+            if not candidate.exists():
+                continue
+            resolved = str(candidate.resolve())
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            dll_dirs.append(resolved)
+            if callable(add_dll_directory):
+                try:
+                    CUDA_DLL_HANDLES.append(add_dll_directory(resolved))
+                except OSError:
+                    pass
+
+    if dll_dirs:
+        existing_path = os.environ.get("PATH", "")
+        os.environ["PATH"] = os.pathsep.join(dll_dirs + [existing_path])
 
 
 def build_converter(normalize_script: str) -> tuple[Any | None, str]:
@@ -169,6 +207,7 @@ def build_faster_whisper_result(
     vad_filter: bool,
     normalize_script: str,
 ) -> dict[str, Any]:
+    configure_cuda_runtime(device)
     try:
         from faster_whisper import WhisperModel
     except ImportError as exc:

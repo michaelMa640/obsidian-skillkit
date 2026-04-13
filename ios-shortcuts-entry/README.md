@@ -24,6 +24,23 @@ Current recommended mobile route:
 
 This module remains useful if you explicitly want the shortcut to send text into Feishu/OpenClaw instead of calling the local Gateway.
 
+## Important podcast first-run limitation
+
+Do not use iPhone Shortcut as the first-ever podcast entry on a new machine.
+
+Reason:
+
+- podcast clipping may need a first-run local runtime selection step
+- the machine may need to choose between CPU / GPU profiles for ASR and diarization
+- iPhone Shortcut is not a reliable place to complete that local hardware-selection flow
+
+Recommended first podcast run:
+
+- `Feishu -> OpenClaw -> skills`
+- or local terminal execution on the target machine
+
+After that first local run saves the selected runtime profile into `references/local-config.json`, iPhone Shortcut can send podcast tasks to the same machine normally.
+
 ## Supported intents
 
 - `剪藏视频：<share text>`
