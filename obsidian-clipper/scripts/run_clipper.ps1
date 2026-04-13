@@ -1657,7 +1657,8 @@ function Invoke-PodcastSpeakerDiarization {
 
     try {
         $result.attempted = $true
-        $commandOutput = & $command @arguments 2>&1 | Out-String
+        $commandOutput = ''
+        & $command @arguments
         $exitCode = $LASTEXITCODE
         $payload = $null
         if (Test-Path $outputJsonPath) {

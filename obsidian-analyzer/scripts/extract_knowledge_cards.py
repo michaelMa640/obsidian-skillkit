@@ -6,6 +6,52 @@ from pathlib import Path
 from typing import Any
 
 
+SOURCE_PREFIX_PATTERNS = [
+    re.compile(r"^(本期节目|这期节目|本期播客|这期播客|节目里|节目中|播客里|播客中|主播提到|嘉宾提到|文章提到|作者提到)[，,:：\s]*"),
+    re.compile(r"^(节目提出|节目认为|节目强调|节目分享|节目讨论|播客提出|播客强调)[，,:：\s]*"),
+]
+TOPIC_RULES = [
+    ("阅读与学习", ("阅读", "读书", "学习", "笔记", "知识管理")),
+    ("书籍与作品", ("书", "作品", "小说", "电影", "回忆录", "传记", "自传")),
+    ("人物传记", ("人物", "名人", "传记", "自传", "演员", "作者")),
+    ("决策与选择", ("决策", "选择", "转折", "机会", "绿灯", "红灯", "黄灯")),
+    ("自我成长", ("成长", "改变", "勇气", "人生", "行动", "长期主义")),
+    ("心理与情绪", ("心理", "情绪", "恐惧", "焦虑", "信心", "自我怀疑")),
+    ("方法论", ("方法", "框架", "模型", "流程", "策略", "原则")),
+    ("创作与表达", ("写作", "表达", "叙事", "讲故事", "创作")),
+    ("电影与表演", ("电影", "表演", "演员", "奥斯卡", "好莱坞")),
+    ("教育与养育", ("教育", "养育", "父母", "孩子")),
+]
+TAG_RULES = [
+    ("阅读", ("阅读", "读书", "书单", "书")),
+    ("书籍", ("书", "作品", "回忆录", "自传", "传记")),
+    ("人物", ("人物", "名人", "作者", "演员")),
+    ("人物传记", ("传记", "自传", "回忆录")),
+    ("方法论", ("方法", "框架", "模型", "流程", "原则", "策略")),
+    ("决策", ("决策", "选择", "转折", "机会", "判断")),
+    ("自我成长", ("成长", "人生", "行动", "勇气", "改变")),
+    ("心理成长", ("心理", "情绪", "恐惧", "焦虑", "信心")),
+    ("创作", ("写作", "表达", "叙事", "创作")),
+    ("教育", ("教育", "养育", "父母", "孩子")),
+    ("电影与表演", ("电影", "表演", "演员", "奥斯卡")),
+]
+CATEGORY_FOLDERS = {
+    "书籍作品": "书籍作品",
+    "人物": "人物",
+    "方法模型": "方法模型",
+    "概念认知": "概念认知",
+    "实践案例": "实践案例",
+}
+CATEGORY_TAGS = {
+    "书籍作品": ["书籍", "阅读", "观点提炼"],
+    "人物": ["人物", "人物传记", "自我成长"],
+    "方法模型": ["方法论", "实践", "学习方法"],
+    "概念认知": ["认知", "自我成长", "方法论"],
+    "实践案例": ["实践", "案例", "方法论"],
+}
+WORK_PATTERN = re.compile(r"《([^》]{1,40})》")
+
+
 def configure_console_output() -> None:
     for stream_name in ("stdout", "stderr"):
         stream = getattr(sys, stream_name, None)
@@ -40,9 +86,7 @@ def dedupe_strings(values: list[str]) -> list[str]:
     seen: set[str] = set()
     for value in values:
         normalized = string_value(value)
-        if not has_value(normalized):
-            continue
-        if normalized in seen:
+        if not has_value(normalized) or normalized in seen:
             continue
         seen.add(normalized)
         result.append(normalized)
@@ -53,240 +97,300 @@ def load_json(path: str) -> dict[str, Any]:
     return json.loads(Path(path).read_text(encoding="utf-8"))
 
 
-def normalize_topic_names(values: Any) -> list[str]:
-    names: list[str] = []
-    for item in normalize_list(values):
-        if isinstance(item, dict):
-            name = string_value(item.get("name"), item.get("title"), item.get("topic"))
-        else:
-            name = string_value(item)
-        if has_value(name):
-            names.append(name)
-    return dedupe_strings(names)
-
-
 def normalize_text_for_matching(value: str) -> str:
     return re.sub(r"\s+", "", string_value(value).lower())
 
 
-def topic_aliases(topic_name: str) -> list[str]:
-    text = string_value(topic_name)
-    aliases = [text]
-    aliases.extend(re.findall(r"[A-Za-z0-9][A-Za-z0-9 _-]*", text))
-    aliases.extend(re.split(r"[()（）/|、，,]", text))
-    normalized = [normalize_text_for_matching(alias) for alias in aliases if has_value(alias)]
-    return dedupe_strings([alias for alias in normalized if has_value(alias)])
+def sanitize_text(value: str) -> str:
+    text = string_value(value)
+    if not has_value(text):
+        return ""
+    for pattern in SOURCE_PREFIX_PATTERNS:
+        text = pattern.sub("", text)
+    text = re.sub(r"\s+", " ", text).strip(" ，,。；;：:！!？?、")
+    return text
 
 
-def infer_card_type(title: str, summary: str, tags: list[str]) -> str:
-    text = " ".join([title, summary, *tags]).lower()
-    if any(
-        token in text
-        for token in (
-            "如何",
-            "怎么",
-            "怎样",
-            "步骤",
-            "流程",
-            "方法",
-            "框架",
-            "清单",
-            "workflow",
-            "how ",
-            "process",
-            "playbook",
-        )
-    ):
+def topic_matches(text: str) -> list[str]:
+    normalized = normalize_text_for_matching(text)
+    matches: list[str] = []
+    for topic_name, keywords in TOPIC_RULES:
+        if any(normalize_text_for_matching(keyword) in normalized for keyword in keywords):
+            matches.append(topic_name)
+    return dedupe_strings(matches)
+
+
+def normalize_topic_names(values: Any) -> list[str]:
+    names: list[str] = []
+    for item in normalize_list(values):
+        if isinstance(item, dict):
+            text = string_value(item.get("name"), item.get("title"), item.get("topic"))
+        else:
+            text = string_value(item)
+        if not has_value(text):
+            continue
+        matches = topic_matches(text)
+        if matches:
+            names.extend(matches)
+        else:
+            names.append(text)
+    return dedupe_strings(names)
+
+
+def find_named_works(analysis: dict[str, Any]) -> list[str]:
+    weighted_texts = [
+        (string_value(analysis.get("title")), 1),
+        (string_value(analysis.get("content_summary")), 3),
+        (string_value(analysis.get("summary")), 2),
+        (" ".join(string_value(item.get("text"), item.get("point"), item) if isinstance(item, dict) else string_value(item) for item in normalize_list(analysis.get("core_points"))), 3),
+        (string_value(analysis.get("raw_text")), 2),
+        (string_value(analysis.get("transcript")), 2),
+    ]
+    scores: dict[str, int] = {}
+    for text, weight in weighted_texts:
+        if not has_value(text):
+            continue
+        for match in WORK_PATTERN.finditer(text):
+            work = string_value(match.group(1))
+            if has_value(work):
+                scores[work] = scores.get(work, 0) + weight
+    ranked = sorted(scores.items(), key=lambda item: (-item[1], item[0]))
+    return [work for work, score in ranked if score >= 2] or [work for work, _ in ranked]
+
+
+def infer_card_type(title: str, summary: str) -> str:
+    text = normalize_text_for_matching(" ".join([title, summary]))
+    if any(token in text for token in ("如何", "怎么", "步骤", "流程", "方法", "框架", "模型", "策略", "原则")):
         return "method"
-    if any(
-        token in text
-        for token in (
-            "技巧",
-            "经验",
-            "建议",
-            "提示",
-            "窍门",
-            "heuristic",
-            "tip",
-            "best practice",
-        )
-    ):
+    if any(token in text for token in ("技巧", "建议", "提示", "经验", "窍门", "清单")):
         return "tip"
     return "concept"
 
 
-def score_card(title: str, summary: str, tags: list[str], card_type: str) -> int:
-    score = 0
-    title_length = len(title)
-    summary_length = len(summary)
-    if 4 <= title_length <= 40:
-        score += 2
-    elif has_value(title):
-        score += 1
-    if summary_length >= 40:
-        score += 4
-    elif summary_length >= 20:
-        score += 2
-    elif summary_length >= 8:
-        score += 1
-    if tags:
-        score += 1
-    if card_type == "method":
-        score += 2
-    elif card_type == "tip":
-        score += 1
-    if re.search(r"(什么是|如何|为什么|何时|怎样|怎么|[?？])", title):
-        score += 1
-    return score
+def infer_card_category(title: str, summary: str, card_type: str, works: list[str]) -> str:
+    normalized = normalize_text_for_matching(" ".join([title, summary]))
+    if any(work and work in title for work in works):
+        return "书籍作品"
+    if any(token in normalized for token in ("作者", "演员", "人物", "名人", "马修")):
+        return "人物"
+    if card_type == "method" or any(token in normalized for token in ("方法", "框架", "模型", "流程", "原则")):
+        return "方法模型"
+    if any(token in normalized for token in ("案例", "例子", "经历", "故事", "实践")):
+        return "实践案例"
+    return "概念认知"
 
 
 def normalize_candidate_tags(value: Any) -> list[str]:
-    return dedupe_strings([string_value(item) for item in normalize_list(value) if has_value(item)])
+    return dedupe_strings([sanitize_text(string_value(item)) for item in normalize_list(value) if has_value(item)])
 
 
-def normalize_card_candidate(item: Any) -> dict[str, Any] | None:
+def normalize_card_candidate(item: Any, works: list[str]) -> dict[str, Any] | None:
     if isinstance(item, str):
-        title = string_value(item)
-        if not has_value(title):
-            return None
+        title = sanitize_text(item)
         summary = ""
         evidence = ""
         tags: list[str] = []
     elif isinstance(item, dict):
-        title = string_value(item.get("title"), item.get("name"))
-        summary = string_value(item.get("summary"), item.get("detail"), item.get("description"))
-        evidence = string_value(item.get("evidence"), item.get("reason"))
+        title = sanitize_text(string_value(item.get("title"), item.get("name")))
+        summary = sanitize_text(string_value(item.get("summary"), item.get("detail"), item.get("description")))
+        evidence = sanitize_text(string_value(item.get("evidence"), item.get("reason")))
         tags = normalize_candidate_tags(item.get("tags"))
     else:
         return None
     if not has_value(title):
         return None
-    card_type = infer_card_type(title, summary, tags)
+    card_type = infer_card_type(title, summary)
+    category = infer_card_category(title, summary, card_type, works)
     return {
         "title": title,
         "summary": summary,
         "evidence": evidence,
         "tags": tags,
         "card_type": card_type,
-        "score": score_card(title, summary, tags, card_type),
+        "category": category,
     }
 
 
-def fallback_candidates_from_analysis(analysis: dict[str, Any]) -> list[dict[str, Any]]:
+def fallback_candidates_from_analysis(analysis: dict[str, Any], works: list[str]) -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
-
     for item in normalize_list(analysis.get("methods")):
         if not isinstance(item, dict):
             continue
-        name = string_value(item.get("name"), item.get("title"))
-        summary = string_value(item.get("summary"), item.get("detail"), item.get("description"))
-        steps = [string_value(step) for step in normalize_list(item.get("steps")) if has_value(step)]
-        if not has_value(name):
-            continue
+        name = sanitize_text(string_value(item.get("name"), item.get("title")))
+        summary = sanitize_text(string_value(item.get("summary"), item.get("detail"), item.get("description")))
+        steps = [sanitize_text(string_value(step)) for step in normalize_list(item.get("steps")) if has_value(step)]
         detail = summary
         if steps:
-            steps_text = " -> ".join(steps)
-            detail = string_value(detail, default="")
-            detail = f"{detail} 步骤: {steps_text}".strip()
-        tags = ["method"]
-        candidates.append(
-            {
-                "title": name,
-                "summary": detail,
-                "evidence": "",
-                "tags": tags,
-                "card_type": "method",
-                "score": score_card(name, detail, tags, "method"),
-            }
-        )
+            detail = (detail + " 步骤：" + " -> ".join(steps)).strip()
+        if has_value(name):
+            candidates.append(
+                {
+                    "title": name,
+                    "summary": detail,
+                    "evidence": "",
+                    "tags": ["方法论"],
+                    "card_type": "method",
+                    "category": infer_card_category(name, detail, "method", works),
+                }
+            )
 
     for item in normalize_list(analysis.get("concepts")):
         if isinstance(item, dict):
-            name = string_value(item.get("name"), item.get("title"))
-            summary = string_value(item.get("summary"), item.get("detail"), item.get("description"))
+            title = sanitize_text(string_value(item.get("name"), item.get("title")))
+            summary = sanitize_text(string_value(item.get("summary"), item.get("detail"), item.get("description")))
         else:
-            name = string_value(item)
+            title = sanitize_text(string_value(item))
             summary = ""
-        if not has_value(name):
-            continue
-        tags = ["concept"]
-        candidates.append(
-            {
-                "title": name,
-                "summary": summary,
-                "evidence": "",
-                "tags": tags,
-                "card_type": "concept",
-                "score": score_card(name, summary, tags, "concept"),
-            }
-        )
+        if has_value(title):
+            candidates.append(
+                {
+                    "title": title,
+                    "summary": summary,
+                    "evidence": "",
+                    "tags": [],
+                    "card_type": infer_card_type(title, summary),
+                    "category": infer_card_category(title, summary, infer_card_type(title, summary), works),
+                }
+            )
 
     for item in normalize_list(analysis.get("tips_and_facts")):
         if isinstance(item, dict):
-            title = string_value(item.get("point"), item.get("name"), item.get("title"))
-            summary = string_value(item.get("detail"), item.get("summary"), item.get("description"))
+            title = sanitize_text(string_value(item.get("point"), item.get("name"), item.get("title")))
+            summary = sanitize_text(string_value(item.get("detail"), item.get("summary"), item.get("description")))
         else:
-            title = string_value(item)
+            title = sanitize_text(string_value(item))
             summary = ""
-        if not has_value(title):
-            continue
-        tags = ["tip"]
-        candidates.append(
-            {
-                "title": title,
-                "summary": summary,
-                "evidence": "",
-                "tags": tags,
-                "card_type": "tip",
-                "score": score_card(title, summary, tags, "tip"),
-            }
-        )
-
+        if has_value(title):
+            candidates.append(
+                {
+                    "title": title,
+                    "summary": summary,
+                    "evidence": "",
+                    "tags": ["方法论"] if "方法" in title else ["实践"],
+                    "card_type": "tip",
+                    "category": infer_card_category(title, summary, "tip", works),
+                }
+            )
     return candidates
 
 
-def assign_topics(card: dict[str, Any], topic_names: list[str]) -> list[str]:
-    if not topic_names:
-        return ["未分类主题"]
+def build_work_centric_candidates(analysis: dict[str, Any], works: list[str]) -> list[dict[str, Any]]:
+    if not works:
+        return []
+    summary = sanitize_text(string_value(analysis.get("content_summary"), analysis.get("summary")))
+    core_points: list[str] = []
+    for item in normalize_list(analysis.get("core_points")):
+        if isinstance(item, dict):
+            text = sanitize_text(string_value(item.get("text"), item.get("point"), item.get("summary")))
+        else:
+            text = sanitize_text(string_value(item))
+        if has_value(text):
+            core_points.append(text)
+    core_points = [item for item in core_points if has_value(item)]
+    candidates: list[dict[str, Any]] = []
+    for work in works[:2]:
+        if has_value(summary):
+            candidates.append(
+                {
+                    "title": f"《{work}》讲了什么",
+                    "summary": summary,
+                    "evidence": "",
+                    "tags": ["书籍", "阅读"],
+                    "card_type": "concept",
+                    "category": "书籍作品",
+                }
+            )
+        if core_points:
+            candidates.append(
+                {
+                    "title": f"《{work}》的关键观点",
+                    "summary": "；".join(core_points[:3]),
+                    "evidence": "",
+                    "tags": ["书籍", "观点提炼"],
+                    "card_type": "concept",
+                    "category": "书籍作品",
+                }
+            )
+    return candidates
 
-    title = normalize_text_for_matching(string_value(card.get("title")))
-    summary = normalize_text_for_matching(string_value(card.get("summary")))
-    tags = [normalize_text_for_matching(tag) for tag in normalize_list(card.get("tags")) if has_value(tag)]
 
-    matched: list[str] = []
-    for topic in topic_names:
-        aliases = topic_aliases(topic)
-        if any(alias and (alias in title or alias in summary or alias in tags) for alias in aliases):
-            matched.append(topic)
+def score_card(card: dict[str, Any], works: list[str]) -> int:
+    title = string_value(card.get("title"))
+    summary = string_value(card.get("summary"))
+    score = 0
+    if 4 <= len(title) <= 30:
+        score += 2
+    if len(summary) >= 18:
+        score += 3
+    if len(summary) >= 40:
+        score += 2
+    if string_value(card.get("card_type")) == "method":
+        score += 2
+    if any(work and work in title for work in works):
+        score += 3
+    if string_value(card.get("category")) == "书籍作品":
+        score += 1
+    return score
 
-    if matched:
-        return dedupe_strings(matched)[:3]
-    if len(topic_names) >= 2:
-        return topic_names[:2]
-    return topic_names[:1]
+
+def derive_topics(card: dict[str, Any], analysis_topics: list[str]) -> list[str]:
+    matches = topic_matches(" ".join([string_value(card.get("title")), string_value(card.get("summary")), string_value(card.get("evidence"))]))
+    topics = dedupe_strings([*matches, *analysis_topics])
+    return topics[:3] if topics else ["阅读与学习"]
 
 
-def select_cards(analysis: dict[str, Any], max_cards: int) -> list[dict[str, Any]]:
-    raw_candidates = [normalize_card_candidate(item) for item in normalize_list(analysis.get("knowledge_cards"))]
-    candidates = [candidate for candidate in raw_candidates if candidate is not None]
-    if not candidates:
-        candidates = fallback_candidates_from_analysis(analysis)
+def derive_tags(card: dict[str, Any], topic_names: list[str]) -> list[str]:
+    text = " ".join([string_value(card.get("title")), string_value(card.get("summary")), *topic_names])
+    tags: list[str] = []
+    for tag_name, keywords in TAG_RULES:
+        if any(keyword in text for keyword in keywords):
+            tags.append(tag_name)
+    tags.extend(normalize_candidate_tags(card.get("tags")))
+    tags.extend(topic_names[:2])
+    tags.extend(CATEGORY_TAGS.get(string_value(card.get("category")), []))
+    normalized = dedupe_strings([sanitize_text(tag) for tag in tags if has_value(tag)])
+    if len(normalized) < 3:
+        normalized = dedupe_strings(normalized + CATEGORY_TAGS.get(string_value(card.get("category")), []))
+    return normalized[:5]
+
+
+def select_cards(analysis: dict[str, Any], max_cards: int) -> tuple[list[dict[str, Any]], list[str], list[str]]:
+    works = find_named_works(analysis)
+    analysis_topics = normalize_topic_names(analysis.get("topic_candidates"))
+    explicit = [normalize_card_candidate(item, works) for item in normalize_list(analysis.get("knowledge_cards"))]
+    candidates = [item for item in explicit if item is not None]
+    candidates.extend(build_work_centric_candidates(analysis, works))
+    candidates.extend(fallback_candidates_from_analysis(analysis, works))
 
     unique: dict[str, dict[str, Any]] = {}
-    for candidate in candidates:
-        title = string_value(candidate.get("title"))
-        if not has_value(title):
+    for card in candidates:
+        key = normalize_text_for_matching(string_value(card.get("title")))
+        if not has_value(key):
             continue
-        key = title.lower()
+        candidate_score = score_card(card, works)
         existing = unique.get(key)
-        if existing is None or int(candidate.get("score", 0)) > int(existing.get("score", 0)):
-            unique[key] = candidate
+        if existing is None or candidate_score > int(existing.get("_score", 0)):
+            unique[key] = {**card, "_score": candidate_score}
 
-    sorted_candidates = sorted(
-        unique.values(),
-        key=lambda item: (-int(item.get("score", 0)), string_value(item.get("title"))),
-    )
-    return sorted_candidates[: max(1, max_cards)]
+    selected: list[dict[str, Any]] = []
+    for card in sorted(unique.values(), key=lambda item: (-int(item.get("_score", 0)), string_value(item.get("title")))):
+        topic_names = derive_topics(card, analysis_topics)
+        tags = derive_tags(card, topic_names)
+        selected.append(
+            {
+                "title": string_value(card.get("title")),
+                "summary": string_value(card.get("summary")),
+                "evidence": string_value(card.get("evidence")),
+                "card_type": string_value(card.get("card_type"), default="concept"),
+                "category": string_value(card.get("category"), default="概念认知"),
+                "folder_category": CATEGORY_FOLDERS.get(string_value(card.get("category")), "概念认知"),
+                "topic_names": topic_names,
+                "tags": tags[:5],
+            }
+        )
+        if len(selected) >= max(1, max_cards):
+            break
+    return selected, analysis_topics, works
 
 
 def main() -> int:
@@ -300,33 +404,8 @@ def main() -> int:
     args = parser.parse_args()
 
     analysis = load_json(args.analysis_json)
-    topic_names = normalize_topic_names(analysis.get("topic_candidates"))
-    selected_cards: list[dict[str, Any]] = []
-
-    for candidate in select_cards(analysis, args.max_cards):
-        card_topics = assign_topics(candidate, topic_names)
-        tags = dedupe_strings(
-            [
-                *normalize_candidate_tags(candidate.get("tags")),
-                "knowledge-card",
-                string_value(candidate.get("card_type"), default="concept"),
-                *card_topics,
-            ]
-        )
-        selected_cards.append(
-            {
-                "title": string_value(candidate.get("title")),
-                "summary": string_value(candidate.get("summary")),
-                "evidence": string_value(candidate.get("evidence")),
-                "card_type": string_value(candidate.get("card_type"), default="concept"),
-                "topic_names": card_topics,
-                "tags": tags,
-            }
-        )
-
-    distinct_topic_names = dedupe_strings(
-        [topic for card in selected_cards for topic in normalize_list(card.get("topic_names")) if has_value(topic)]
-    )
+    selected_cards, analysis_topics, works = select_cards(analysis, args.max_cards)
+    distinct_topics = dedupe_strings([topic for card in selected_cards for topic in normalize_list(card.get("topic_names")) if has_value(topic)])
 
     result = {
         "success": True,
@@ -344,10 +423,12 @@ def main() -> int:
         "capture_id": string_value(analysis.get("capture_id")),
         "author": string_value(analysis.get("author")),
         "published_at": string_value(analysis.get("published_at")),
+        "named_works": works,
+        "analysis_topic_names": analysis_topics,
         "selected_card_count": len(selected_cards),
         "selected_cards": selected_cards,
-        "topic_names": distinct_topic_names,
-        "topic_map_count": len(distinct_topic_names),
+        "topic_names": distinct_topics,
+        "topic_map_count": len(distinct_topics),
     }
 
     output_text = json.dumps(result, ensure_ascii=False, indent=2)

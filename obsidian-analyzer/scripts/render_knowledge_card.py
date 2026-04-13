@@ -8,6 +8,13 @@ from typing import Any
 
 AUTO_START = "<!-- AUTO-GENERATED:STEP5:START -->"
 AUTO_END = "<!-- AUTO-GENERATED:STEP5:END -->"
+CATEGORY_LABELS = {
+    "书籍作品": "书籍作品",
+    "人物": "人物",
+    "方法模型": "方法模型",
+    "概念认知": "概念认知",
+    "实践案例": "实践案例",
+}
 
 
 def configure_console_output() -> None:
@@ -44,9 +51,7 @@ def dedupe_strings(values: list[str]) -> list[str]:
     seen: set[str] = set()
     for value in values:
         normalized = string_value(value)
-        if not has_value(normalized):
-            continue
-        if normalized in seen:
+        if not has_value(normalized) or normalized in seen:
             continue
         seen.add(normalized)
         result.append(normalized)
@@ -70,7 +75,7 @@ def yaml_scalar(value: Any) -> str:
 def safe_file_name(value: str) -> str:
     invalid = set('<>:"/\\|?*')
     sanitized = "".join("_" if ch in invalid else ch for ch in value)
-    return sanitized.strip() or "untitled.md"
+    return sanitized.strip() or "untitled"
 
 
 def relative_vault_path(path_value: str, vault_path: str) -> str:
@@ -79,19 +84,14 @@ def relative_vault_path(path_value: str, vault_path: str) -> str:
     try:
         candidate = Path(path_value).resolve()
         root = Path(vault_path).resolve()
-    except OSError:
-        return ""
-    try:
         return candidate.relative_to(root).as_posix()
-    except ValueError:
+    except Exception:
         return ""
 
 
 def vault_path_or_original(path_value: str, vault_path: str) -> str:
     relative = relative_vault_path(path_value, vault_path)
-    if has_value(relative):
-        return relative
-    return string_value(path_value)
+    return relative if has_value(relative) else string_value(path_value)
 
 
 def obsidian_link(path_value: str, vault_path: str) -> str:
@@ -114,19 +114,15 @@ def parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:
     if not text.startswith("---"):
         return {}, text
     lines = text.splitlines()
-    if not lines or lines[0] != "---":
-        return {}, text
-
     data: dict[str, Any] = {}
     index = 1
-    current_list_key = ""
+    current_key = ""
     while index < len(lines):
         line = lines[index]
         if line == "---":
-            body = "\n".join(lines[index + 1 :]).strip()
-            return data, body
-        if line.startswith("  - ") and has_value(current_list_key):
-            data.setdefault(current_list_key, []).append(unquote_yaml_scalar(line[4:].strip()))
+            return data, "\n".join(lines[index + 1 :]).strip()
+        if line.startswith("  - ") and has_value(current_key):
+            data.setdefault(current_key, []).append(line[4:].strip().strip("'"))
             index += 1
             continue
         if ":" in line:
@@ -135,21 +131,14 @@ def parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:
             raw_value = raw_value.strip()
             if raw_value == "":
                 data[key] = []
-                current_list_key = key
+                current_key = key
             else:
-                data[key] = unquote_yaml_scalar(raw_value)
-                current_list_key = ""
+                data[key] = raw_value.strip("'")
+                current_key = ""
         else:
-            current_list_key = ""
+            current_key = ""
         index += 1
     return {}, text
-
-
-def unquote_yaml_scalar(value: str) -> str:
-    text = string_value(value)
-    if len(text) >= 2 and text.startswith("'") and text.endswith("'"):
-        return text[1:-1].replace("''", "'")
-    return text
 
 
 def extract_manual_body(body: str) -> str:
@@ -171,31 +160,27 @@ def normalize_manual_body(body: str) -> str:
     return "## 手动补充\n\n" + text + "\n"
 
 
-def card_type_label(card_type: str) -> str:
-    mapping = {
-        "concept": "概念卡",
-        "method": "方法卡",
-        "tip": "技巧卡",
-    }
-    return mapping.get(string_value(card_type), "知识卡")
-
-
-def build_target_path(vault_path: str, folder: str, file_name: str) -> Path:
-    return Path(vault_path).joinpath(*[part for part in folder.replace("\\", "/").split("/") if part]) / file_name
+def build_target_path(vault_path: str, folder: str, category: str, file_name: str) -> Path:
+    parts = [part for part in folder.replace("\\", "/").split("/") if part]
+    parts.extend([part for part in category.replace("\\", "/").split("/") if part])
+    return Path(vault_path).joinpath(*parts) / file_name
 
 
 def predicted_topic_map_relative_paths(topic_names: list[str], folder: str) -> list[str]:
     folder_normalized = "/".join([part for part in folder.replace("\\", "/").split("/") if part])
-    return [
-        f"{folder_normalized}/{safe_file_name(topic_name)}.md" if has_value(folder_normalized) else f"{safe_file_name(topic_name)}.md"
-        for topic_name in topic_names
-        if has_value(topic_name)
-    ]
+    return [f"{folder_normalized}/{safe_file_name(topic_name)}.md" for topic_name in topic_names if has_value(topic_name)]
 
 
-def merge_existing_list(existing_frontmatter: dict[str, Any], key: str, new_values: list[str]) -> list[str]:
-    existing_values = normalize_list(existing_frontmatter.get(key))
-    return dedupe_strings([string_value(item) for item in existing_values if has_value(item)] + new_values)
+def merge_existing_list(existing_frontmatter: dict[str, Any], key: str, new_values: list[str], limit: int | None = None) -> list[str]:
+    merged = dedupe_strings(
+        [string_value(item) for item in normalize_list(existing_frontmatter.get(key)) if has_value(item)] + new_values
+    )
+    return merged if limit is None else merged[:limit]
+
+
+def card_type_label(card_type: str) -> str:
+    mapping = {"concept": "概念卡", "method": "方法卡", "tip": "技巧卡"}
+    return mapping.get(string_value(card_type), "知识卡")
 
 
 def build_card_note(
@@ -207,8 +192,10 @@ def build_card_note(
 ) -> dict[str, Any]:
     today = datetime.now().strftime("%Y-%m-%d")
     title = string_value(card.get("title"), default="未命名知识卡")
+    category = string_value(card.get("folder_category"), card.get("category"), default="概念认知")
+    category_label = CATEGORY_LABELS.get(category, category)
     file_name = safe_file_name(title) + ".md"
-    target_path = build_target_path(vault_path, folder, file_name)
+    target_path = build_target_path(vault_path, folder, category, file_name)
 
     existing_frontmatter: dict[str, Any] = {}
     manual_body = ""
@@ -218,7 +205,11 @@ def build_card_note(
 
     source_note_path = string_value(bundle.get("source_note_path"))
     insight_note_path = string_value(bundle.get("insight_note_path"))
-
+    topic_names = merge_existing_list(
+        existing_frontmatter,
+        "topic_names",
+        [string_value(item) for item in normalize_list(card.get("topic_names")) if has_value(item)],
+    )
     source_note_paths = merge_existing_list(
         existing_frontmatter,
         "source_note_paths",
@@ -229,37 +220,24 @@ def build_card_note(
         "insight_note_paths",
         [vault_path_or_original(insight_note_path, vault_path)] if has_value(insight_note_path) else [],
     )
-    topic_names = merge_existing_list(
-        existing_frontmatter,
-        "topic_names",
-        [string_value(item) for item in normalize_list(card.get("topic_names")) if has_value(item)],
-    )
     topic_map_paths = merge_existing_list(
         existing_frontmatter,
         "topic_map_paths",
         predicted_topic_map_relative_paths(topic_names, topic_map_folder),
+    )
+    tags = merge_existing_list(
+        existing_frontmatter,
+        "tags",
+        [string_value(item) for item in normalize_list(card.get("tags")) if has_value(item)],
+        limit=5,
     )
 
     source_note_links = [obsidian_link(path, vault_path) for path in source_note_paths]
     insight_note_links = [obsidian_link(path, vault_path) for path in insight_note_paths]
     topic_map_links = [obsidian_link(path, vault_path) for path in topic_map_paths]
 
-    tags = merge_existing_list(
-        existing_frontmatter,
-        "tags",
-        dedupe_strings(
-            [
-                "knowledge-card",
-                string_value(card.get("card_type"), default="concept"),
-                *[string_value(item) for item in normalize_list(card.get("tags")) if has_value(item)],
-                *topic_names,
-            ]
-        ),
-    )
-
     created_at = string_value(existing_frontmatter.get("created_at"), default=today)
-    updated_at = today
-    summary = string_value(card.get("summary"), default="暂无摘要。")
+    summary = string_value(card.get("summary"), default="暂无")
     evidence = string_value(card.get("evidence"), default="")
 
     lines = [
@@ -267,8 +245,9 @@ def build_card_note(
         f"title: {yaml_scalar(title)}",
         "note_type: 'knowledge_card'",
         f"card_type: {yaml_scalar(string_value(card.get('card_type'), default='concept'))}",
+        f"card_category: {yaml_scalar(category_label)}",
         f"created_at: {yaml_scalar(created_at)}",
-        f"updated_at: {yaml_scalar(updated_at)}",
+        f"updated_at: {yaml_scalar(today)}",
         f"source_count: {len(source_note_paths)}",
         f"insight_count: {len(insight_note_paths)}",
         f"topic_count: {len(topic_names)}",
@@ -285,11 +264,13 @@ def build_card_note(
             f"# {title}",
             "",
             AUTO_START,
-            "## 卡片摘要",
+            "## 核心结论",
             summary,
             "",
-            "## 卡片类型",
-            f"- {card_type_label(string_value(card.get('card_type'), default='concept'))}",
+            "## 分类信息",
+            f"- 卡片类型: {card_type_label(string_value(card.get('card_type'), default='concept'))}",
+            f"- 粗粒度分类: {category_label}",
+            f"- 标签: {', '.join(tags) if tags else '暂无'}",
             "",
             "## 关联主题地图",
             *([f"- {link}" for link in topic_map_links] or ["- 暂无"]),
@@ -301,7 +282,7 @@ def build_card_note(
             *([f"- {link}" for link in source_note_links] or ["- 暂无"]),
             "",
             "## 证据与线索",
-            evidence if has_value(evidence) else "暂无。",
+            evidence if has_value(evidence) else "暂无",
             AUTO_END,
             "",
             normalize_manual_body(manual_body).rstrip(),
@@ -317,15 +298,14 @@ def build_card_note(
         "relative_note_path": relative_note_path,
         "note_body": "\n".join(lines),
         "card_type": string_value(card.get("card_type"), default="concept"),
+        "category": category_label,
+        "folder_category": category,
         "summary": summary,
         "evidence": evidence,
         "topic_names": topic_names,
         "topic_map_paths": topic_map_paths,
-        "topic_map_links": topic_map_links,
         "source_note_paths": source_note_paths,
-        "source_note_links": source_note_links,
         "insight_note_paths": insight_note_paths,
-        "insight_note_links": insight_note_links,
         "tags": tags,
     }
 
@@ -371,10 +351,10 @@ def main() -> int:
     ]
 
     if not args.dry_run and has_value(vault_path):
-        target_dir = Path(vault_path).joinpath(*[part for part in folder.replace("\\", "/").split("/") if part])
-        target_dir.mkdir(parents=True, exist_ok=True)
         for card in rendered_cards:
-            Path(card["note_path"]).write_text(card["note_body"], encoding="utf-8")
+            target_path = Path(card["note_path"])
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            target_path.write_text(card["note_body"], encoding="utf-8")
 
     result = {
         "success": True,
