@@ -12,7 +12,8 @@
       "article uses the built-in web article route inside run_clipper.ps1 by default",
       "social uses python + scripts/capture_social_playwright.py and download_social_media.ps1 by default",
       "video_metadata uses yt-dlp by default",
-      "podcast uses the built-in web metadata route inside run_clipper.ps1 and does not require a separate command"
+      "podcast uses the built-in web metadata route inside run_clipper.ps1 and does not require a separate command",
+      "set routes.podcast.runtime_profile to prompt on a new machine so the first podcast run can detect the environment, ask for a device profile, and write the choice back into local-config.json"
     ]
   },
   "obsidian": {
@@ -66,6 +67,7 @@
       "prefer_show_notes": true,
       "download_audio": true,
       "download_timeout_sec": 60,
+      "runtime_profile": "prompt",
       "asr": {
         "enabled": false,
         "command": "python",

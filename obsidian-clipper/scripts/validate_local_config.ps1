@@ -218,6 +218,7 @@ $result = [pscustomobject]@{
     recommended_next_steps = @(
         'If auth warnings exist, refresh Douyin login state with scripts/bootstrap_social_auth.py --platform douyin.',
         'If Xiaohongshu auth warnings exist, refresh Xiaohongshu login state with scripts/bootstrap_social_auth.py --platform xiaohongshu.',
+        'For a new machine, you can keep routes.podcast.runtime_profile = prompt so the first podcast run detects the environment, lets you choose CPU/GPU mode, and writes the choice back into local-config.json.',
         'If podcast ASR fallback is enabled, verify routes.podcast.asr.script points to podcast_asr_fallback.py and that the target Python environment has the chosen ASR dependency installed.',
         'If podcast diarization is enabled, verify routes.podcast.diarization.script points to podcast_speaker_diarization.py and that the selected provider plus HF token are available.',
         'After config is valid, run scripts/run_clipper.ps1 or let OpenClaw call the skill normally.'

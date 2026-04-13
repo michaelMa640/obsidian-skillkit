@@ -1,6 +1,7 @@
 import argparse
 import json
 import os
+import inspect
 import sys
 import tempfile
 from collections import OrderedDict
@@ -342,6 +343,7 @@ def load_audio_input(audio_path: str) -> dict[str, Any]:
 def run_pyannote_provider(audio_path: str, model_name: str, token_env: str, device: str) -> list[dict[str, Any]]:
     try:
         from pyannote.audio import Pipeline
+        from pyannote.core import Annotation
     except ImportError as exc:
         raise RuntimeError("pyannote.audio is not installed.") from exc
 
@@ -349,7 +351,14 @@ def run_pyannote_provider(audio_path: str, model_name: str, token_env: str, devi
     if not token:
         raise RuntimeError(f"Environment variable {token_env or 'HF_TOKEN'} is required for pyannote diarization.")
 
-    pipeline = Pipeline.from_pretrained(model_name or "pyannote/speaker-diarization-3.1", use_auth_token=token)
+    pipeline_kwargs: dict[str, Any] = {}
+    from_pretrained_signature = inspect.signature(Pipeline.from_pretrained)
+    if "token" in from_pretrained_signature.parameters:
+        pipeline_kwargs["token"] = token
+    else:
+        pipeline_kwargs["use_auth_token"] = token
+
+    pipeline = Pipeline.from_pretrained(model_name or "pyannote/speaker-diarization-3.1", **pipeline_kwargs)
     if has_value(device) and device.lower() not in {"", "auto", "cpu"}:
         try:
             import torch
@@ -358,7 +367,14 @@ def run_pyannote_provider(audio_path: str, model_name: str, token_env: str, devi
         except Exception:
             pass
 
-    diarization = pipeline(load_audio_input(audio_path))
+    diarization_output = pipeline(load_audio_input(audio_path))
+    if isinstance(diarization_output, Annotation):
+        diarization = diarization_output
+    elif hasattr(diarization_output, "speaker_diarization"):
+        diarization = diarization_output.speaker_diarization
+    else:
+        raise RuntimeError(f"Unsupported pyannote diarization output type: {type(diarization_output)!r}")
+
     turns: list[dict[str, Any]] = []
     for turn, _, speaker in diarization.itertracks(yield_label=True):
         turns.append(

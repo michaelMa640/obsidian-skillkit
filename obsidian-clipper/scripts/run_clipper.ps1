@@ -531,6 +531,416 @@ function Get-ConfiguredPathValue {
     $value
 }
 
+function Test-IsInteractiveHost {
+    try {
+        if (-not [Environment]::UserInteractive) { return $false }
+        return ($null -ne $Host.UI -and $null -ne $Host.UI.RawUI)
+    } catch {
+        return $false
+    }
+}
+
+function Test-IsPythonCommand {
+    param([string]$Command)
+    if (-not (Test-HasValue $Command)) { return $false }
+    $leaf = [System.IO.Path]::GetFileNameWithoutExtension($Command.Trim()).ToLowerInvariant()
+    return ($leaf -like 'python*' -or $leaf -eq 'py')
+}
+
+function Set-NestedObjectValue {
+    param(
+        $Object,
+        [string[]]$Path,
+        $Value
+    )
+
+    if ($null -eq $Object -or $null -eq $Path -or $Path.Count -eq 0) { return $Object }
+
+    $current = $Object
+    for ($index = 0; $index -lt ($Path.Count - 1); $index++) {
+        $segment = $Path[$index]
+        $nextValue = Get-DataValue -Data $current -Name $segment
+        if ($null -eq $nextValue) {
+            $nextValue = [pscustomobject]@{}
+            Set-ObjectField -Object $current -Name $segment -Value $nextValue | Out-Null
+        }
+        $current = $nextValue
+    }
+
+    Set-ObjectField -Object $current -Name $Path[$Path.Count - 1] -Value $Value | Out-Null
+    return $Object
+}
+
+function Save-Config {
+    param(
+        [string]$Path,
+        $Config
+    )
+    Write-Utf8Text -Path $Path -Content ($Config | ConvertTo-Json -Depth 64)
+}
+
+function Invoke-PythonJsonProbe {
+    param(
+        [string]$Command,
+        [string]$ProbeCode
+    )
+
+    if (-not (Test-IsPythonCommand -Command $Command)) {
+        return [pscustomobject]@{
+            success = $false
+            error = "Command is not a Python executable: $Command"
+            data = $null
+        }
+    }
+
+    $commandOutput = ''
+    try {
+        $commandOutput = (@($ProbeCode) | & $Command '-' 2>&1 | Out-String).Trim()
+    } catch {
+        return [pscustomobject]@{
+            success = $false
+            error = $_.Exception.Message
+            data = $null
+        }
+    }
+
+    if ($LASTEXITCODE -ne 0) {
+        return [pscustomobject]@{
+            success = $false
+            error = if (Test-HasValue $commandOutput) { $commandOutput } else { "Probe command failed with exit code $LASTEXITCODE." }
+            data = $null
+        }
+    }
+
+    $lines = @($commandOutput -split "\r?\n" | Where-Object { Test-HasValue $_ })
+    $jsonLine = ''
+    for ($index = $lines.Count - 1; $index -ge 0; $index--) {
+        $candidate = [string]$lines[$index]
+        if ($candidate.TrimStart().StartsWith('{')) {
+            $jsonLine = $candidate
+            break
+        }
+    }
+    if (-not (Test-HasValue $jsonLine) -and (Test-HasValue $commandOutput)) {
+        $jsonLine = $commandOutput
+    }
+
+    try {
+        return [pscustomobject]@{
+            success = $true
+            error = ''
+            data = (ConvertFrom-JsonCompat -Json $jsonLine -Depth 20)
+        }
+    } catch {
+        return [pscustomobject]@{
+            success = $false
+            error = "Failed to parse probe JSON. Raw output: $commandOutput"
+            data = $null
+        }
+    }
+}
+
+function Get-PodcastAsrRuntimeProbe {
+    param($AsrConfig)
+
+    $probe = [ordered]@{
+        enabled = $false
+        command = ''
+        supports_cuda = $false
+        python_executable = ''
+        torch_cuda_available = $false
+        ctranslate2_cuda_device_count = 0
+        device_name = ''
+        status = 'not_enabled'
+        status_message = 'ASR is disabled.'
+    }
+
+    if ($null -eq $AsrConfig) { return [pscustomobject]$probe }
+    $probe.enabled = Get-BoolValueFromData -Data $AsrConfig -Name 'enabled' -DefaultValue $false
+    $probe.command = Get-ConfiguredPathValue -Object $AsrConfig -PropertyName 'command'
+    if (-not $probe.enabled) { return [pscustomobject]$probe }
+    if (-not (Test-HasValue $probe.command)) {
+        $probe.status = 'missing_command'
+        $probe.status_message = 'ASR command is not configured.'
+        return [pscustomobject]$probe
+    }
+
+    $probeCode = @'
+import json
+result = {
+  "python_executable": "",
+  "supports_cuda": False,
+  "torch_cuda_available": False,
+  "ctranslate2_cuda_device_count": 0,
+  "device_name": "",
+  "errors": []
+}
+try:
+    import sys
+    result["python_executable"] = sys.executable
+except Exception as exc:
+    result["errors"].append(f"sys:{exc}")
+try:
+    import torch
+    result["torch_cuda_available"] = bool(torch.cuda.is_available())
+    if result["torch_cuda_available"]:
+        result["device_name"] = torch.cuda.get_device_name(0)
+except Exception as exc:
+    result["errors"].append(f"torch:{exc}")
+try:
+    import ctranslate2
+    getter = getattr(ctranslate2, "get_cuda_device_count", None)
+    if callable(getter):
+        result["ctranslate2_cuda_device_count"] = int(getter())
+except Exception as exc:
+    result["errors"].append(f"ctranslate2:{exc}")
+result["supports_cuda"] = result["ctranslate2_cuda_device_count"] > 0
+print(json.dumps(result, ensure_ascii=False))
+'@
+
+    $probeResult = Invoke-PythonJsonProbe -Command $probe.command -ProbeCode $probeCode
+    if (-not $probeResult.success -or $null -eq $probeResult.data) {
+        $probe.status = 'probe_failed'
+        $probe.status_message = "ASR runtime probe failed: $($probeResult.error)"
+        return [pscustomobject]$probe
+    }
+
+    $probe.python_executable = Get-StringValue -Data $probeResult.data -Name 'python_executable' -DefaultValue ''
+    $probe.supports_cuda = Get-BoolValueFromData -Data $probeResult.data -Name 'supports_cuda' -DefaultValue $false
+    $probe.torch_cuda_available = Get-BoolValueFromData -Data $probeResult.data -Name 'torch_cuda_available' -DefaultValue $false
+    $probe.ctranslate2_cuda_device_count = [int](Get-StringValue -Data $probeResult.data -Name 'ctranslate2_cuda_device_count' -DefaultValue '0')
+    $probe.device_name = Get-StringValue -Data $probeResult.data -Name 'device_name' -DefaultValue ''
+    $probe.status = if ($probe.supports_cuda) { 'gpu_ready' } else { 'cpu_only' }
+    $probe.status_message = if ($probe.supports_cuda) {
+        "ASR runtime can use GPU$($(if (Test-HasValue $probe.device_name) { ": $($probe.device_name)" } else { '' }))."
+    } elseif ($probe.torch_cuda_available) {
+        'ASR runtime sees CUDA in torch, but ctranslate2 GPU support is not available.'
+    } else {
+        'ASR runtime is currently CPU-only.'
+    }
+    [pscustomobject]$probe
+}
+
+function Get-PodcastDiarizationRuntimeProbe {
+    param($DiarizationConfig)
+
+    $probe = [ordered]@{
+        enabled = $false
+        command = ''
+        supports_cuda = $false
+        python_executable = ''
+        torch_cuda_available = $false
+        device_name = ''
+        status = 'not_enabled'
+        status_message = 'Diarization is disabled.'
+    }
+
+    if ($null -eq $DiarizationConfig) { return [pscustomobject]$probe }
+    $probe.enabled = Get-BoolValueFromData -Data $DiarizationConfig -Name 'enabled' -DefaultValue $false
+    $probe.command = Get-ConfiguredPathValue -Object $DiarizationConfig -PropertyName 'command'
+    if (-not $probe.enabled) { return [pscustomobject]$probe }
+    if (-not (Test-HasValue $probe.command)) {
+        $probe.status = 'missing_command'
+        $probe.status_message = 'Diarization command is not configured.'
+        return [pscustomobject]$probe
+    }
+
+    $probeCode = @'
+import json
+result = {
+  "python_executable": "",
+  "supports_cuda": False,
+  "torch_cuda_available": False,
+  "device_name": "",
+  "errors": []
+}
+try:
+    import sys
+    result["python_executable"] = sys.executable
+except Exception as exc:
+    result["errors"].append(f"sys:{exc}")
+try:
+    import torch
+    result["torch_cuda_available"] = bool(torch.cuda.is_available())
+    result["supports_cuda"] = result["torch_cuda_available"]
+    if result["torch_cuda_available"]:
+        result["device_name"] = torch.cuda.get_device_name(0)
+except Exception as exc:
+    result["errors"].append(f"torch:{exc}")
+print(json.dumps(result, ensure_ascii=False))
+'@
+
+    $probeResult = Invoke-PythonJsonProbe -Command $probe.command -ProbeCode $probeCode
+    if (-not $probeResult.success -or $null -eq $probeResult.data) {
+        $probe.status = 'probe_failed'
+        $probe.status_message = "Diarization runtime probe failed: $($probeResult.error)"
+        return [pscustomobject]$probe
+    }
+
+    $probe.python_executable = Get-StringValue -Data $probeResult.data -Name 'python_executable' -DefaultValue ''
+    $probe.supports_cuda = Get-BoolValueFromData -Data $probeResult.data -Name 'supports_cuda' -DefaultValue $false
+    $probe.torch_cuda_available = Get-BoolValueFromData -Data $probeResult.data -Name 'torch_cuda_available' -DefaultValue $false
+    $probe.device_name = Get-StringValue -Data $probeResult.data -Name 'device_name' -DefaultValue ''
+    $probe.status = if ($probe.supports_cuda) { 'gpu_ready' } else { 'cpu_only' }
+    $probe.status_message = if ($probe.supports_cuda) {
+        "Diarization runtime can use GPU$($(if (Test-HasValue $probe.device_name) { ": $($probe.device_name)" } else { '' }))."
+    } else {
+        'Diarization runtime is currently CPU-only.'
+    }
+    [pscustomobject]$probe
+}
+
+function New-PodcastRuntimeProfileOption {
+    param(
+        [string]$Id,
+        [string]$Label,
+        [string]$Description,
+        [string]$AsrDevice,
+        [string]$AsrComputeType,
+        [string]$DiarizationDevice,
+        [bool]$Recommended = $false
+    )
+
+    [pscustomobject]@{
+        id = $Id
+        label = $Label
+        description = $Description
+        asr_device = $AsrDevice
+        asr_compute_type = $AsrComputeType
+        diarization_device = $DiarizationDevice
+        recommended = $Recommended
+    }
+}
+
+function Get-PodcastRuntimeProfileOptions {
+    param($Capabilities)
+
+    $options = New-Object System.Collections.ArrayList
+    $asrGpuReady = ($null -ne $Capabilities.asr -and $Capabilities.asr.supports_cuda)
+    $diarizationGpuReady = ($null -ne $Capabilities.diarization -and $Capabilities.diarization.supports_cuda)
+
+    if ($asrGpuReady -and $diarizationGpuReady) {
+        $null = $options.Add((New-PodcastRuntimeProfileOption -Id 'gpu_balanced' -Label 'GPU 平衡' -Description 'ASR 与 diarization 都使用 GPU，优先速度与整体体验。' -AsrDevice 'cuda' -AsrComputeType 'float16' -DiarizationDevice 'cuda' -Recommended $true))
+        $null = $options.Add((New-PodcastRuntimeProfileOption -Id 'gpu_memory_saver' -Label 'GPU 省显存' -Description 'ASR 使用更保守的 GPU 精度，适合显存较紧张的机器。' -AsrDevice 'cuda' -AsrComputeType 'int8_float16' -DiarizationDevice 'cuda'))
+        $null = $options.Add((New-PodcastRuntimeProfileOption -Id 'cpu_compat' -Label 'CPU 兼容' -Description '全部走 CPU，速度较慢，但兼容性最高。' -AsrDevice 'cpu' -AsrComputeType 'int8' -DiarizationDevice 'cpu'))
+        return @($options)
+    }
+
+    if ($asrGpuReady -and -not $diarizationGpuReady) {
+        $null = $options.Add((New-PodcastRuntimeProfileOption -Id 'gpu_asr_cpu_diarization' -Label 'GPU ASR + CPU 分离' -Description 'ASR 走 GPU，speaker diarization 继续走 CPU。' -AsrDevice 'cuda' -AsrComputeType 'float16' -DiarizationDevice 'cpu' -Recommended $true))
+        $null = $options.Add((New-PodcastRuntimeProfileOption -Id 'cpu_compat' -Label 'CPU 兼容' -Description '全部走 CPU，速度较慢，但兼容性最高。' -AsrDevice 'cpu' -AsrComputeType 'int8' -DiarizationDevice 'cpu'))
+        return @($options)
+    }
+
+    if (-not $asrGpuReady -and $diarizationGpuReady) {
+        $null = $options.Add((New-PodcastRuntimeProfileOption -Id 'cpu_asr_gpu_diarization' -Label 'CPU ASR + GPU 分离' -Description 'ASR 继续走 CPU，speaker diarization 使用 GPU。' -AsrDevice 'cpu' -AsrComputeType 'int8' -DiarizationDevice 'cuda' -Recommended $true))
+        $null = $options.Add((New-PodcastRuntimeProfileOption -Id 'cpu_compat' -Label 'CPU 兼容' -Description '全部走 CPU，速度较慢，但兼容性最高。' -AsrDevice 'cpu' -AsrComputeType 'int8' -DiarizationDevice 'cpu'))
+        return @($options)
+    }
+
+    $null = $options.Add((New-PodcastRuntimeProfileOption -Id 'cpu_compat' -Label 'CPU 兼容' -Description '当前环境未检测到可用 GPU 运行时，使用 CPU 默认配置。' -AsrDevice 'cpu' -AsrComputeType 'int8' -DiarizationDevice 'cpu' -Recommended $true))
+    @($options)
+}
+
+function Select-PodcastRuntimeProfileOption {
+    param(
+        [object[]]$Options,
+        $Capabilities,
+        [bool]$Interactive
+    )
+
+    $recommendedOption = $Options | Where-Object { $_.recommended } | Select-Object -First 1
+    if ($null -eq $recommendedOption) { $recommendedOption = $Options | Select-Object -First 1 }
+    $defaultChoice = ([array]::IndexOf($Options, $recommendedOption)) + 1
+
+    Write-Host ''
+    Write-Host '检测到播客运行环境如下：'
+    if ($null -ne $Capabilities.asr) {
+        Write-Host ("  - ASR       : {0}" -f $Capabilities.asr.status_message)
+    }
+    if ($null -ne $Capabilities.diarization) {
+        Write-Host ("  - Diarization: {0}" -f $Capabilities.diarization.status_message)
+    }
+    Write-Host ''
+    Write-Host '请选择播客设备档位：'
+    for ($index = 0; $index -lt $Options.Count; $index++) {
+        $option = $Options[$index]
+        $recommendedMark = if ($option.recommended) { '（推荐）' } else { '' }
+        Write-Host ("  [{0}] {1}{2}" -f ($index + 1), $option.label, $recommendedMark)
+        Write-Host ("      {0}" -f $option.description)
+    }
+
+    if (-not $Interactive) {
+        Write-Host ''
+        Write-Host ("当前环境非交互模式，已自动使用推荐项：[{0}] {1}" -f $defaultChoice, $recommendedOption.label)
+        return $recommendedOption
+    }
+
+    Write-Host ''
+    $rawChoice = Read-Host ("请输入序号，直接回车使用推荐项 [{0}]" -f $defaultChoice)
+    if (-not (Test-HasValue $rawChoice)) { return $recommendedOption }
+    $parsedChoice = 0
+    if (-not [int]::TryParse($rawChoice, [ref]$parsedChoice)) {
+        Write-Host '输入无法识别，已回退到推荐项。'
+        return $recommendedOption
+    }
+    if ($parsedChoice -lt 1 -or $parsedChoice -gt $Options.Count) {
+        Write-Host '输入超出范围，已回退到推荐项。'
+        return $recommendedOption
+    }
+    return $Options[$parsedChoice - 1]
+}
+
+function Resolve-PodcastRuntimeSelection {
+    param(
+        $Config,
+        [string]$ConfigPath
+    )
+
+    $podcastConfig = if ($null -ne $Config.routes) { Get-DataValue -Data $Config.routes -Name 'podcast' } else { $null }
+    if ($null -eq $podcastConfig) { return $Config }
+
+    $runtimeProfile = Get-StringValue -Data $podcastConfig -Name 'runtime_profile' -DefaultValue ''
+    $asrConfig = Get-DataValue -Data $podcastConfig -Name 'asr'
+    $diarizationConfig = Get-DataValue -Data $podcastConfig -Name 'diarization'
+    $asrDevice = if ($null -ne $asrConfig) { Get-StringValue -Data $asrConfig -Name 'device' -DefaultValue 'auto' } else { '' }
+    $diarizationDevice = if ($null -ne $diarizationConfig) { Get-StringValue -Data $diarizationConfig -Name 'device' -DefaultValue 'cpu' } else { '' }
+    $requiresSelection = ($runtimeProfile.Trim().ToLowerInvariant() -in @('prompt', 'ask')) -or ($asrDevice.Trim().ToLowerInvariant() -eq 'prompt') -or ($diarizationDevice.Trim().ToLowerInvariant() -eq 'prompt')
+    if (-not $requiresSelection) { return $Config }
+
+    $capabilities = [pscustomobject]@{
+        asr = Get-PodcastAsrRuntimeProbe -AsrConfig $asrConfig
+        diarization = Get-PodcastDiarizationRuntimeProbe -DiarizationConfig $diarizationConfig
+    }
+    $options = @(Get-PodcastRuntimeProfileOptions -Capabilities $capabilities)
+    if ($options.Count -eq 0) { return $Config }
+
+    $selectedOption = Select-PodcastRuntimeProfileOption -Options $options -Capabilities $capabilities -Interactive (Test-IsInteractiveHost)
+    Set-NestedObjectValue -Object $Config -Path @('routes', 'podcast', 'runtime_profile') -Value $selectedOption.id | Out-Null
+    if ($null -ne $asrConfig) {
+        Set-NestedObjectValue -Object $Config -Path @('routes', 'podcast', 'asr', 'device') -Value $selectedOption.asr_device | Out-Null
+        Set-NestedObjectValue -Object $Config -Path @('routes', 'podcast', 'asr', 'compute_type') -Value $selectedOption.asr_compute_type | Out-Null
+    }
+    if ($null -ne $diarizationConfig) {
+        Set-NestedObjectValue -Object $Config -Path @('routes', 'podcast', 'diarization', 'device') -Value $selectedOption.diarization_device | Out-Null
+    }
+
+    $configLeaf = [System.IO.Path]::GetFileName($ConfigPath)
+    $canPersist = (Test-HasValue $ConfigPath) -and ($configLeaf -ine 'local-config.example.json')
+    if ($canPersist) {
+        Save-Config -Path $ConfigPath -Config $Config
+        Write-Host ''
+        Write-Host ("已保存播客设备档位：{0}" -f $selectedOption.label)
+        Write-Host ("配置已写回：{0}" -f $ConfigPath)
+    } else {
+        Write-Host ''
+        Write-Host ("已临时应用播客设备档位：{0}" -f $selectedOption.label)
+        Write-Host '当前使用的是示例配置文件，未将选择写回磁盘。复制为 local-config.json 后可持久化。'
+    }
+
+    return $Config
+}
+
 function Get-SocialPlatformAuthConfig {
     param($Config, [string]$Platform)
     if ($null -eq $Config.routes -or $null -eq $Config.routes.social) { return $null }
@@ -2681,6 +3091,7 @@ try {
     }
     $resolvedConfigPath = $ConfigPath
     $config = Get-Config -Path $resolvedConfigPath
+    $config = Resolve-PodcastRuntimeSelection -Config $config -ConfigPath $resolvedConfigPath
     $resolvedVaultPath = Get-ResolvedVaultPath -Config $config -VaultPath $VaultPath
     $defaultDebugDirectory = Get-DefaultDebugDirectory -Config $config -RequestedDebugDirectory $DebugDirectory
 
