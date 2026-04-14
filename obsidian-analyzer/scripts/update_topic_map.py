@@ -5,9 +5,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from topic_taxonomy import canonicalize_topic_names, load_topic_taxonomy, topic_aliases
+
 
 AUTO_START = "<!-- AUTO-GENERATED:STEP5:START -->"
 AUTO_END = "<!-- AUTO-GENERATED:STEP5:END -->"
+TOPIC_TAXONOMY = load_topic_taxonomy()
 
 
 def configure_console_output() -> None:
@@ -175,6 +178,26 @@ def build_target_path(vault_path: str, folder: str, file_name: str) -> Path:
     return Path(vault_path).joinpath(*[part for part in folder.replace("\\", "/").split("/") if part]) / file_name
 
 
+def existing_topic_map_paths(vault_path: str, folder: str, topic_name: str) -> list[Path]:
+    paths: list[Path] = []
+    seen: set[str] = set()
+    for alias in topic_aliases(topic_name, TOPIC_TAXONOMY):
+        candidate = build_target_path(vault_path, folder, safe_file_name(alias) + ".md")
+        candidate_key = str(candidate).lower()
+        if candidate_key in seen or not candidate.exists():
+            continue
+        seen.add(candidate_key)
+        paths.append(candidate)
+    return paths
+
+
+def flatten_existing_values(frontmatters: list[dict[str, Any]], key: str) -> list[str]:
+    values: list[str] = []
+    for frontmatter in frontmatters:
+        values.extend([string_value(item) for item in normalize_list(frontmatter.get(key)) if has_value(item)])
+    return dedupe_strings(values)
+
+
 def merge_existing_list(existing_frontmatter: dict[str, Any], key: str, new_values: list[str]) -> list[str]:
     existing_values = normalize_list(existing_frontmatter.get(key))
     return dedupe_strings([string_value(item) for item in existing_values if has_value(item)] + new_values)
@@ -186,7 +209,7 @@ def build_topic_map_notes(cards_manifest: dict[str, Any], vault_path: str, folde
     for card in normalize_list(cards_manifest.get("rendered_cards")):
         if not isinstance(card, dict):
             continue
-        for topic_name in normalize_list(card.get("topic_names")):
+        for topic_name in canonicalize_topic_names(card.get("topic_names"), taxonomy=TOPIC_TAXONOMY, default_topic=""):
             topic = string_value(topic_name)
             if not has_value(topic):
                 continue
@@ -197,11 +220,28 @@ def build_topic_map_notes(cards_manifest: dict[str, Any], vault_path: str, folde
         file_name = safe_file_name(topic_name) + ".md"
         target_path = build_target_path(vault_path, folder, file_name)
 
-        existing_frontmatter: dict[str, Any] = {}
+        existing_frontmatters: list[dict[str, Any]] = []
         manual_body = ""
-        if target_path.exists():
-            existing_frontmatter, existing_body = parse_frontmatter(target_path.read_text(encoding="utf-8"))
-            manual_body = extract_manual_body(existing_body)
+        for existing_path in existing_topic_map_paths(vault_path, folder, topic_name):
+            frontmatter, existing_body = parse_frontmatter(existing_path.read_text(encoding="utf-8"))
+            existing_frontmatters.append(frontmatter)
+            if not has_value(manual_body):
+                manual_body = extract_manual_body(existing_body)
+
+        existing_frontmatter: dict[str, Any] = {
+            "knowledge_card_paths": flatten_existing_values(existing_frontmatters, "knowledge_card_paths"),
+            "insight_note_paths": flatten_existing_values(existing_frontmatters, "insight_note_paths"),
+            "source_note_paths": flatten_existing_values(existing_frontmatters, "source_note_paths"),
+            "tags": flatten_existing_values(existing_frontmatters, "tags"),
+            "created_at": next(
+                (
+                    string_value(frontmatter.get("created_at"))
+                    for frontmatter in existing_frontmatters
+                    if has_value(frontmatter.get("created_at"))
+                ),
+                "",
+            ),
+        }
 
         cards = grouped_cards[topic_name]
         knowledge_card_paths = merge_existing_list(

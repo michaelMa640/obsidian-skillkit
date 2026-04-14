@@ -6,6 +6,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from topic_taxonomy import canonicalize_topic_names, load_topic_taxonomy
+
+
+TOPIC_TAXONOMY = load_topic_taxonomy()
+
 
 def load_json(path: str) -> dict[str, Any]:
     return json.loads(Path(path).read_text(encoding="utf-8"))
@@ -425,7 +430,11 @@ def build_note(analysis: dict[str, Any], folder: str, vault_path: str) -> dict[s
     speaker_annotated_transcript_path_value = vault_path_or_original(speaker_annotated_transcript_path, vault_path)
     speakers_path_value = vault_path_or_original(speakers_path, vault_path)
     video_path_value = vault_path_or_original(video_path, vault_path)
-    topic_names = extract_named_values(analysis.get("topic_candidates"), "name", "title", "topic")
+    topic_names = canonicalize_topic_names(
+        extract_named_values(analysis.get("topic_candidates"), "name", "title", "topic"),
+        taxonomy=TOPIC_TAXONOMY,
+        default_topic="",
+    )
     knowledge_card_titles = extract_named_values(analysis.get("knowledge_cards"), "title", "name")
     speaker_names = extract_named_values(analysis.get("speaker_map"), "speaker", "name", "title")
     insight_tags = dedupe_strings(
@@ -536,7 +545,7 @@ def build_note(analysis: dict[str, Any], folder: str, vault_path: str) -> dict[s
         *lines_from_cards(analysis.get("knowledge_cards"), empty_text="- 暂无"),
         "",
         "## 关联主题",
-        *lines_from_topics(analysis.get("topic_candidates"), empty_text="- 暂无"),
+        *([f"- {topic}" for topic in topic_names] or ["- 暂无"]),
         "",
         "## 可行动建议",
         *lines_from_string_list(analysis.get("action_items"), empty_text="- 暂无"),

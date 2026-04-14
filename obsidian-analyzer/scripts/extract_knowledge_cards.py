@@ -5,6 +5,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from topic_taxonomy import canonicalize_topic_names, default_topic_name, load_topic_taxonomy
+
 
 SOURCE_PREFIX_PATTERNS = [
     re.compile(r"^(本期节目|这期节目|本期播客|这期播客|节目里|节目中|播客里|播客中|主播提到|嘉宾提到|文章提到|作者提到)[，,:：\s]*"),
@@ -50,6 +52,7 @@ CATEGORY_TAGS = {
     "实践案例": ["实践", "案例", "方法论"],
 }
 WORK_PATTERN = re.compile(r"《([^》]{1,40})》")
+TOPIC_TAXONOMY = load_topic_taxonomy()
 
 
 def configure_console_output() -> None:
@@ -112,29 +115,11 @@ def sanitize_text(value: str) -> str:
 
 
 def topic_matches(text: str) -> list[str]:
-    normalized = normalize_text_for_matching(text)
-    matches: list[str] = []
-    for topic_name, keywords in TOPIC_RULES:
-        if any(normalize_text_for_matching(keyword) in normalized for keyword in keywords):
-            matches.append(topic_name)
-    return dedupe_strings(matches)
+    return canonicalize_topic_names([text], taxonomy=TOPIC_TAXONOMY, default_topic="")
 
 
 def normalize_topic_names(values: Any) -> list[str]:
-    names: list[str] = []
-    for item in normalize_list(values):
-        if isinstance(item, dict):
-            text = string_value(item.get("name"), item.get("title"), item.get("topic"))
-        else:
-            text = string_value(item)
-        if not has_value(text):
-            continue
-        matches = topic_matches(text)
-        if matches:
-            names.extend(matches)
-        else:
-            names.append(text)
-    return dedupe_strings(names)
+    return canonicalize_topic_names(values, taxonomy=TOPIC_TAXONOMY, default_topic="")
 
 
 def find_named_works(analysis: dict[str, Any]) -> list[str]:
@@ -336,7 +321,9 @@ def score_card(card: dict[str, Any], works: list[str]) -> int:
 def derive_topics(card: dict[str, Any], analysis_topics: list[str]) -> list[str]:
     matches = topic_matches(" ".join([string_value(card.get("title")), string_value(card.get("summary")), string_value(card.get("evidence"))]))
     topics = dedupe_strings([*matches, *analysis_topics])
-    return topics[:3] if topics else ["阅读与学习"]
+    if topics:
+        return topics[:3]
+    return [default_topic_name(TOPIC_TAXONOMY)]
 
 
 def derive_tags(card: dict[str, Any], topic_names: list[str]) -> list[str]:

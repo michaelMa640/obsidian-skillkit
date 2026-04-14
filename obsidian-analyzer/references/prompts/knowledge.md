@@ -27,6 +27,10 @@ Output rules:
    - its key viewpoints or themes
    - why it is useful or worth reading
 9. `topic_candidates` should prefer broad, reusable themes instead of source titles or episode titles.
+   - prefer these standard themes when applicable:
+     `阅读与学习` `书籍与作品` `人物传记` `决策与选择` `方法论` `自我成长`
+     `心理与情绪` `哲学与价值观` `创作与表达` `内容创作` `职业与发展`
+     `家庭与关系` `教育与养育` `电影与表演` `商业与产品` `社会与文化`
 10. If the source is weak or incomplete, keep fields empty or brief instead of hallucinating.
 11. When timestamps or speakers are missing, leave those arrays empty.
 12. If `transcript_segments`, `speaker_annotated_transcript`, or `speaker_map_seed` exist in the payload, prefer them over guessing from plain transcript text.

@@ -5,9 +5,18 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from topic_taxonomy import (
+    canonicalize_topic_map_paths,
+    canonicalize_topic_names,
+    default_topic_name,
+    load_topic_taxonomy,
+    topic_map_relative_paths,
+)
+
 
 AUTO_START = "<!-- AUTO-GENERATED:STEP5:START -->"
 AUTO_END = "<!-- AUTO-GENERATED:STEP5:END -->"
+TOPIC_TAXONOMY = load_topic_taxonomy()
 CATEGORY_LABELS = {
     "书籍作品": "书籍作品",
     "人物": "人物",
@@ -167,8 +176,7 @@ def build_target_path(vault_path: str, folder: str, category: str, file_name: st
 
 
 def predicted_topic_map_relative_paths(topic_names: list[str], folder: str) -> list[str]:
-    folder_normalized = "/".join([part for part in folder.replace("\\", "/").split("/") if part])
-    return [f"{folder_normalized}/{safe_file_name(topic_name)}.md" for topic_name in topic_names if has_value(topic_name)]
+    return topic_map_relative_paths(topic_names, folder, TOPIC_TAXONOMY)
 
 
 def merge_existing_list(existing_frontmatter: dict[str, Any], key: str, new_values: list[str], limit: int | None = None) -> list[str]:
@@ -205,11 +213,20 @@ def build_card_note(
 
     source_note_path = string_value(bundle.get("source_note_path"))
     insight_note_path = string_value(bundle.get("insight_note_path"))
-    topic_names = merge_existing_list(
-        existing_frontmatter,
-        "topic_names",
-        [string_value(item) for item in normalize_list(card.get("topic_names")) if has_value(item)],
+    topic_names = canonicalize_topic_names(
+        [
+            *normalize_list(existing_frontmatter.get("topic_names")),
+            *[string_value(item) for item in normalize_list(card.get("topic_names")) if has_value(item)],
+        ],
+        taxonomy=TOPIC_TAXONOMY,
+        default_topic="",
     )
+    if not topic_names:
+        topic_names = canonicalize_topic_names(
+            normalize_list(card.get("topic_names")),
+            taxonomy=TOPIC_TAXONOMY,
+            default_topic=default_topic_name(TOPIC_TAXONOMY),
+        )
     source_note_paths = merge_existing_list(
         existing_frontmatter,
         "source_note_paths",
@@ -220,10 +237,9 @@ def build_card_note(
         "insight_note_paths",
         [vault_path_or_original(insight_note_path, vault_path)] if has_value(insight_note_path) else [],
     )
-    topic_map_paths = merge_existing_list(
-        existing_frontmatter,
-        "topic_map_paths",
-        predicted_topic_map_relative_paths(topic_names, topic_map_folder),
+    topic_map_paths = dedupe_strings(
+        canonicalize_topic_map_paths(existing_frontmatter.get("topic_map_paths"), topic_map_folder, TOPIC_TAXONOMY)
+        + predicted_topic_map_relative_paths(topic_names, topic_map_folder)
     )
     tags = merge_existing_list(
         existing_frontmatter,
