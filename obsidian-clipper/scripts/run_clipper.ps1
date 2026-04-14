@@ -822,23 +822,9 @@ function Get-PodcastRuntimeProfileOptions {
     if ($asrGpuReady -and $diarizationGpuReady) {
         $null = $options.Add((New-PodcastRuntimeProfileOption -Id 'gpu_balanced' -Label 'GPU 平衡' -Description 'ASR 与 diarization 都使用 GPU，优先速度与整体体验。' -AsrDevice 'cuda' -AsrComputeType 'float16' -DiarizationDevice 'cuda' -Recommended $true))
         $null = $options.Add((New-PodcastRuntimeProfileOption -Id 'gpu_memory_saver' -Label 'GPU 省显存' -Description 'ASR 使用更保守的 GPU 精度，适合显存较紧张的机器。' -AsrDevice 'cuda' -AsrComputeType 'int8_float16' -DiarizationDevice 'cuda'))
-        $null = $options.Add((New-PodcastRuntimeProfileOption -Id 'cpu_compat' -Label 'CPU 兼容' -Description '全部走 CPU，速度较慢，但兼容性最高。' -AsrDevice 'cpu' -AsrComputeType 'int8' -DiarizationDevice 'cpu'))
         return @($options)
     }
 
-    if ($asrGpuReady -and -not $diarizationGpuReady) {
-        $null = $options.Add((New-PodcastRuntimeProfileOption -Id 'gpu_asr_cpu_diarization' -Label 'GPU ASR + CPU 分离' -Description 'ASR 走 GPU，speaker diarization 继续走 CPU。' -AsrDevice 'cuda' -AsrComputeType 'float16' -DiarizationDevice 'cpu' -Recommended $true))
-        $null = $options.Add((New-PodcastRuntimeProfileOption -Id 'cpu_compat' -Label 'CPU 兼容' -Description '全部走 CPU，速度较慢，但兼容性最高。' -AsrDevice 'cpu' -AsrComputeType 'int8' -DiarizationDevice 'cpu'))
-        return @($options)
-    }
-
-    if (-not $asrGpuReady -and $diarizationGpuReady) {
-        $null = $options.Add((New-PodcastRuntimeProfileOption -Id 'cpu_asr_gpu_diarization' -Label 'CPU ASR + GPU 分离' -Description 'ASR 继续走 CPU，speaker diarization 使用 GPU。' -AsrDevice 'cpu' -AsrComputeType 'int8' -DiarizationDevice 'cuda' -Recommended $true))
-        $null = $options.Add((New-PodcastRuntimeProfileOption -Id 'cpu_compat' -Label 'CPU 兼容' -Description '全部走 CPU，速度较慢，但兼容性最高。' -AsrDevice 'cpu' -AsrComputeType 'int8' -DiarizationDevice 'cpu'))
-        return @($options)
-    }
-
-    $null = $options.Add((New-PodcastRuntimeProfileOption -Id 'cpu_compat' -Label 'CPU 兼容' -Description '当前环境未检测到可用 GPU 运行时，使用 CPU 默认配置。' -AsrDevice 'cpu' -AsrComputeType 'int8' -DiarizationDevice 'cpu' -Recommended $true))
     @($options)
 }
 
@@ -913,7 +899,11 @@ function Resolve-PodcastRuntimeSelection {
         diarization = Get-PodcastDiarizationRuntimeProbe -DiarizationConfig $diarizationConfig
     }
     $options = @(Get-PodcastRuntimeProfileOptions -Capabilities $capabilities)
-    if ($options.Count -eq 0) { return $Config }
+    if ($options.Count -eq 0) {
+        $asrStatusMessage = if ($null -ne $capabilities.asr) { [string]$capabilities.asr.status_message } else { 'ASR runtime probe unavailable.' }
+        $diarizationStatusMessage = if ($null -ne $capabilities.diarization) { [string]$capabilities.diarization.status_message } else { 'Diarization runtime probe unavailable.' }
+        throw ("Podcast pipeline is locked to GPU-only. Both ASR and diarization must be CUDA-ready before execution. ASR: {0} Diarization: {1}" -f $asrStatusMessage, $diarizationStatusMessage)
+    }
 
     $selectedOption = Select-PodcastRuntimeProfileOption -Options $options -Capabilities $capabilities -Interactive (Test-IsInteractiveHost)
     Set-NestedObjectValue -Object $Config -Path @('routes', 'podcast', 'runtime_profile') -Value $selectedOption.id | Out-Null
@@ -1527,6 +1517,20 @@ function Invoke-PodcastAsrFallback {
     $normalizeScript = Get-StringValue -Data $asrConfig -Name 'normalize_script' -DefaultValue 'simplified'
     $mockTranscriptPath = Get-ConfiguredPathValue -Object $asrConfig -PropertyName 'mock_transcript_path'
 
+    $normalizedDevice = $device.Trim().ToLowerInvariant()
+    if ($normalizedDevice -ne 'cuda') {
+        $result.status = 'gpu_required'
+        $result.error = 'Podcast ASR is locked to GPU-only. routes.podcast.asr.device must be "cuda".'
+        return [pscustomobject]$result
+    }
+
+    $runtimeProbe = Get-PodcastAsrRuntimeProbe -AsrConfig $asrConfig
+    if (-not $runtimeProbe.supports_cuda) {
+        $result.status = 'gpu_unavailable'
+        $result.error = "Podcast ASR is locked to GPU-only, but the active runtime cannot use CUDA. $($runtimeProbe.status_message)"
+        return [pscustomobject]$result
+    }
+
     $outputJsonPath = Join-Path $AssetDirectory 'asr-output.json'
     $arguments = @()
     if (Test-HasValue $scriptPath) { $arguments += @($scriptPath) }
@@ -1600,6 +1604,7 @@ function Invoke-PodcastSpeakerDiarization {
         segments = @()
         speaker_map = @()
         speaker_transcript = ''
+        speaker_inference = $null
         error = ''
     }
 
@@ -1639,6 +1644,27 @@ function Invoke-PodcastSpeakerDiarization {
     $hfTokenEnv = Get-StringValue -Data $diarizationConfig -Name 'hf_token_env' -DefaultValue 'HF_TOKEN'
     $mockDiarizationPath = Get-ConfiguredPathValue -Object $diarizationConfig -PropertyName 'mock_diarization_path'
     $minOverlapRatio = Get-StringValue -Data $diarizationConfig -Name 'min_overlap_ratio' -DefaultValue '0.35'
+    $refinementConfig = Get-DataValue -Data $diarizationConfig -Name 'refinement'
+    $refinementEnabled = if ($null -ne $refinementConfig) { Get-BoolValueFromData -Data $refinementConfig -Name 'enabled' -DefaultValue $false } else { $false }
+    $refinementStrategy = if ($null -ne $refinementConfig) { Get-StringValue -Data $refinementConfig -Name 'strategy' -DefaultValue 'embedding_agglomerative' } else { 'embedding_agglomerative' }
+    $refinementTurnMinSeconds = if ($null -ne $refinementConfig) { Get-StringValue -Data $refinementConfig -Name 'turn_min_seconds' -DefaultValue '1.2' } else { '1.2' }
+    $refinementWindowSeconds = if ($null -ne $refinementConfig) { Get-StringValue -Data $refinementConfig -Name 'window_seconds' -DefaultValue '3.2' } else { '3.2' }
+    $refinementBatchSize = if ($null -ne $refinementConfig) { Get-StringValue -Data $refinementConfig -Name 'batch_size' -DefaultValue '24' } else { '24' }
+    $refinementMaxTurns = if ($null -ne $refinementConfig) { Get-StringValue -Data $refinementConfig -Name 'max_turns' -DefaultValue '600' } else { '600' }
+    $normalizedDevice = $device.Trim().ToLowerInvariant()
+    if ($normalizedDevice -ne 'cuda') {
+        $result.status = 'gpu_required'
+        $result.error = 'Podcast diarization is locked to GPU-only. routes.podcast.diarization.device must be "cuda".'
+        return [pscustomobject]$result
+    }
+
+    $runtimeProbe = Get-PodcastDiarizationRuntimeProbe -DiarizationConfig $diarizationConfig
+    if (-not $runtimeProbe.supports_cuda) {
+        $result.status = 'gpu_unavailable'
+        $result.error = "Podcast diarization is locked to GPU-only, but the active runtime cannot use CUDA. $($runtimeProbe.status_message)"
+        return [pscustomobject]$result
+    }
+
     $outputJsonPath = Join-Path $AssetDirectory 'speaker-diarization-output.json'
     $arguments = @()
     if (Test-HasValue $scriptPath) { $arguments += @($scriptPath) }
@@ -1649,7 +1675,13 @@ function Invoke-PodcastSpeakerDiarization {
         '--provider', $provider,
         '--device', $device,
         '--hf-token-env', $hfTokenEnv,
-        '--min-overlap-ratio', $minOverlapRatio
+        '--min-overlap-ratio', $minOverlapRatio,
+        '--refinement-enabled', $(if ($refinementEnabled) { 'true' } else { 'false' }),
+        '--refinement-strategy', $refinementStrategy,
+        '--refinement-turn-min-seconds', $refinementTurnMinSeconds,
+        '--refinement-window-seconds', $refinementWindowSeconds,
+        '--refinement-batch-size', $refinementBatchSize,
+        '--refinement-max-turns', $refinementMaxTurns
     )
     if (Test-HasValue $model) { $arguments += @('--model', $model) }
     if (Test-HasValue $mockDiarizationPath) { $arguments += @('--mock-diarization-path', $mockDiarizationPath) }
@@ -1679,6 +1711,8 @@ function Invoke-PodcastSpeakerDiarization {
             $speakerMap = Get-DataValue -Data $payload -Name 'speaker_map'
             if ($null -ne $speakerMap) { $result.speaker_map = @($speakerMap) }
             $result.speaker_transcript = Get-StringValue -Data $payload -Name 'speaker_transcript' -DefaultValue ''
+            $speakerInference = Get-DataValue -Data $payload -Name 'speaker_inference'
+            if ($null -ne $speakerInference) { $result.speaker_inference = $speakerInference }
         }
 
         if ($exitCode -eq 0 -and @($result.speaker_map).Count -gt 0) {
@@ -1776,6 +1810,10 @@ function Save-PodcastArtifacts {
         $asrModel = [string]$asrResult.model
         $asrNormalization = [string]$asrResult.normalization
         $asrError = [string]$asrResult.error
+        if (-not $asrResult.success) {
+            $asrFailure = if (Test-HasValue $asrError) { $asrError } else { "ASR status: $asrStatus" }
+            throw ("Podcast ASR failed under GPU-only policy. {0}" -f $asrFailure)
+        }
         if ($asrResult.success -and (Test-HasValue $asrResult.transcript)) {
             $transcript = [string]$asrResult.transcript
             $transcriptRaw = [string]$asrResult.transcript_raw
@@ -1814,6 +1852,7 @@ function Save-PodcastArtifacts {
     $diarizationError = if ($null -ne $metadata) { Get-StringValue -Data $metadata -Name 'diarization_error' -DefaultValue '' } else { '' }
     $speakerMap = @()
     $speakerAnnotatedTranscript = ''
+    $speakerInference = $null
     $speakersPath = Join-Path $assetDirectory 'speakers.json'
     $speakerAnnotatedTranscriptPath = ''
 
@@ -1823,10 +1862,15 @@ function Save-PodcastArtifacts {
         $diarizationProvider = [string]$diarizationResult.provider
         $diarizationModel = [string]$diarizationResult.model
         $diarizationError = [string]$diarizationResult.error
+        if (-not $diarizationResult.success) {
+            $diarizationFailure = if (Test-HasValue $diarizationError) { $diarizationError } else { "Diarization status: $diarizationStatus" }
+            throw ("Podcast diarization failed under GPU-only policy. {0}" -f $diarizationFailure)
+        }
         if ($diarizationResult.success -and @($diarizationResult.segments).Count -gt 0) {
             $transcriptSegments = @($diarizationResult.segments)
             $speakerMap = @($diarizationResult.speaker_map)
             $speakerAnnotatedTranscript = [string]$diarizationResult.speaker_transcript
+            $speakerInference = $diarizationResult.speaker_inference
             Write-Utf8Text -Path $transcriptSegmentsPath -Content ((@($transcriptSegments) | ConvertTo-Json -Depth 20))
             if (Test-HasValue $speakerAnnotatedTranscript) {
                 $speakerAnnotatedTranscriptPath = Join-Path $assetDirectory 'transcript.speakers.txt'
@@ -1843,6 +1887,7 @@ function Save-PodcastArtifacts {
         generated_at = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
         speaker_count = @($speakerMap).Count
         speaker_map = @($speakerMap)
+        speaker_inference = $speakerInference
     }
     Write-Utf8Text -Path $speakersPath -Content (($speakerManifest | ConvertTo-Json -Depth 20))
 
@@ -1872,6 +1917,7 @@ function Save-PodcastArtifacts {
     Set-ObjectField -Object $Capture -Name 'diarization_error' -Value $diarizationError | Out-Null
     Set-ObjectField -Object $Capture -Name 'speaker_count' -Value @($speakerMap).Count | Out-Null
     if (@($speakerMap).Count -gt 0) { Set-ObjectField -Object $Capture -Name 'speaker_map' -Value @($speakerMap) | Out-Null }
+    if ($null -ne $speakerInference) { Set-ObjectField -Object $Capture -Name 'speaker_inference' -Value $speakerInference | Out-Null }
     if (Test-HasValue $transcriptRaw) { Set-ObjectField -Object $Capture -Name 'transcript_raw' -Value $transcriptRaw | Out-Null }
     if (@($transcriptSegments).Count -gt 0) { Set-ObjectField -Object $Capture -Name 'transcript_segments' -Value @($transcriptSegments) | Out-Null }
     if (Test-HasValue $relativeTranscriptRawPath) { Set-ObjectField -Object $Capture -Name 'transcript_raw_path' -Value $relativeTranscriptRawPath | Out-Null }
@@ -1897,6 +1943,7 @@ function Save-PodcastArtifacts {
         Set-ObjectField -Object $metadata -Name 'diarization_error' -Value $diarizationError | Out-Null
         Set-ObjectField -Object $metadata -Name 'speaker_count' -Value @($speakerMap).Count | Out-Null
         if (@($speakerMap).Count -gt 0) { Set-ObjectField -Object $metadata -Name 'speaker_map' -Value @($speakerMap) | Out-Null }
+        if ($null -ne $speakerInference) { Set-ObjectField -Object $metadata -Name 'speaker_inference' -Value $speakerInference | Out-Null }
         if (Test-HasValue $transcriptRaw) { Set-ObjectField -Object $metadata -Name 'transcript_raw_path' -Value $relativeTranscriptRawPath | Out-Null }
         if (Test-HasValue $relativeTranscriptPath) { Set-ObjectField -Object $metadata -Name 'transcript_path' -Value $relativeTranscriptPath | Out-Null }
         if (Test-HasValue $relativeTranscriptSegmentsPath) { Set-ObjectField -Object $metadata -Name 'transcript_segments_path' -Value $relativeTranscriptSegmentsPath | Out-Null }

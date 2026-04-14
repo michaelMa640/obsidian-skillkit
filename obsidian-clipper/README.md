@@ -183,16 +183,16 @@ The selected profile updates these fields:
 
 Why this matters:
 
-- ASR and diarization may not share the same hardware capability on the same machine
-- some machines support GPU ASR but only CPU diarization
-- first-run selection avoids forcing users to hand-edit device flags before their first successful podcast run
+- podcast ASR and diarization are locked to GPU-only execution
+- the active Python environment must expose CUDA for both stages before the first successful run
+- first-run setup avoids hidden CPU fallback and writes the validated GPU profile for later runs
 
 Important:
 
 - if the machine has never handled podcast clipping before, do the first run from Feishu/OpenClaw or local terminal
-- do not use iPhone Shortcut as the first podcast entry, because it cannot reliably present the CPU/GPU selection step
-- after the local machine has written the selected runtime profile into `local-config.json`, iPhone Shortcut can use that machine normally
-- on Windows, GPU ASR also requires CUDA runtime DLLs to be available inside the active Python environment; installing `faster-whisper` alone is not enough
+- do not use iPhone Shortcut as the first podcast entry, because it cannot reliably surface CUDA setup failures or repair steps
+- after the local machine has written the selected GPU runtime profile into `local-config.json`, iPhone Shortcut can use that machine normally
+- on Windows, GPU ASR and diarization require CUDA runtime DLLs plus CUDA-enabled Python packages inside the active environment; installing `faster-whisper` alone is not enough
 
 Validate config with:
 

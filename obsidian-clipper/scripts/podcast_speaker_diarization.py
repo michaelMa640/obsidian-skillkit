@@ -17,6 +17,11 @@ SPLIT_SEGMENT_MIN_SECONDS = 3.2
 SPLIT_FRAGMENT_MIN_SECONDS = 0.45
 SPLIT_FRAGMENT_MIN_RATIO = 0.14
 MERGE_GAP_SECONDS = 0.35
+DEFAULT_REFINEMENT_STRATEGY = "embedding_agglomerative"
+DEFAULT_REFINEMENT_TURN_MIN_SECONDS = 1.2
+DEFAULT_REFINEMENT_WINDOW_SECONDS = 3.2
+DEFAULT_REFINEMENT_BATCH_SIZE = 24
+DEFAULT_REFINEMENT_MAX_TURNS = 600
 INVALID_NAME_TOKENS = {
     "大家",
     "大家好",
@@ -99,6 +104,22 @@ def string_value(*values: Any, default: str = "") -> str:
     return default
 
 
+def require_cuda_runtime(device: str, component_name: str) -> None:
+    requested_device = string_value(device, default="").lower()
+    if requested_device != "cuda":
+        raise RuntimeError(f"{component_name} is locked to GPU-only. --device must be cuda.")
+
+    try:
+        import torch
+    except ImportError as exc:
+        raise RuntimeError(f"{component_name} is locked to GPU-only, but torch is not installed.") from exc
+
+    if not torch.cuda.is_available():
+        raise RuntimeError(
+            f"{component_name} is locked to GPU-only, but torch.cuda.is_available() is False in the active Python environment."
+        )
+
+
 def read_text(path: Path) -> str:
     encodings = ("utf-8-sig", "utf-8", "gb18030")
     last_error: Exception | None = None
@@ -125,6 +146,26 @@ def float_value(value: Any, default: float = 0.0) -> float:
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+def int_value(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def bool_value(value: Any, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    text = string_value(value).lower()
+    if text in {"true", "1", "yes", "on"}:
+        return True
+    if text in {"false", "0", "no", "off"}:
+        return False
+    return default
 
 
 def dedupe_strings(values: list[str]) -> list[str]:
@@ -942,6 +983,290 @@ def summarize_speaker_distribution(
     }
 
 
+def stable_original_speaker_order(turns: list[dict[str, Any]]) -> list[str]:
+    ordered: OrderedDict[str, None] = OrderedDict()
+    for turn in sorted(turns, key=lambda item: (float_value(item.get("start")), float_value(item.get("end")))):
+        speaker_id = string_value(turn.get("speaker_id"))
+        if has_value(speaker_id) and speaker_id not in ordered:
+            ordered[speaker_id] = None
+    return list(ordered.keys())
+
+
+def build_refinement_turn_windows(
+    turns: list[dict[str, Any]],
+    window_seconds: float,
+    min_turn_seconds: float,
+    max_turns: int,
+) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    clip_duration = max(0.8, float_value(window_seconds, default=DEFAULT_REFINEMENT_WINDOW_SECONDS))
+    minimum_duration = max(0.4, float_value(min_turn_seconds, default=DEFAULT_REFINEMENT_TURN_MIN_SECONDS))
+    for index, turn in enumerate(turns):
+        start = float_value(turn.get("start"))
+        end = float_value(turn.get("end"))
+        duration = max(0.0, end - start)
+        if duration < minimum_duration or not has_value(turn.get("speaker_id")):
+            continue
+        center = start + duration / 2
+        clip_start = max(0.0, center - clip_duration / 2)
+        candidates.append(
+            {
+                "index": index,
+                "turn": turn,
+                "duration": duration,
+                "speaker_id": string_value(turn.get("speaker_id")),
+                "clip_start": round(clip_start, 3),
+                "clip_end": round(clip_start + clip_duration, 3),
+            }
+        )
+    candidates.sort(key=lambda item: (-float_value(item.get("duration")), int(item.get("index", 0))))
+    if max_turns > 0:
+        candidates = candidates[:max_turns]
+    candidates.sort(key=lambda item: int(item.get("index", 0)))
+    return candidates
+
+
+def extract_refinement_embeddings(
+    pipeline: Any,
+    audio_input: dict[str, Any],
+    candidates: list[dict[str, Any]],
+    *,
+    batch_size: int,
+) -> list[dict[str, Any]]:
+    import torch
+    import torch.nn.functional as F
+    from pyannote.core import Segment
+
+    if not candidates:
+        return []
+
+    results: list[dict[str, Any]] = []
+    effective_batch_size = max(1, int(batch_size or DEFAULT_REFINEMENT_BATCH_SIZE))
+    for batch_start in range(0, len(candidates), effective_batch_size):
+        batch = candidates[batch_start : batch_start + effective_batch_size]
+        waveforms: list[torch.Tensor] = []
+        for candidate in batch:
+            waveform, _ = pipeline._audio.crop(
+                audio_input,
+                Segment(float_value(candidate.get("clip_start")), float_value(candidate.get("clip_end"))),
+                mode="pad",
+            )
+            waveforms.append(waveform)
+
+        max_samples = max(int(waveform.shape[-1]) for waveform in waveforms)
+        padded = [
+            waveform if int(waveform.shape[-1]) == max_samples else F.pad(waveform, (0, max_samples - int(waveform.shape[-1])))
+            for waveform in waveforms
+        ]
+        waveform_batch = torch.stack(padded, dim=0)
+        embedding_batch = pipeline._embedding(waveform_batch)
+
+        for candidate, embedding in zip(batch, embedding_batch):
+            results.append(
+                {
+                    **candidate,
+                    "embedding": embedding.tolist() if hasattr(embedding, "tolist") else list(embedding),
+                }
+            )
+    return results
+
+
+def cluster_embedding_vectors(vectors: list[list[float]], cluster_count: int) -> list[int]:
+    from sklearn.cluster import AgglomerativeClustering
+
+    if cluster_count < 2:
+        return [0 for _ in vectors]
+
+    try:
+        model = AgglomerativeClustering(n_clusters=cluster_count, metric="cosine", linkage="average")
+    except TypeError:
+        model = AgglomerativeClustering(n_clusters=cluster_count, affinity="cosine", linkage="average")
+    return [int(label) for label in model.fit_predict(vectors)]
+
+
+def build_cluster_centroids(assignments: list[dict[str, Any]]) -> dict[int, list[float]]:
+    centroids: dict[int, list[float]] = {}
+    if not assignments:
+        return centroids
+    import numpy as np
+
+    grouped: dict[int, list[tuple[np.ndarray, float]]] = {}
+    for item in assignments:
+        label = int(item.get("cluster_label", 0))
+        vector = np.array(item.get("embedding") or [], dtype="float32")
+        if vector.size == 0:
+            continue
+        grouped.setdefault(label, []).append((vector, max(0.3, float_value(item.get("duration"), default=1.0))))
+
+    for label, values in grouped.items():
+        weighted = sum(vector * weight for vector, weight in values)
+        norm = float(np.linalg.norm(weighted))
+        centroids[label] = ((weighted / norm) if norm > 0 else weighted).astype("float32").tolist()
+    return centroids
+
+
+def cosine_similarity(left: list[float], right: list[float]) -> float:
+    import numpy as np
+
+    left_array = np.array(left, dtype="float32")
+    right_array = np.array(right, dtype="float32")
+    left_norm = float(np.linalg.norm(left_array))
+    right_norm = float(np.linalg.norm(right_array))
+    if left_norm <= 0 or right_norm <= 0:
+        return -1.0
+    return float(np.dot(left_array / left_norm, right_array / right_norm))
+
+
+def map_clusters_to_speaker_ids(assignments: list[dict[str, Any]], turns: list[dict[str, Any]]) -> dict[int, str]:
+    cluster_scores: list[tuple[float, int, str]] = []
+    for item in assignments:
+        cluster_scores.append(
+            (
+                float_value(item.get("duration"), default=0.0),
+                int(item.get("cluster_label", 0)),
+                string_value(item.get("speaker_id")),
+            )
+        )
+
+    by_cluster: dict[int, dict[str, float]] = {}
+    for duration, cluster_label, speaker_id in cluster_scores:
+        by_cluster.setdefault(cluster_label, {})
+        by_cluster[cluster_label][speaker_id] = round(by_cluster[cluster_label].get(speaker_id, 0.0) + duration, 3)
+
+    ordered_original_ids = stable_original_speaker_order(turns)
+    mapping: dict[int, str] = {}
+    used_ids: set[str] = set()
+    scored_pairs: list[tuple[float, int, str]] = []
+    for cluster_label, scores in by_cluster.items():
+        for speaker_id, duration in scores.items():
+            scored_pairs.append((duration, cluster_label, speaker_id))
+    scored_pairs.sort(reverse=True)
+
+    for _, cluster_label, speaker_id in scored_pairs:
+        if cluster_label in mapping or speaker_id in used_ids:
+            continue
+        mapping[cluster_label] = speaker_id
+        used_ids.add(speaker_id)
+
+    remaining_original_ids = [speaker_id for speaker_id in ordered_original_ids if speaker_id not in used_ids]
+    for cluster_label in sorted(by_cluster.keys()):
+        if cluster_label in mapping:
+            continue
+        if remaining_original_ids:
+            mapping[cluster_label] = remaining_original_ids.pop(0)
+            continue
+        mapping[cluster_label] = f"SPEAKER_{len(mapping):02d}"
+    return mapping
+
+
+def refine_turns_with_embeddings(
+    *,
+    turns: list[dict[str, Any]],
+    pipeline: Any,
+    audio_input: dict[str, Any],
+    expected_speaker_count: int,
+    refinement_strategy: str,
+    refinement_turn_min_seconds: float,
+    refinement_window_seconds: float,
+    refinement_batch_size: int,
+    refinement_max_turns: int,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    strategy = string_value(refinement_strategy, default=DEFAULT_REFINEMENT_STRATEGY).lower()
+    if strategy not in {"embedding_agglomerative", "embedding_refine"}:
+        return turns, {"enabled": False, "status": "unsupported_strategy", "strategy": strategy}
+    if expected_speaker_count < 2:
+        return turns, {"enabled": False, "status": "skipped_no_expected_speaker_count", "strategy": strategy}
+
+    original_speaker_ids = dedupe_strings([string_value(turn.get("speaker_id")) for turn in turns if has_value(turn.get("speaker_id"))])
+    if len(original_speaker_ids) < 2:
+        return turns, {"enabled": False, "status": "skipped_not_enough_original_speakers", "strategy": strategy}
+
+    candidates = build_refinement_turn_windows(
+        turns=turns,
+        window_seconds=refinement_window_seconds,
+        min_turn_seconds=refinement_turn_min_seconds,
+        max_turns=refinement_max_turns,
+    )
+    if len(candidates) < expected_speaker_count:
+        return turns, {
+            "enabled": False,
+            "status": "skipped_not_enough_candidate_turns",
+            "strategy": strategy,
+            "candidate_turn_count": len(candidates),
+        }
+
+    embedded_candidates = extract_refinement_embeddings(
+        pipeline=pipeline,
+        audio_input=audio_input,
+        candidates=candidates,
+        batch_size=refinement_batch_size,
+    )
+    vectors = [item.get("embedding") or [] for item in embedded_candidates if item.get("embedding")]
+    if len(vectors) < expected_speaker_count:
+        return turns, {
+            "enabled": False,
+            "status": "skipped_embedding_extraction_too_small",
+            "strategy": strategy,
+            "embedded_turn_count": len(vectors),
+        }
+
+    cluster_labels = cluster_embedding_vectors(vectors, expected_speaker_count)
+    labeled_candidates: list[dict[str, Any]] = []
+    for item, label in zip(embedded_candidates, cluster_labels):
+        labeled_candidates.append({**item, "cluster_label": int(label)})
+
+    cluster_to_speaker_id = map_clusters_to_speaker_ids(labeled_candidates, turns)
+    cluster_centroids = build_cluster_centroids(labeled_candidates)
+    assigned_turn_indices = {int(item.get("index", -1)): int(item.get("cluster_label", 0)) for item in labeled_candidates}
+
+    refined_turns: list[dict[str, Any]] = []
+    fallback_reassigned_count = 0
+    for index, turn in enumerate(turns):
+        refined_turn = dict(turn)
+        if index in assigned_turn_indices:
+            cluster_label = assigned_turn_indices[index]
+            refined_turn["speaker_id"] = cluster_to_speaker_id.get(cluster_label, string_value(turn.get("speaker_id")))
+            refined_turns.append(refined_turn)
+            continue
+
+        refined_turns.append(refined_turn)
+
+    cluster_distribution: dict[int, dict[str, Any]] = {}
+    for item in labeled_candidates:
+        label = int(item.get("cluster_label", 0))
+        entry = cluster_distribution.setdefault(
+            label,
+            {
+                "cluster_label": label,
+                "turn_count": 0,
+                "total_seconds": 0.0,
+                "mapped_speaker_id": cluster_to_speaker_id.get(label, ""),
+            },
+        )
+        entry["turn_count"] += 1
+        entry["total_seconds"] = round(float_value(entry.get("total_seconds")) + float_value(item.get("duration")), 3)
+
+    return refined_turns, {
+        "enabled": True,
+        "status": "applied",
+        "strategy": strategy,
+        "candidate_turn_count": len(candidates),
+        "embedded_turn_count": len(labeled_candidates),
+        "expected_speaker_count": expected_speaker_count,
+        "original_speaker_count": len(original_speaker_ids),
+        "fallback_reassigned_count": fallback_reassigned_count,
+        "cluster_mapping": [
+            {
+                "cluster_label": int(label),
+                "speaker_id": speaker_id,
+            }
+            for label, speaker_id in sorted(cluster_to_speaker_id.items(), key=lambda item: item[0])
+        ],
+        "cluster_distribution": [cluster_distribution[label] for label in sorted(cluster_distribution.keys())],
+        "centroid_count": len(cluster_centroids),
+    }
+
+
 def render_speaker_transcript(segments: list[dict[str, Any]]) -> str:
     lines: list[str] = []
     for segment in segments:
@@ -963,6 +1288,31 @@ def run_mock_provider(mock_path: str) -> list[dict[str, Any]]:
     if not path.exists():
         raise RuntimeError(f"Mock diarization file does not exist: {mock_path}")
     return normalize_turns(load_json(path))
+
+
+def load_pyannote_pipeline(model_name: str, token_env: str, device: str):
+    require_cuda_runtime(device, "Pyannote diarization")
+
+    try:
+        from pyannote.audio import Pipeline
+        import torch
+    except ImportError as exc:
+        raise RuntimeError("pyannote.audio is not installed.") from exc
+
+    token = os.environ.get(token_env or "HF_TOKEN", "").strip()
+    if not token:
+        raise RuntimeError(f"Environment variable {token_env or 'HF_TOKEN'} is required for pyannote diarization.")
+
+    pipeline_kwargs: dict[str, Any] = {}
+    from_pretrained_signature = inspect.signature(Pipeline.from_pretrained)
+    if "token" in from_pretrained_signature.parameters:
+        pipeline_kwargs["token"] = token
+    else:
+        pipeline_kwargs["use_auth_token"] = token
+
+    pipeline = Pipeline.from_pretrained(model_name or "pyannote/speaker-diarization-3.1", **pipeline_kwargs)
+    pipeline.to(torch.device("cuda"))
+    return pipeline
 
 
 def load_audio_input(audio_path: str) -> dict[str, Any]:
@@ -1011,33 +1361,13 @@ def run_pyannote_provider(
     token_env: str,
     device: str,
     expected_speaker_count: int,
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], Any, dict[str, Any]]:
     try:
-        from pyannote.audio import Pipeline
         from pyannote.core import Annotation
     except ImportError as exc:
         raise RuntimeError("pyannote.audio is not installed.") from exc
 
-    token = os.environ.get(token_env or "HF_TOKEN", "").strip()
-    if not token:
-        raise RuntimeError(f"Environment variable {token_env or 'HF_TOKEN'} is required for pyannote diarization.")
-
-    pipeline_kwargs: dict[str, Any] = {}
-    from_pretrained_signature = inspect.signature(Pipeline.from_pretrained)
-    if "token" in from_pretrained_signature.parameters:
-        pipeline_kwargs["token"] = token
-    else:
-        pipeline_kwargs["use_auth_token"] = token
-
-    pipeline = Pipeline.from_pretrained(model_name or "pyannote/speaker-diarization-3.1", **pipeline_kwargs)
-    if has_value(device) and device.lower() not in {"", "auto", "cpu"}:
-        try:
-            import torch
-
-            pipeline.to(torch.device(device))
-        except Exception:
-            pass
-
+    pipeline = load_pyannote_pipeline(model_name, token_env, device)
     audio_input = load_audio_input(audio_path)
     if expected_speaker_count >= 2:
         try:
@@ -1067,11 +1397,12 @@ def run_pyannote_provider(
                 "speaker_id": string_value(speaker),
             }
         )
-    return turns
+    return turns, pipeline, audio_input
 
 
 def run_whisperx_provider(
     audio_path: str,
+    model_name: str,
     token_env: str,
     device: str,
     expected_speaker_count: int,
@@ -1081,19 +1412,52 @@ def run_whisperx_provider(
     except ImportError as exc:
         raise RuntimeError("whisperx is not installed.") from exc
 
+    require_cuda_runtime(device, "WhisperX diarization")
+
+    diarization_pipeline_type = getattr(whisperx, "DiarizationPipeline", None)
+    if diarization_pipeline_type is None:
+        try:
+            from whisperx.diarize import DiarizationPipeline as whisperx_diarization_pipeline
+        except ImportError as exc:
+            raise RuntimeError("WhisperX diarization pipeline is not available in the installed package.") from exc
+        diarization_pipeline_type = whisperx_diarization_pipeline
+
+    requested_device = string_value(device, default="cuda").lower()
+
     token = os.environ.get(token_env or "HF_TOKEN", "").strip()
     if not token:
         raise RuntimeError(f"Environment variable {token_env or 'HF_TOKEN'} is required for WhisperX diarization.")
 
-    diarize_pipeline = whisperx.DiarizationPipeline(
-        use_auth_token=token,
-        device=(device or "cpu"),
-    )
+    pipeline_kwargs: dict[str, Any] = {
+        "device": requested_device or "cuda",
+    }
+    if has_value(model_name):
+        pipeline_signature = inspect.signature(diarization_pipeline_type.__init__)
+        if "model_name" in pipeline_signature.parameters:
+            pipeline_kwargs["model_name"] = model_name
+    init_signature = inspect.signature(diarization_pipeline_type.__init__)
+    if "token" in init_signature.parameters:
+        pipeline_kwargs["token"] = token
+    elif "use_auth_token" in init_signature.parameters:
+        pipeline_kwargs["use_auth_token"] = token
+    else:
+        raise RuntimeError("Installed WhisperX diarization pipeline does not expose a supported token argument.")
+
+    diarize_pipeline = diarization_pipeline_type(**pipeline_kwargs)
+    audio_input = load_audio_input(audio_path)
+    waveform = audio_input.get("waveform")
+    if waveform is None:
+        raise RuntimeError("Failed to preload audio for WhisperX diarization.")
+    if hasattr(waveform, "detach"):
+        waveform = waveform.detach().cpu().numpy()
+    if getattr(waveform, "ndim", 0) > 1:
+        waveform = waveform[0]
+
     diarize_kwargs: dict[str, Any] = {}
     if expected_speaker_count >= 2:
         diarize_kwargs["min_speakers"] = expected_speaker_count
         diarize_kwargs["max_speakers"] = expected_speaker_count
-    diarization = diarize_pipeline(audio_path, **diarize_kwargs)
+    diarization = diarize_pipeline(waveform, **diarize_kwargs)
     if hasattr(diarization, "to_dict"):
         return normalize_turns(diarization.to_dict("records"))
     return normalize_turns(diarization)
@@ -1139,11 +1503,17 @@ def main() -> int:
     parser.add_argument("--output-json", required=True)
     parser.add_argument("--provider", default="pyannote")
     parser.add_argument("--model", default="")
-    parser.add_argument("--device", default="cpu")
+    parser.add_argument("--device", default="cuda")
     parser.add_argument("--hf-token-env", default="HF_TOKEN")
     parser.add_argument("--mock-diarization-path", default="")
     parser.add_argument("--manual-speakers-path", default="")
     parser.add_argument("--min-overlap-ratio", type=float, default=0.35)
+    parser.add_argument("--refinement-enabled", default="false")
+    parser.add_argument("--refinement-strategy", default=DEFAULT_REFINEMENT_STRATEGY)
+    parser.add_argument("--refinement-turn-min-seconds", type=float, default=DEFAULT_REFINEMENT_TURN_MIN_SECONDS)
+    parser.add_argument("--refinement-window-seconds", type=float, default=DEFAULT_REFINEMENT_WINDOW_SECONDS)
+    parser.add_argument("--refinement-batch-size", type=int, default=DEFAULT_REFINEMENT_BATCH_SIZE)
+    parser.add_argument("--refinement-max-turns", type=int, default=DEFAULT_REFINEMENT_MAX_TURNS)
     args = parser.parse_args()
 
     audio_path = Path(args.audio_path).resolve()
@@ -1189,6 +1559,7 @@ def main() -> int:
         segments = normalize_segments(load_json(segments_path))
         intro_context = build_intro_context(segments)
         expected_speaker_count = int(intro_context.get("expected_speaker_count", 0) or 0)
+        refinement_enabled = bool_value(args.refinement_enabled, default=False)
 
         manual_overrides: dict[str, dict[str, Any]] = {}
         if has_value(args.manual_speakers_path):
@@ -1196,11 +1567,13 @@ def main() -> int:
             if manual_path.exists():
                 manual_overrides = normalize_manual_speakers(load_json(manual_path))
 
+        pipeline = None
+        audio_input = None
         if provider == "mock":
             turns = run_mock_provider(args.mock_diarization_path)
             model_name = string_value(args.model, default="mock-turns")
         elif provider == "pyannote":
-            turns = run_pyannote_provider(
+            turns, pipeline, audio_input = run_pyannote_provider(
                 str(audio_path),
                 string_value(args.model),
                 string_value(args.hf_token_env),
@@ -1211,6 +1584,7 @@ def main() -> int:
         elif provider == "whisperx":
             turns = run_whisperx_provider(
                 str(audio_path),
+                string_value(args.model),
                 string_value(args.hf_token_env),
                 string_value(args.device),
                 expected_speaker_count,
@@ -1218,6 +1592,29 @@ def main() -> int:
             model_name = string_value(args.model, default="whisperx-diarization")
         else:
             raise RuntimeError(f"Unsupported diarization provider: {provider}")
+
+        refinement_summary: dict[str, Any] = {
+            "enabled": refinement_enabled,
+            "status": "disabled",
+        }
+        if refinement_enabled and provider == "pyannote" and pipeline is not None and audio_input is not None:
+            turns, refinement_summary = refine_turns_with_embeddings(
+                turns=turns,
+                pipeline=pipeline,
+                audio_input=audio_input,
+                expected_speaker_count=expected_speaker_count,
+                refinement_strategy=string_value(args.refinement_strategy, default=DEFAULT_REFINEMENT_STRATEGY),
+                refinement_turn_min_seconds=float_value(args.refinement_turn_min_seconds, default=DEFAULT_REFINEMENT_TURN_MIN_SECONDS),
+                refinement_window_seconds=float_value(args.refinement_window_seconds, default=DEFAULT_REFINEMENT_WINDOW_SECONDS),
+                refinement_batch_size=int_value(args.refinement_batch_size, default=DEFAULT_REFINEMENT_BATCH_SIZE),
+                refinement_max_turns=int_value(args.refinement_max_turns, default=DEFAULT_REFINEMENT_MAX_TURNS),
+            )
+        elif refinement_enabled:
+            refinement_summary = {
+                "enabled": True,
+                "status": "skipped_provider_not_supported",
+                "provider": provider,
+            }
 
         segments_with_speaker_ids = assign_speaker_ids(
             segments=segments,
@@ -1233,6 +1630,7 @@ def main() -> int:
             **speaker_inference,
             "expected_speaker_count": expected_speaker_count,
             "provider": provider,
+            "refinement": refinement_summary,
         }
         enriched_segments, speaker_map = apply_speaker_profiles(
             segments=segments_with_speaker_ids,

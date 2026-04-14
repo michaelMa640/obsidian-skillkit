@@ -13,7 +13,7 @@
       "social uses python + scripts/capture_social_playwright.py and download_social_media.ps1 by default",
       "video_metadata uses yt-dlp by default",
       "podcast uses the built-in web metadata route inside run_clipper.ps1 and does not require a separate command",
-      "set routes.podcast.runtime_profile to prompt on a new machine so the first podcast run can detect the environment, ask for a device profile, and write the choice back into local-config.json"
+      "podcast is now locked to GPU-only execution; keep routes.podcast.runtime_profile on a GPU profile and do not switch ASR or diarization to cpu/auto"
     ]
   },
   "obsidian": {
@@ -67,7 +67,7 @@
       "prefer_show_notes": true,
       "download_audio": true,
       "download_timeout_sec": 60,
-      "runtime_profile": "prompt",
+      "runtime_profile": "gpu_balanced",
       "asr": {
         "enabled": false,
         "command": "python",
@@ -75,8 +75,8 @@
         "provider": "faster-whisper",
         "model": "large-v3",
         "language": "zh",
-        "device": "auto",
-        "compute_type": "auto",
+        "device": "cuda",
+        "compute_type": "float16",
         "beam_size": 5,
         "vad_filter": true,
         "normalize_script": "simplified",
@@ -89,10 +89,18 @@
         "script": "E:/REPLACE/WITH/YOUR/obsidian-clipper/scripts/podcast_speaker_diarization.py",
         "provider": "pyannote",
         "model": "pyannote/speaker-diarization-3.1",
-        "device": "cpu",
+        "device": "cuda",
         "hf_token_env": "HF_TOKEN",
         "min_overlap_ratio": 0.35,
-        "mock_diarization_path": "E:/REPLACE/WITH/YOUR/obsidian-clipper/.tmp/mock-diarization.json"
+        "mock_diarization_path": "E:/REPLACE/WITH/YOUR/obsidian-clipper/.tmp/mock-diarization.json",
+        "refinement": {
+          "enabled": false,
+          "strategy": "embedding_agglomerative",
+          "turn_min_seconds": 1.2,
+          "window_seconds": 3.2,
+          "batch_size": 24,
+          "max_turns": 600
+        }
       }
     }
   }

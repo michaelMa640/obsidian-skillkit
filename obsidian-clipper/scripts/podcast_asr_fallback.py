@@ -86,6 +86,43 @@ def configure_cuda_runtime(device: str) -> None:
         os.environ["PATH"] = os.pathsep.join(dll_dirs + [existing_path])
 
 
+def require_cuda_runtime(device: str) -> None:
+    requested_device = str(device).strip().lower()
+    if requested_device != "cuda":
+        raise RuntimeError("Podcast ASR is locked to GPU-only. --device must be cuda.")
+
+    configure_cuda_runtime(requested_device)
+
+    try:
+        import ctranslate2
+        import torch
+    except ImportError as exc:
+        raise RuntimeError(
+            "Podcast ASR is locked to GPU-only, but the active Python environment is missing torch or ctranslate2."
+        ) from exc
+
+    if not torch.cuda.is_available():
+        raise RuntimeError(
+            "Podcast ASR is locked to GPU-only, but torch.cuda.is_available() is False in the active Python environment."
+        )
+
+    getter = getattr(ctranslate2, "get_cuda_device_count", None)
+    if not callable(getter):
+        raise RuntimeError(
+            "Podcast ASR is locked to GPU-only, but the active CTranslate2 build does not expose CUDA support."
+        )
+
+    try:
+        cuda_device_count = int(getter())
+    except Exception as exc:
+        raise RuntimeError("Failed to query CTranslate2 CUDA device count.") from exc
+
+    if cuda_device_count <= 0:
+        raise RuntimeError(
+            "Podcast ASR is locked to GPU-only, but the active CTranslate2 runtime reports no CUDA devices."
+        )
+
+
 def build_converter(normalize_script: str) -> tuple[Any | None, str]:
     normalized = normalize_script.strip().lower()
     if normalized in {"", "none", "original", "raw"}:
@@ -207,7 +244,7 @@ def build_faster_whisper_result(
     vad_filter: bool,
     normalize_script: str,
 ) -> dict[str, Any]:
-    configure_cuda_runtime(device)
+    require_cuda_runtime(device)
     try:
         from faster_whisper import WhisperModel
     except ImportError as exc:
@@ -270,8 +307,8 @@ def main() -> int:
     parser.add_argument("--provider", default="faster-whisper")
     parser.add_argument("--model", default="large-v3")
     parser.add_argument("--language", default="zh")
-    parser.add_argument("--device", default="auto")
-    parser.add_argument("--compute-type", default="auto")
+    parser.add_argument("--device", default="cuda")
+    parser.add_argument("--compute-type", default="float16")
     parser.add_argument("--beam-size", type=int, default=5)
     parser.add_argument("--vad-filter", default="true")
     parser.add_argument("--normalize-script", default="simplified")

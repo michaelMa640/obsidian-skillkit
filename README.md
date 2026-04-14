@@ -178,7 +178,7 @@ The optional remote/mobile entry is:
 
 ### Important podcast first-run rule
 
-Podcast clipping now includes a first-run runtime profile step for ASR / speaker processing.
+Podcast clipping now enforces a GPU-only runtime for ASR / speaker processing.
 
 This means:
 
@@ -188,7 +188,7 @@ This means:
   - direct local terminal execution such as `obsidian-clipper/scripts/run_clipper.ps1`
 - after that first local run writes the selected device profile into `references/local-config.json`, iPhone Shortcut can use the same machine normally
 
-iOS Shortcut is not the right place for the first podcast setup because it cannot reliably present the local machine's CPU / GPU choice flow.
+iOS Shortcut is not the right place for the first podcast setup because it cannot reliably surface local CUDA setup failures or recovery steps.
 
 ### Who this is for
 
@@ -278,9 +278,9 @@ Use one of these local entries first:
 
 Why:
 
-- podcast ASR and diarization now support first-run device detection
-- the machine may need to choose a runtime profile such as `GPU ASR + CPU diarization` or `CPU compatibility`
-- that choice is written back into `references/local-config.json`
+- podcast ASR and diarization are now locked to GPU-only execution
+- if the active runtime cannot use CUDA, the podcast run stops immediately instead of falling back to CPU
+- the validated GPU runtime profile is written back into `references/local-config.json`
 
 After the first local setup is completed, the same machine can accept podcast tasks from iPhone Shortcut normally.
 
