@@ -406,11 +406,30 @@ def infer_expected_speaker_count(segments: list[dict[str, Any]], intro_names: li
 
 def build_intro_context(segments: list[dict[str, Any]]) -> dict[str, Any]:
     intro_mentions, intro_names = extract_intro_mentions(segments)
+    multi_name_segments: list[dict[str, Any]] = []
+    for segment in intro_window_segments(segments):
+        text = string_value(segment.get("text"), segment.get("raw_text"))
+        if not has_value(text):
+            continue
+        segment_matches = extract_self_intro_matches(text)
+        match_names = dedupe_strings([item[2] for item in segment_matches if has_value(item[2])])
+        if len(match_names) < 2:
+            continue
+        multi_name_segments.append(
+            {
+                "segment_index": int(segment.get("index", 0)),
+                "timestamp": string_value(segment.get("timestamp")),
+                "text": text,
+                "names": match_names,
+                "match_count": len(segment_matches),
+            }
+        )
     return {
         "intro_names": intro_names,
         "intro_mentions": intro_mentions,
         "expected_speaker_count": infer_expected_speaker_count(segments, intro_names),
         "intro_segment_count": len(intro_window_segments(segments)),
+        "multi_name_intro_segments": multi_name_segments,
     }
 
 
@@ -750,8 +769,8 @@ def infer_auto_speaker_profiles(
         segment_matches = extract_self_intro_matches(text)
         if not segment_matches:
             continue
-        anchored_names = [segment_matches[-1][2]]
-        confidence = 2.6 if len(segment_matches) == 1 else 2.2
+        anchored_names = [segment_matches[-1][2]] if len(segment_matches) == 1 else []
+        confidence = 2.6 if len(segment_matches) == 1 else 0.0
         for name in anchored_names:
             add_evidence(
                 speaker_id=speaker_id,
@@ -847,6 +866,97 @@ def infer_auto_speaker_profiles(
         "status": "mapped" if assignments else "intro_detected_but_unmapped",
     }
     return profiles, inference
+
+
+def diagnose_intro_speaker_collisions(
+    segments: list[dict[str, Any]],
+    intro_context: dict[str, Any],
+) -> dict[str, Any]:
+    diagnostics: list[dict[str, Any]] = []
+    multi_name_segments = (
+        intro_context.get("multi_name_intro_segments")
+        if isinstance(intro_context.get("multi_name_intro_segments"), list)
+        else []
+    )
+    if not multi_name_segments:
+        return {
+            "status": "not_applicable",
+            "collapsed_segment_count": 0,
+            "diagnostics": [],
+        }
+
+    for item in multi_name_segments:
+        raw_segment_index = item.get("segment_index", -1)
+        segment_index = int(raw_segment_index if raw_segment_index is not None else -1)
+        intro_names = dedupe_strings(item.get("names") if isinstance(item.get("names"), list) else [])
+        related_segments = [
+            segment
+            for segment in segments
+            if int(
+                segment.get("source_segment_index", segment.get("index", -1))
+                if segment.get("source_segment_index", segment.get("index", -1)) is not None
+                else -1
+            ) == segment_index
+            or int(segment.get("index", -1) if segment.get("index", -1) is not None else -1) == segment_index
+        ]
+        detected_speaker_ids = dedupe_strings(
+            [string_value(segment.get("speaker_id")) for segment in related_segments if has_value(segment.get("speaker_id"))]
+        )
+        detected_speakers = dedupe_strings(
+            [string_value(segment.get("speaker")) for segment in related_segments if has_value(segment.get("speaker"))]
+        )
+        collapsed = len(detected_speaker_ids) < len(intro_names)
+        diagnostics.append(
+            {
+                "segment_index": segment_index,
+                "timestamp": string_value(item.get("timestamp")),
+                "text": string_value(item.get("text")),
+                "intro_names": intro_names,
+                "intro_name_count": len(intro_names),
+                "detected_speaker_ids": detected_speaker_ids,
+                "detected_speakers": detected_speakers,
+                "detected_speaker_count": len(detected_speaker_ids),
+                "related_segment_count": len(related_segments),
+                "status": "collapsed_to_fewer_speakers" if collapsed else "separated",
+            }
+        )
+
+    collapsed_diagnostics = [item for item in diagnostics if item.get("status") == "collapsed_to_fewer_speakers"]
+    return {
+        "status": "intro_multi_self_intro_collapsed" if collapsed_diagnostics else "ok",
+        "collapsed_segment_count": len(collapsed_diagnostics),
+        "diagnostics": diagnostics,
+    }
+
+
+def build_speaker_quality_gate(
+    distribution_summary: dict[str, Any],
+    intro_diagnostics: dict[str, Any],
+) -> dict[str, Any]:
+    reasons: list[str] = []
+    distribution_status = string_value(distribution_summary.get("status"))
+    if has_value(distribution_status) and distribution_status != "balanced":
+        reasons.append(distribution_status)
+
+    intro_status = string_value(intro_diagnostics.get("status"))
+    if has_value(intro_status) and intro_status not in {"ok", "not_applicable"}:
+        reasons.append(intro_status)
+
+    status = "blocked" if reasons else "passed"
+    status_detail = "speaker_context_blocked" if status == "blocked" else "speaker_context_allowed"
+    return {
+        "status": status,
+        "status_detail": status_detail,
+        "allow_downstream_speaker_context": status == "passed",
+        "reasons": reasons,
+        "distribution_status": distribution_status,
+        "intro_diagnostics_status": intro_status,
+        "reason_summary": (
+            "Speaker labels were downgraded for downstream analysis because diarization quality is not reliable enough."
+            if status == "blocked"
+            else "Speaker labels passed the quality gate and can be used downstream."
+        ),
+    }
 
 
 def build_speaker_identity_map(
@@ -1637,13 +1747,24 @@ def main() -> int:
             auto_profiles=auto_profiles,
             manual_overrides=manual_overrides,
         )
+        intro_diagnostics = diagnose_intro_speaker_collisions(
+            segments=enriched_segments,
+            intro_context=intro_context,
+        )
+        distribution_summary = summarize_speaker_distribution(
+            speaker_map=speaker_map,
+            expected_speaker_count=expected_speaker_count,
+        )
+        speaker_quality_gate = build_speaker_quality_gate(
+            distribution_summary=distribution_summary,
+            intro_diagnostics=intro_diagnostics,
+        )
         speaker_inference = {
             **speaker_inference,
             "alignment_strategy": "turn_aligned_split",
-            "distribution_summary": summarize_speaker_distribution(
-                speaker_map=speaker_map,
-                expected_speaker_count=expected_speaker_count,
-            ),
+            "intro_diagnostics": intro_diagnostics,
+            "distribution_summary": distribution_summary,
+            "speaker_quality_gate": speaker_quality_gate,
         }
 
         success = len(speaker_map) > 0

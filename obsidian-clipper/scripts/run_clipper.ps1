@@ -1889,6 +1889,10 @@ function Save-PodcastArtifacts {
         speaker_map = @($speakerMap)
         speaker_inference = $speakerInference
     }
+    if ($null -ne $speakerInference) {
+        $speakerQualityGate = Get-DataValue -Data $speakerInference -Name 'speaker_quality_gate'
+        if ($null -ne $speakerQualityGate) { Set-ObjectField -Object $speakerManifest -Name 'speaker_quality_gate' -Value $speakerQualityGate | Out-Null }
+    }
     Write-Utf8Text -Path $speakersPath -Content (($speakerManifest | ConvertTo-Json -Depth 20))
 
     $relativeCapturePath = Get-VaultRelativePath -BasePath $ResolvedVaultPath -TargetPath $capturePath
@@ -1917,7 +1921,11 @@ function Save-PodcastArtifacts {
     Set-ObjectField -Object $Capture -Name 'diarization_error' -Value $diarizationError | Out-Null
     Set-ObjectField -Object $Capture -Name 'speaker_count' -Value @($speakerMap).Count | Out-Null
     if (@($speakerMap).Count -gt 0) { Set-ObjectField -Object $Capture -Name 'speaker_map' -Value @($speakerMap) | Out-Null }
-    if ($null -ne $speakerInference) { Set-ObjectField -Object $Capture -Name 'speaker_inference' -Value $speakerInference | Out-Null }
+    if ($null -ne $speakerInference) {
+        Set-ObjectField -Object $Capture -Name 'speaker_inference' -Value $speakerInference | Out-Null
+        $speakerQualityGate = Get-DataValue -Data $speakerInference -Name 'speaker_quality_gate'
+        if ($null -ne $speakerQualityGate) { Set-ObjectField -Object $Capture -Name 'speaker_quality_gate' -Value $speakerQualityGate | Out-Null }
+    }
     if (Test-HasValue $transcriptRaw) { Set-ObjectField -Object $Capture -Name 'transcript_raw' -Value $transcriptRaw | Out-Null }
     if (@($transcriptSegments).Count -gt 0) { Set-ObjectField -Object $Capture -Name 'transcript_segments' -Value @($transcriptSegments) | Out-Null }
     if (Test-HasValue $relativeTranscriptRawPath) { Set-ObjectField -Object $Capture -Name 'transcript_raw_path' -Value $relativeTranscriptRawPath | Out-Null }
@@ -1943,7 +1951,11 @@ function Save-PodcastArtifacts {
         Set-ObjectField -Object $metadata -Name 'diarization_error' -Value $diarizationError | Out-Null
         Set-ObjectField -Object $metadata -Name 'speaker_count' -Value @($speakerMap).Count | Out-Null
         if (@($speakerMap).Count -gt 0) { Set-ObjectField -Object $metadata -Name 'speaker_map' -Value @($speakerMap) | Out-Null }
-        if ($null -ne $speakerInference) { Set-ObjectField -Object $metadata -Name 'speaker_inference' -Value $speakerInference | Out-Null }
+        if ($null -ne $speakerInference) {
+            Set-ObjectField -Object $metadata -Name 'speaker_inference' -Value $speakerInference | Out-Null
+            $speakerQualityGate = Get-DataValue -Data $speakerInference -Name 'speaker_quality_gate'
+            if ($null -ne $speakerQualityGate) { Set-ObjectField -Object $metadata -Name 'speaker_quality_gate' -Value $speakerQualityGate | Out-Null }
+        }
         if (Test-HasValue $transcriptRaw) { Set-ObjectField -Object $metadata -Name 'transcript_raw_path' -Value $relativeTranscriptRawPath | Out-Null }
         if (Test-HasValue $relativeTranscriptPath) { Set-ObjectField -Object $metadata -Name 'transcript_path' -Value $relativeTranscriptPath | Out-Null }
         if (Test-HasValue $relativeTranscriptSegmentsPath) { Set-ObjectField -Object $metadata -Name 'transcript_segments_path' -Value $relativeTranscriptSegmentsPath | Out-Null }

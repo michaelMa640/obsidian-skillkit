@@ -295,6 +295,24 @@ def lines_from_speaker_map(values: Any, empty_text: str) -> list[str]:
     return lines or [empty_text]
 
 
+def lines_from_speaker_quality(analysis: dict[str, Any]) -> list[str]:
+    speaker_context_allowed = analysis.get("speaker_context_allowed")
+    status = string_value(analysis.get("speaker_quality_status"), default="passed")
+    reasons = [string_value(item) for item in normalize_list(analysis.get("speaker_quality_reasons")) if has_value(item)]
+    allowed = bool(speaker_context_allowed) if speaker_context_allowed is not None else status != "blocked"
+    if allowed and not reasons and status == "passed":
+        return [
+            "- 状态: passed",
+            "- 说明: 当前 speaker 标注通过质量门禁，可作为下游分析的辅助信息。",
+        ]
+    lines = [
+        f"- 状态: {status or 'blocked'}",
+        "- 说明: 当前 speaker 标注已降级，下游知识解读不会把这些 speaker 标签当作高可信引用依据。",
+    ]
+    lines.extend([f"- 原因: {reason}" for reason in reasons])
+    return lines
+
+
 def dedupe_strings(values: list[str]) -> list[str]:
     result: list[str] = []
     seen: set[str] = set()
@@ -443,7 +461,10 @@ def build_note(analysis: dict[str, Any], folder: str, vault_path: str) -> dict[s
     has_audio = has_value(audio_path_value)
     has_transcript = has_value(transcript_path_value)
     has_timestamps = len(normalize_list(analysis.get("timestamp_index"))) > 0
-    has_speakers = len(speaker_names) > 0
+    speaker_quality_status = string_value(analysis.get("speaker_quality_status"), default="passed")
+    speaker_context_allowed = analysis.get("speaker_context_allowed")
+    speaker_context_allowed_value = bool(speaker_context_allowed) if speaker_context_allowed is not None else speaker_quality_status != "blocked"
+    has_speakers = len(speaker_names) > 0 and speaker_context_allowed_value
 
     lines = [
         "---",
@@ -485,6 +506,8 @@ def build_note(analysis: dict[str, Any], folder: str, vault_path: str) -> dict[s
         f"knowledge_card_candidate_count: {yaml_frontmatter_value(len(knowledge_card_titles))}",
         f"topic_candidate_count: {yaml_frontmatter_value(len(topic_names))}",
         f"speaker_count: {yaml_frontmatter_value(len(speaker_names))}",
+        f"speaker_quality_status: {yaml_scalar(speaker_quality_status)}",
+        f"speaker_context_allowed: {yaml_frontmatter_value(speaker_context_allowed_value)}",
         f"timestamp_count: {yaml_frontmatter_value(len(normalize_list(analysis.get('timestamp_index'))))}",
         f"has_audio: {yaml_frontmatter_value(has_audio)}",
         f"has_transcript: {yaml_frontmatter_value(has_transcript)}",
@@ -565,6 +588,27 @@ def build_note(analysis: dict[str, Any], folder: str, vault_path: str) -> dict[s
         "## 来源",
         *build_source_lines(analysis, vault_path),
     ])
+    speaker_gate_lines = ["", "## Speaker 质量门禁", *lines_from_speaker_quality(analysis)]
+    source_heading_index = len(lines)
+    for heading in ("## 来源", "## 鏉ユ簮"):
+        try:
+            source_heading_index = lines.index(heading)
+            break
+        except ValueError:
+            continue
+    lines[source_heading_index:source_heading_index] = speaker_gate_lines
+
+    if not speaker_context_allowed_value:
+        for heading in ("## 人物与说话人", "## 浜虹墿涓庤璇濅汉"):
+            try:
+                speaker_heading_index = lines.index(heading)
+                replacement_index = speaker_heading_index + 1
+                while replacement_index < len(lines) and lines[replacement_index].startswith("- "):
+                    del lines[replacement_index]
+                lines.insert(replacement_index, "- 已降级：当前 diarization 质量门禁未通过，知识笔记不展示 speaker 映射。")
+                break
+            except ValueError:
+                continue
     return {
         "title": title,
         "raw_title": raw_title,

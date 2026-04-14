@@ -161,6 +161,19 @@
     "speakers_path": {
       "type": "string"
     },
+    "speaker_quality_status": {
+      "type": "string"
+    },
+    "speaker_quality_reasons": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "speaker_context_allowed": {
+      "type": "boolean"
+    },
+    "speaker_quality_gate": {
+      "type": "object"
+    },
     "asr_status": {
       "type": "string"
     },

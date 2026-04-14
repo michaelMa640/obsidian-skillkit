@@ -34,6 +34,7 @@ Output rules:
 10. If the source is weak or incomplete, keep fields empty or brief instead of hallucinating.
 11. When timestamps or speakers are missing, leave those arrays empty.
 12. If `transcript_segments`, `speaker_annotated_transcript`, or `speaker_map_seed` exist in the payload, prefer them over guessing from plain transcript text.
+13. If `speaker_context_allowed` is `false` or `speaker_quality_status` is `blocked`, do not infer or preserve speaker identities from any partial hints. Return an empty `speaker_map`, and do not attach speakers to timestamps unless the payload still explicitly provides trusted speaker labels after gating.
 
 Field guidance:
 

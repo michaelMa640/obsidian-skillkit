@@ -424,6 +424,17 @@ def normalize_speaker_map(values: Any) -> list[Any]:
     return normalized
 
 
+def strip_speaker_fields_from_timestamp_index(values: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    sanitized: list[dict[str, Any]] = []
+    for item in values:
+        if not isinstance(item, dict):
+            continue
+        entry = dict(item)
+        entry.pop("speaker", None)
+        sanitized.append(entry)
+    return sanitized
+
+
 def normalize_source_highlights(values: Any) -> list[Any]:
     normalized: list[Any] = []
     for item in as_list(values):
@@ -490,6 +501,17 @@ def ensure_defaults_analyze(result: dict[str, Any], payload: dict[str, Any], mod
 
 def ensure_defaults_knowledge(result: dict[str, Any], payload: dict[str, Any], model: str, output_language: str) -> dict[str, Any]:
     analysis_run_date = datetime.now().strftime("%Y-%m-%d")
+    speaker_context_allowed = bool(payload.get("speaker_context_allowed")) if payload.get("speaker_context_allowed") is not None else True
+    timestamp_index = normalize_timestamp_index(result.get("timestamp_index"))
+    speaker_map = normalize_speaker_map(result.get("speaker_map")) if speaker_context_allowed else []
+    open_questions = normalize_text_list(result.get("open_questions"), "text", "question", "issue")
+    if not speaker_context_allowed:
+        timestamp_index = strip_speaker_fields_from_timestamp_index(timestamp_index)
+        gate_reasons = [string_value(item) for item in payload.get("speaker_quality_reasons") or [] if has_value(item)]
+        warning = "Speaker 标注因质量门禁被降级，当前知识解读不应把说话人标签当作高可信引用依据。"
+        if gate_reasons:
+            warning += " 原因：" + "；".join(gate_reasons)
+        open_questions = [warning, *open_questions]
     return {
         "title": string_value(payload.get("title"), result.get("title"), default=default_analysis_title(payload, output_language, "knowledge")),
         "analysis_mode": "knowledge",
@@ -533,10 +555,10 @@ def ensure_defaults_knowledge(result: dict[str, Any], payload: dict[str, Any], m
         "knowledge_cards": normalize_knowledge_cards(result.get("knowledge_cards")),
         "topic_candidates": normalize_topic_candidates(result.get("topic_candidates")),
         "action_items": normalize_text_list(result.get("action_items"), "text", "action", "step"),
-        "open_questions": normalize_text_list(result.get("open_questions"), "text", "question", "issue"),
+        "open_questions": open_questions,
         "quotes": normalize_quotes(result.get("quotes")),
-        "timestamp_index": normalize_timestamp_index(result.get("timestamp_index")),
-        "speaker_map": normalize_speaker_map(result.get("speaker_map")),
+        "timestamp_index": timestamp_index,
+        "speaker_map": speaker_map,
         "source_highlights": normalize_source_highlights(result.get("source_highlights")),
         "video_path": string_value(payload.get("video_path"), result.get("video_path")),
         "audio_path": string_value(payload.get("audio_path"), result.get("audio_path")),
@@ -545,6 +567,10 @@ def ensure_defaults_knowledge(result: dict[str, Any], payload: dict[str, Any], m
         "transcript_segments_path": string_value(payload.get("transcript_segments_path"), result.get("transcript_segments_path")),
         "speaker_annotated_transcript_path": string_value(payload.get("speaker_annotated_transcript_path"), result.get("speaker_annotated_transcript_path")),
         "speakers_path": string_value(payload.get("speakers_path"), result.get("speakers_path")),
+        "speaker_quality_status": string_value(payload.get("speaker_quality_status"), default="passed" if speaker_context_allowed else "blocked"),
+        "speaker_quality_reasons": payload.get("speaker_quality_reasons") or [],
+        "speaker_quality_gate": payload.get("speaker_quality_gate") or {},
+        "speaker_context_allowed": speaker_context_allowed,
         "asr_normalization": string_value(payload.get("asr_normalization"), result.get("asr_normalization")),
         "output_language": output_language,
     }

@@ -82,6 +82,31 @@ def load_optional_text(path: Path, warnings: list[str], label: str) -> str:
     return text
 
 
+def strip_speaker_annotations_from_segments(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    sanitized: list[dict[str, Any]] = []
+    for item in segments:
+        if not isinstance(item, dict):
+            continue
+        entry = dict(item)
+        for key in ("speaker", "speaker_id", "speaker_role"):
+            entry.pop(key, None)
+        sanitized.append(entry)
+    return sanitized
+
+
+def normalize_speaker_quality_gate(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def speaker_context_allowed(gate: dict[str, Any]) -> bool:
+    if not gate:
+        return True
+    explicit = gate.get("allow_downstream_speaker_context")
+    if isinstance(explicit, bool):
+        return explicit
+    return string_value(gate.get("status")) != "blocked"
+
+
 def parse_frontmatter(note_text: str) -> tuple[dict[str, Any], str]:
     if not note_text.startswith("---"):
         return {}, note_text.strip()
@@ -343,6 +368,24 @@ def build_payload(note_path: str, capture_json_path: str, vault_path: str, analy
         string_value(frontmatter.get("speakers_path"), capture.get("speakers_path"), metadata.get("speakers_path")),
     )
     speakers_reference = load_json_file(Path(speakers_path), warnings, "speakers_json") if has_value(speakers_path) else None
+    speaker_inference = {}
+    if isinstance(speakers_reference, dict) and isinstance(speakers_reference.get("speaker_inference"), dict):
+        speaker_inference = speakers_reference.get("speaker_inference") or {}
+    elif isinstance(capture.get("speaker_inference"), dict):
+        speaker_inference = capture.get("speaker_inference") or {}
+    elif isinstance(metadata.get("speaker_inference"), dict):
+        speaker_inference = metadata.get("speaker_inference") or {}
+
+    speaker_quality_gate = normalize_speaker_quality_gate(
+        (speakers_reference or {}).get("speaker_quality_gate") if isinstance(speakers_reference, dict) else None
+    )
+    if not speaker_quality_gate and isinstance(capture.get("speaker_quality_gate"), dict):
+        speaker_quality_gate = capture.get("speaker_quality_gate") or {}
+    if not speaker_quality_gate and isinstance(metadata.get("speaker_quality_gate"), dict):
+        speaker_quality_gate = metadata.get("speaker_quality_gate") or {}
+    if not speaker_quality_gate and isinstance(speaker_inference.get("speaker_quality_gate"), dict):
+        speaker_quality_gate = speaker_inference.get("speaker_quality_gate") or {}
+
     speaker_annotated_transcript_path = resolve_path(
         vault_path,
         string_value(
@@ -356,6 +399,20 @@ def build_payload(note_path: str, capture_json_path: str, vault_path: str, analy
         if has_value(speaker_annotated_transcript_path)
         else ""
     )
+    allow_speaker_labels = speaker_context_allowed(speaker_quality_gate)
+    speaker_quality_status = string_value(
+        speaker_quality_gate.get("status"),
+        default="passed" if allow_speaker_labels else "blocked",
+    )
+    speaker_quality_reasons = [string_value(item) for item in list_value(speaker_quality_gate.get("reasons")) if has_value(item)]
+    if not allow_speaker_labels:
+        transcript_segments = strip_speaker_annotations_from_segments(transcript_segments)
+        speaker_annotated_transcript = ""
+        speaker_annotated_transcript_path = ""
+        speakers_path = ""
+        speakers_reference = {}
+        speaker_inference = {"speaker_quality_gate": speaker_quality_gate}
+        warnings.append("speaker_quality_gate_blocked: stripped speaker labels from analyzer payload")
     top_comments = [
         string_value(item.get("display_text"), item.get("text"))
         for item in comments[:5]
@@ -462,8 +519,15 @@ def build_payload(note_path: str, capture_json_path: str, vault_path: str, analy
         "speakers_reference": speakers_reference or {},
         "speaker_annotated_transcript_path": speaker_annotated_transcript_path,
         "speaker_annotated_transcript": speaker_annotated_transcript,
-        "speaker_count": len(list_value((speakers_reference or {}).get("speaker_map"))),
-        "speaker_map_seed": (speakers_reference or {}).get("speaker_map") or capture.get("speaker_map") or metadata.get("speaker_map") or [],
+        "speaker_count": len(list_value((speakers_reference or {}).get("speaker_map"))) if allow_speaker_labels else 0,
+        "speaker_map_seed": (
+            (speakers_reference or {}).get("speaker_map") or capture.get("speaker_map") or metadata.get("speaker_map") or []
+        ) if allow_speaker_labels else [],
+        "speaker_inference": speaker_inference,
+        "speaker_quality_gate": speaker_quality_gate,
+        "speaker_quality_status": speaker_quality_status,
+        "speaker_quality_reasons": speaker_quality_reasons,
+        "speaker_context_allowed": allow_speaker_labels,
         "asr_status": string_value(frontmatter.get("asr_status"), capture.get("asr_status"), metadata.get("asr_status")),
         "asr_provider": string_value(frontmatter.get("asr_provider"), capture.get("asr_provider"), metadata.get("asr_provider")),
         "asr_model": string_value(frontmatter.get("asr_model"), capture.get("asr_model"), metadata.get("asr_model")),
