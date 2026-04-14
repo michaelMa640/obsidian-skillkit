@@ -13,6 +13,10 @@ from typing import Any
 INTRO_WINDOW_SECONDS = 8 * 60
 INTRO_WINDOW_SEGMENTS = 80
 DEFAULT_SPEAKER_PREFIX = "Speaker"
+SPLIT_SEGMENT_MIN_SECONDS = 3.2
+SPLIT_FRAGMENT_MIN_SECONDS = 0.45
+SPLIT_FRAGMENT_MIN_RATIO = 0.14
+MERGE_GAP_SECONDS = 0.35
 INVALID_NAME_TOKENS = {
     "大家",
     "大家好",
@@ -135,6 +139,26 @@ def dedupe_strings(values: list[str]) -> list[str]:
     return result
 
 
+def format_timestamp(seconds: float) -> str:
+    total_seconds = max(0, int(float_value(seconds)))
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, secs = divmod(remainder, 60)
+    if hours > 0:
+        return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+    return f"{minutes:02d}:{secs:02d}"
+
+
+def join_text_parts(left: str, right: str) -> str:
+    left_text = string_value(left)
+    right_text = string_value(right)
+    if not has_value(left_text):
+        return right_text
+    if not has_value(right_text):
+        return left_text
+    separator = "" if left_text.endswith((" ", "\n")) or right_text.startswith((" ", "\n")) else " "
+    return f"{left_text}{separator}{right_text}".strip()
+
+
 def normalize_segments(raw: Any) -> list[dict[str, Any]]:
     normalized: list[dict[str, Any]] = []
     if not isinstance(raw, list):
@@ -251,6 +275,24 @@ def intro_window_segments(segments: list[dict[str, Any]]) -> list[dict[str, Any]
     ]
 
 
+def extract_self_intro_matches(text: str) -> list[tuple[int, int, str]]:
+    source_text = string_value(text)
+    matches: list[tuple[int, int, str]] = []
+    seen_spans: set[tuple[int, int, str]] = set()
+    if not has_value(source_text):
+        return matches
+    for pattern in SELF_INTRO_PATTERNS:
+        for match in pattern.finditer(source_text):
+            name = normalize_name_candidate(match.group("name"))
+            key = (match.start("name"), match.end("name"), name)
+            if not has_value(name) or key in seen_spans:
+                continue
+            seen_spans.add(key)
+            matches.append(key)
+    matches.sort(key=lambda item: item[0])
+    return matches
+
+
 def extract_intro_mentions(segments: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[str]]:
     mentions: list[dict[str, Any]] = []
     intro_names: list[str] = []
@@ -258,22 +300,13 @@ def extract_intro_mentions(segments: list[dict[str, Any]]) -> tuple[list[dict[st
         text = string_value(segment.get("text"), segment.get("raw_text"))
         if not has_value(text):
             continue
-        segment_matches: list[tuple[int, int, str]] = []
-        seen_spans: set[tuple[int, int, str]] = set()
-        for pattern in SELF_INTRO_PATTERNS:
-            for match in pattern.finditer(text):
-                name = normalize_name_candidate(match.group("name"))
-                key = (match.start("name"), match.end("name"), name)
-                if not has_value(name) or key in seen_spans:
-                    continue
-                seen_spans.add(key)
-                segment_matches.append(key)
-                if name not in intro_names:
-                    intro_names.append(name)
+        segment_matches = extract_self_intro_matches(text)
+        for _, _, name in segment_matches:
+            if name not in intro_names:
+                intro_names.append(name)
         if not segment_matches:
             continue
 
-        segment_matches.sort(key=lambda item: item[0])
         seg_start = float_value(segment.get("start"))
         seg_end = max(seg_start, float_value(segment.get("end")))
         seg_duration = max(0.4, seg_end - seg_start)
@@ -375,6 +408,215 @@ def select_speaker_id(segment: dict[str, Any], turns: list[dict[str, Any]], min_
     return ""
 
 
+def overlapping_turn_windows(segment: dict[str, Any], turns: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    seg_start = float_value(segment.get("start"))
+    seg_end = float_value(segment.get("end"))
+    if seg_end <= seg_start:
+        return []
+
+    clipped: list[dict[str, Any]] = []
+    for turn in turns:
+        speaker_id = string_value(turn.get("speaker_id"))
+        if not has_value(speaker_id):
+            continue
+        start = max(seg_start, float_value(turn.get("start")))
+        end = min(seg_end, float_value(turn.get("end")))
+        if end <= start:
+            continue
+        clipped.append(
+            {
+                "speaker_id": speaker_id,
+                "start": round(start, 3),
+                "end": round(end, 3),
+                "duration": round(end - start, 3),
+            }
+        )
+
+    if not clipped:
+        return []
+
+    clipped.sort(key=lambda item: (float_value(item.get("start")), float_value(item.get("end"))))
+    merged: list[dict[str, Any]] = []
+    for entry in clipped:
+        if (
+            merged
+            and string_value(merged[-1].get("speaker_id")) == string_value(entry.get("speaker_id"))
+            and float_value(entry.get("start")) <= float_value(merged[-1].get("end")) + 0.05
+        ):
+            merged[-1]["end"] = round(max(float_value(merged[-1].get("end")), float_value(entry.get("end"))), 3)
+            merged[-1]["duration"] = round(
+                float_value(merged[-1].get("duration")) + float_value(entry.get("duration")),
+                3,
+            )
+            continue
+        merged.append(dict(entry))
+    return merged
+
+
+def allocate_text_spans(text: str, fragment_durations: list[float]) -> list[str]:
+    source_text = string_value(text)
+    if not has_value(source_text):
+        return ["" for _ in fragment_durations]
+    if len(fragment_durations) <= 1:
+        return [source_text]
+
+    total_duration = sum(max(duration, 0.0) for duration in fragment_durations) or float(len(fragment_durations))
+    target_length = len(source_text)
+    raw_boundaries = [0]
+    running = 0.0
+    for duration in fragment_durations[:-1]:
+        running += max(duration, 0.0)
+        raw_boundaries.append(int(round(target_length * running / total_duration)))
+    raw_boundaries.append(target_length)
+
+    normalized_boundaries: list[int] = [0]
+    max_index = target_length
+    required_remaining = len(fragment_durations) - 1
+    for boundary in raw_boundaries[1:-1]:
+        lower = normalized_boundaries[-1] + 1
+        upper = max(lower, max_index - required_remaining)
+        normalized_boundaries.append(max(lower, min(boundary, upper)))
+        required_remaining -= 1
+    normalized_boundaries.append(target_length)
+
+    parts: list[str] = []
+    for index in range(len(fragment_durations)):
+        start = normalized_boundaries[index]
+        end = normalized_boundaries[index + 1]
+        part = source_text[start:end].strip()
+        if not has_value(part) and index == len(fragment_durations) - 1 and parts:
+            parts[-1] = join_text_parts(parts[-1], source_text[start:end])
+            part = ""
+        parts.append(part)
+
+    if any(has_value(part) for part in parts):
+        return parts
+    return [source_text] + ["" for _ in fragment_durations[1:]]
+
+
+def split_segment_by_turns(
+    segment: dict[str, Any],
+    turns: list[dict[str, Any]],
+    min_overlap_ratio: float,
+) -> list[dict[str, Any]]:
+    duration = max(0.001, float_value(segment.get("end")) - float_value(segment.get("start")))
+    primary_speaker = select_speaker_id(segment, turns, min_overlap_ratio)
+    windows = overlapping_turn_windows(segment, turns)
+    unique_speakers = dedupe_strings([string_value(item.get("speaker_id")) for item in windows])
+
+    if (
+        len(unique_speakers) < 2
+        or duration < SPLIT_SEGMENT_MIN_SECONDS
+        or len(string_value(segment.get("text"), segment.get("raw_text"))) < 8
+    ):
+        merged_segment = dict(segment)
+        if has_value(primary_speaker):
+            merged_segment["speaker_id"] = primary_speaker
+        return [merged_segment]
+
+    viable_windows = [
+        dict(item)
+        for item in windows
+        if float_value(item.get("duration")) >= max(SPLIT_FRAGMENT_MIN_SECONDS, duration * SPLIT_FRAGMENT_MIN_RATIO)
+    ]
+    if len(viable_windows) < 2:
+        merged_segment = dict(segment)
+        if has_value(primary_speaker):
+            merged_segment["speaker_id"] = primary_speaker
+        return [merged_segment]
+
+    seg_start = float_value(segment.get("start"))
+    seg_end = float_value(segment.get("end"))
+    fragments: list[dict[str, Any]] = []
+    for index, window in enumerate(viable_windows):
+        previous_window = viable_windows[index - 1] if index > 0 else None
+        next_window = viable_windows[index + 1] if index + 1 < len(viable_windows) else None
+        start = seg_start if previous_window is None else (float_value(previous_window.get("end")) + float_value(window.get("start"))) / 2
+        end = seg_end if next_window is None else (float_value(window.get("end")) + float_value(next_window.get("start"))) / 2
+        start = max(seg_start, start)
+        end = min(seg_end, end)
+        if end - start < SPLIT_FRAGMENT_MIN_SECONDS:
+            continue
+        fragments.append(
+            {
+                "speaker_id": string_value(window.get("speaker_id")),
+                "start": round(start, 3),
+                "end": round(end, 3),
+                "duration": round(end - start, 3),
+            }
+        )
+
+    if len(fragments) < 2:
+        merged_segment = dict(segment)
+        if has_value(primary_speaker):
+            merged_segment["speaker_id"] = primary_speaker
+        return [merged_segment]
+
+    text_parts = allocate_text_spans(string_value(segment.get("text")), [float_value(item.get("duration")) for item in fragments])
+    raw_text_parts = allocate_text_spans(
+        string_value(segment.get("raw_text"), segment.get("text")),
+        [float_value(item.get("duration")) for item in fragments],
+    )
+
+    aligned: list[dict[str, Any]] = []
+    for index, fragment in enumerate(fragments):
+        text = string_value(text_parts[index] if index < len(text_parts) else "")
+        raw_text = string_value(raw_text_parts[index] if index < len(raw_text_parts) else text)
+        if not has_value(text) and not has_value(raw_text):
+            continue
+        aligned_segment = dict(segment)
+        aligned_segment["start"] = round(float_value(fragment.get("start")), 3)
+        aligned_segment["end"] = round(float_value(fragment.get("end")), 3)
+        aligned_segment["timestamp"] = format_timestamp(float_value(fragment.get("start")))
+        aligned_segment["speaker_id"] = string_value(fragment.get("speaker_id"), primary_speaker)
+        aligned_segment["text"] = text
+        aligned_segment["raw_text"] = raw_text
+        aligned_segment["source_segment_index"] = int(segment.get("index", 0))
+        aligned.append(aligned_segment)
+
+    if len(aligned) < 2:
+        merged_segment = dict(segment)
+        if has_value(primary_speaker):
+            merged_segment["speaker_id"] = primary_speaker
+        return [merged_segment]
+    return aligned
+
+
+def merge_adjacent_segments(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    for segment in segments:
+        current = dict(segment)
+        current_speaker = string_value(current.get("speaker_id"))
+        if not merged:
+            merged.append(current)
+            continue
+        previous = merged[-1]
+        previous_speaker = string_value(previous.get("speaker_id"))
+        gap = float_value(current.get("start")) - float_value(previous.get("end"))
+        same_source = int(previous.get("source_segment_index", previous.get("index", -1))) == int(
+            current.get("source_segment_index", current.get("index", -2))
+        )
+        if (
+            has_value(current_speaker)
+            and current_speaker == previous_speaker
+            and gap <= MERGE_GAP_SECONDS
+            and (same_source or gap <= 0.05)
+        ):
+            previous["end"] = round(max(float_value(previous.get("end")), float_value(current.get("end"))), 3)
+            previous["text"] = join_text_parts(string_value(previous.get("text")), string_value(current.get("text")))
+            previous["raw_text"] = join_text_parts(
+                string_value(previous.get("raw_text"), previous.get("text")),
+                string_value(current.get("raw_text"), current.get("text")),
+            )
+            continue
+        merged.append(current)
+
+    for index, segment in enumerate(merged):
+        segment["index"] = index
+        segment["timestamp"] = string_value(segment.get("timestamp"), default=format_timestamp(float_value(segment.get("start"))))
+    return merged
+
+
 def assign_speaker_ids(
     segments: list[dict[str, Any]],
     turns: list[dict[str, Any]],
@@ -382,17 +624,29 @@ def assign_speaker_ids(
 ) -> list[dict[str, Any]]:
     enriched: list[dict[str, Any]] = []
     for segment in segments:
-        merged_segment = dict(segment)
-        speaker_id = select_speaker_id(segment, turns, min_overlap_ratio)
-        if has_value(speaker_id):
-            merged_segment["speaker_id"] = speaker_id
-        enriched.append(merged_segment)
-    return enriched
+        enriched.extend(split_segment_by_turns(segment, turns, min_overlap_ratio))
+    return merge_adjacent_segments(enriched)
 
 
-def speaker_order_from_intro(segments: list[dict[str, Any]], turns: list[dict[str, Any]]) -> list[str]:
+def speaker_order_from_intro(
+    segments: list[dict[str, Any]],
+    turns: list[dict[str, Any]],
+    intro_mentions: list[dict[str, Any]] | None = None,
+) -> list[str]:
     speaker_ids: list[str] = []
     seen: set[str] = set()
+    if isinstance(intro_mentions, list):
+        for mention in intro_mentions:
+            speaker_id = dominant_speaker_for_window(
+                float_value(mention.get("start")),
+                float_value(mention.get("end")),
+                turns,
+            )
+            if has_value(speaker_id) and speaker_id not in seen:
+                seen.add(speaker_id)
+                speaker_ids.append(speaker_id)
+    if speaker_ids:
+        return speaker_ids
     for turn in sorted(turns, key=lambda item: (float_value(item.get("start")), float_value(item.get("end")))):
         if float_value(turn.get("start")) > INTRO_WINDOW_SECONDS:
             break
@@ -430,6 +684,41 @@ def infer_auto_speaker_profiles(
     speaker_name_scores: dict[str, dict[str, float]] = {}
     speaker_name_evidence: dict[str, list[dict[str, Any]]] = {}
     intro_name_order = {name: index for index, name in enumerate(intro_names)}
+    detected_speaker_order = speaker_order_from_intro(segments, turns, intro_mentions)
+    all_detected_speakers = dedupe_strings([string_value(segment.get("speaker_id")) for segment in segments if has_value(segment.get("speaker_id"))])
+
+    def add_evidence(speaker_id: str, name: str, confidence: float, timestamp: str, text: str) -> None:
+        if not has_value(speaker_id) or not has_value(name):
+            return
+        speaker_name_scores.setdefault(speaker_id, {})
+        speaker_name_scores[speaker_id][name] = round(speaker_name_scores[speaker_id].get(name, 0.0) + confidence, 3)
+        speaker_name_evidence.setdefault(speaker_id, []).append(
+            {
+                "name": name,
+                "timestamp": string_value(timestamp),
+                "text": string_value(text),
+                "confidence": confidence,
+            }
+        )
+
+    for segment in intro_window_segments(segments):
+        speaker_id = string_value(segment.get("speaker_id"))
+        if not has_value(speaker_id):
+            continue
+        text = string_value(segment.get("text"), segment.get("raw_text"))
+        segment_matches = extract_self_intro_matches(text)
+        if not segment_matches:
+            continue
+        anchored_names = [segment_matches[-1][2]]
+        confidence = 2.6 if len(segment_matches) == 1 else 2.2
+        for name in anchored_names:
+            add_evidence(
+                speaker_id=speaker_id,
+                name=name,
+                confidence=confidence,
+                timestamp=string_value(segment.get("timestamp")),
+                text=text,
+            )
 
     for mention in intro_mentions:
         name = string_value(mention.get("name"))
@@ -447,19 +736,15 @@ def infer_auto_speaker_profiles(
             confidence = 1.0
         if not has_value(speaker_id):
             continue
-        speaker_name_scores.setdefault(speaker_id, {})
-        speaker_name_scores[speaker_id][name] = round(speaker_name_scores[speaker_id].get(name, 0.0) + confidence, 3)
-        speaker_name_evidence.setdefault(speaker_id, []).append(
-            {
-                "name": name,
-                "timestamp": string_value(mention.get("timestamp")),
-                "text": string_value(mention.get("text")),
-                "confidence": confidence,
-            }
+        add_evidence(
+            speaker_id=speaker_id,
+            name=name,
+            confidence=confidence,
+            timestamp=string_value(mention.get("timestamp")),
+            text=string_value(mention.get("text")),
         )
 
     candidate_pairs: list[tuple[float, int, int, str, str]] = []
-    detected_speaker_order = speaker_order_from_intro(segments, turns)
     speaker_order_index = {speaker_id: index for index, speaker_id in enumerate(detected_speaker_order)}
     for speaker_id, score_map in speaker_name_scores.items():
         for name, score in score_map.items():
@@ -482,7 +767,7 @@ def infer_auto_speaker_profiles(
         assignments[speaker_id] = name
         assigned_names.add(name)
 
-    remaining_speakers = [speaker_id for speaker_id in detected_speaker_order if speaker_id not in assignments]
+    remaining_speakers = [speaker_id for speaker_id in all_detected_speakers if speaker_id not in assignments]
     remaining_names = [name for name in intro_names if name not in assigned_names]
     if remaining_speakers and remaining_names and len(remaining_speakers) == len(remaining_names):
         for speaker_id, name in zip(remaining_speakers, remaining_names):
@@ -619,6 +904,42 @@ def apply_speaker_profiles(
             entry["first_timestamp"] = string_value(segment.get("timestamp"))
 
     return enriched, list(speaker_stats.values())
+
+
+def summarize_speaker_distribution(
+    speaker_map: list[dict[str, Any]],
+    expected_speaker_count: int,
+) -> dict[str, Any]:
+    total_seconds = round(sum(float_value(item.get("total_seconds")) for item in speaker_map), 3)
+    sparse_speakers: list[dict[str, Any]] = []
+    summary: list[dict[str, Any]] = []
+    for item in speaker_map:
+        seconds = round(float_value(item.get("total_seconds")), 3)
+        share = round(seconds / total_seconds, 4) if total_seconds > 0 else 0.0
+        entry = {
+            "speaker_id": string_value(item.get("speaker_id")),
+            "speaker": string_value(item.get("speaker")),
+            "segment_count": int(item.get("segment_count", 0) or 0),
+            "total_seconds": seconds,
+            "share": share,
+        }
+        summary.append(entry)
+        if seconds < 90 or share < 0.04:
+            sparse_speakers.append(entry)
+    return {
+        "detected_speaker_count": len(speaker_map),
+        "expected_speaker_count": expected_speaker_count,
+        "total_speaker_seconds": total_seconds,
+        "sparse_speakers": sparse_speakers,
+        "distribution": summary,
+        "status": (
+            "speaker_count_mismatch"
+            if expected_speaker_count >= 2 and len(speaker_map) != expected_speaker_count
+            else "sparse_speaker_detected"
+            if sparse_speakers
+            else "balanced"
+        ),
+    }
 
 
 def render_speaker_transcript(segments: list[dict[str, Any]]) -> str:
@@ -918,6 +1239,14 @@ def main() -> int:
             auto_profiles=auto_profiles,
             manual_overrides=manual_overrides,
         )
+        speaker_inference = {
+            **speaker_inference,
+            "alignment_strategy": "turn_aligned_split",
+            "distribution_summary": summarize_speaker_distribution(
+                speaker_map=speaker_map,
+                expected_speaker_count=expected_speaker_count,
+            ),
+        }
 
         success = len(speaker_map) > 0
         status = "success" if success else "no_speakers"
