@@ -17,6 +17,12 @@ SPLIT_SEGMENT_MIN_SECONDS = 3.2
 SPLIT_FRAGMENT_MIN_SECONDS = 0.45
 SPLIT_FRAGMENT_MIN_RATIO = 0.14
 MERGE_GAP_SECONDS = 0.35
+SPARSE_TURN_RESCUE_SHARE_THRESHOLD = 0.06
+SPARSE_TURN_RESCUE_SECONDS_THRESHOLD = 120.0
+SPARSE_TURN_RESCUE_MIN_OVERLAP_SECONDS = 0.28
+SPARSE_TURN_RESCUE_MIN_WINDOW_SECONDS = 1.05
+SPARSE_TURN_RESCUE_MERGE_GAP_SECONDS = 0.22
+SPARSE_TURN_RESCUE_MAX_WINDOWS_PER_SEGMENT = 6
 DEFAULT_REFINEMENT_STRATEGY = "embedding_agglomerative"
 DEFAULT_REFINEMENT_TURN_MIN_SECONDS = 1.2
 DEFAULT_REFINEMENT_WINDOW_SECONDS = 3.2
@@ -316,20 +322,49 @@ def intro_window_segments(segments: list[dict[str, Any]]) -> list[dict[str, Any]
     ]
 
 
-def extract_self_intro_matches(text: str) -> list[tuple[int, int, str]]:
+def extract_self_intro_phrases(text: str) -> list[dict[str, Any]]:
     source_text = string_value(text)
-    matches: list[tuple[int, int, str]] = []
+    phrases: list[dict[str, Any]] = []
     seen_spans: set[tuple[int, int, str]] = set()
     if not has_value(source_text):
-        return matches
+        return phrases
     for pattern in SELF_INTRO_PATTERNS:
         for match in pattern.finditer(source_text):
             name = normalize_name_candidate(match.group("name"))
+            if not has_value(name):
+                continue
+            phrase_start = match.start()
+            phrase_end = match.end()
+            while phrase_start < phrase_end and source_text[phrase_start] in " \t\r\n，。！？!?,、:：;；":
+                phrase_start += 1
             key = (match.start("name"), match.end("name"), name)
-            if not has_value(name) or key in seen_spans:
+            if key in seen_spans:
                 continue
             seen_spans.add(key)
-            matches.append(key)
+            phrases.append(
+                {
+                    "phrase_start": phrase_start,
+                    "phrase_end": phrase_end,
+                    "name_start": match.start("name"),
+                    "name_end": match.end("name"),
+                    "name": name,
+                    "phrase_text": source_text[phrase_start:phrase_end].strip(),
+                }
+            )
+    phrases.sort(key=lambda item: int(item.get("name_start", 0)))
+    return phrases
+
+
+def extract_self_intro_matches(text: str) -> list[tuple[int, int, str]]:
+    matches: list[tuple[int, int, str]] = []
+    for phrase in extract_self_intro_phrases(text):
+        matches.append(
+            (
+                int(phrase.get("name_start", 0)),
+                int(phrase.get("name_end", 0)),
+                string_value(phrase.get("name")),
+            )
+        )
     matches.sort(key=lambda item: item[0])
     return matches
 
@@ -554,6 +589,102 @@ def allocate_text_spans(text: str, fragment_durations: list[float]) -> list[str]
     return [source_text] + ["" for _ in fragment_durations[1:]]
 
 
+def split_text_by_char_boundaries(text: str, boundaries: list[int]) -> list[str]:
+    source_text = string_value(text)
+    if not has_value(source_text):
+        return ["" for _ in range(max(0, len(boundaries) - 1))]
+    if len(boundaries) < 2:
+        return [source_text]
+
+    normalized_boundaries: list[int] = [0]
+    text_length = len(source_text)
+    for boundary in boundaries[1:-1]:
+        normalized_boundaries.append(max(normalized_boundaries[-1], min(int_value(boundary), text_length)))
+    normalized_boundaries.append(text_length)
+
+    parts: list[str] = []
+    for index in range(len(normalized_boundaries) - 1):
+        start = normalized_boundaries[index]
+        end = normalized_boundaries[index + 1]
+        part = source_text[start:end].strip()
+        if not has_value(part) and index == len(normalized_boundaries) - 2 and parts:
+            parts[-1] = join_text_parts(parts[-1], source_text[start:end])
+            part = ""
+        parts.append(part)
+    return parts
+
+
+def allocate_text_spans_with_separator_bias(text: str, fragment_durations: list[float]) -> list[str]:
+    source_text = string_value(text)
+    if not has_value(source_text):
+        return ["" for _ in fragment_durations]
+    if len(fragment_durations) <= 1:
+        return [source_text]
+
+    total_duration = sum(max(duration, 0.0) for duration in fragment_durations) or float(len(fragment_durations))
+    target_length = len(source_text)
+    raw_boundaries = [0]
+    running = 0.0
+    for duration in fragment_durations[:-1]:
+        running += max(duration, 0.0)
+        raw_boundaries.append(int(round(target_length * running / total_duration)))
+    raw_boundaries.append(target_length)
+
+    separator_chars = set(" \t\r\n，。！？!?,、:：;；")
+    normalized_boundaries: list[int] = [0]
+    required_remaining = len(fragment_durations) - 1
+    max_index = target_length
+    for boundary in raw_boundaries[1:-1]:
+        lower = normalized_boundaries[-1] + 1
+        upper = max(lower, max_index - required_remaining)
+        snapped_boundary = max(lower, min(boundary, upper))
+        best_boundary = snapped_boundary
+        best_distance = target_length + 1
+        search_start = max(lower, snapped_boundary - 8)
+        search_end = min(upper, snapped_boundary + 8)
+        for candidate in range(search_start, search_end + 1):
+            left_char = source_text[candidate - 1] if candidate - 1 >= 0 and candidate - 1 < target_length else ""
+            right_char = source_text[candidate] if candidate < target_length else ""
+            if left_char not in separator_chars and right_char not in separator_chars:
+                continue
+            distance = abs(candidate - snapped_boundary)
+            if distance < best_distance:
+                best_distance = distance
+                best_boundary = candidate
+        normalized_boundaries.append(best_boundary)
+        required_remaining -= 1
+    normalized_boundaries.append(target_length)
+    return split_text_by_char_boundaries(source_text, normalized_boundaries)
+
+
+def summarize_turn_distribution(turns: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    total_seconds = round(sum(max(0.0, float_value(item.get("end")) - float_value(item.get("start"))) for item in turns), 3)
+    stats: OrderedDict[str, dict[str, Any]] = OrderedDict()
+    for turn in sorted(turns, key=lambda item: (float_value(item.get("start")), float_value(item.get("end")))):
+        speaker_id = string_value(turn.get("speaker_id"))
+        if not has_value(speaker_id):
+            continue
+        duration = round(max(0.0, float_value(turn.get("end")) - float_value(turn.get("start"))), 3)
+        if duration <= 0:
+            continue
+        entry = stats.setdefault(
+            speaker_id,
+            {
+                "speaker_id": speaker_id,
+                "turn_count": 0,
+                "total_seconds": 0.0,
+                "share": 0.0,
+            },
+        )
+        entry["turn_count"] = int(entry.get("turn_count", 0)) + 1
+        entry["total_seconds"] = round(float_value(entry.get("total_seconds")) + duration, 3)
+
+    for entry in stats.values():
+        seconds = round(float_value(entry.get("total_seconds")), 3)
+        entry["share"] = round(seconds / total_seconds, 4) if total_seconds > 0 else 0.0
+    return list(stats.values())
+
+
 def split_segment_by_turns(
     segment: dict[str, Any],
     turns: list[dict[str, Any]],
@@ -686,6 +817,424 @@ def assign_speaker_ids(
     for segment in segments:
         enriched.extend(split_segment_by_turns(segment, turns, min_overlap_ratio))
     return merge_adjacent_segments(enriched)
+
+
+def apply_sparse_speaker_turn_rescue(
+    segments: list[dict[str, Any]],
+    turns: list[dict[str, Any]],
+    expected_speaker_count: int,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    if expected_speaker_count < 3:
+        return segments, {
+            "status": "not_applicable",
+            "sparse_speaker_ids": [],
+            "applied_segment_count": 0,
+            "applied_fragments": 0,
+            "diagnostics": [],
+        }
+
+    turn_distribution = summarize_turn_distribution(turns)
+    sparse_speaker_ids = [
+        string_value(item.get("speaker_id"))
+        for item in turn_distribution
+        if (
+            float_value(item.get("total_seconds")) < SPARSE_TURN_RESCUE_SECONDS_THRESHOLD
+            or float_value(item.get("share")) < SPARSE_TURN_RESCUE_SHARE_THRESHOLD
+        )
+    ]
+    sparse_speaker_ids = [speaker_id for speaker_id in sparse_speaker_ids if has_value(speaker_id)]
+    if not sparse_speaker_ids:
+        return segments, {
+            "status": "no_sparse_speakers",
+            "sparse_speaker_ids": [],
+            "applied_segment_count": 0,
+            "applied_fragments": 0,
+            "diagnostics": [],
+        }
+
+    updated_segments: list[dict[str, Any]] = []
+    diagnostics: list[dict[str, Any]] = []
+    applied_segment_count = 0
+    applied_fragments = 0
+
+    for segment in segments:
+        segment_speaker_id = string_value(segment.get("speaker_id"))
+        if segment_speaker_id in sparse_speaker_ids:
+            updated_segments.append(dict(segment))
+            continue
+
+        segment_start = float_value(segment.get("start"))
+        segment_end = max(segment_start, float_value(segment.get("end")))
+        text = string_value(segment.get("text"), segment.get("raw_text"))
+        if not has_value(text) or segment_end - segment_start < 4.0:
+            updated_segments.append(dict(segment))
+            continue
+
+        clipped_windows: list[dict[str, Any]] = []
+        for turn in turns:
+            speaker_id = string_value(turn.get("speaker_id"))
+            if speaker_id not in sparse_speaker_ids:
+                continue
+            overlap_start = max(segment_start, float_value(turn.get("start")))
+            overlap_end = min(segment_end, float_value(turn.get("end")))
+            if overlap_end - overlap_start < 0.02:
+                continue
+            clipped_windows.append(
+                {
+                    "speaker_id": speaker_id,
+                    "start": round(overlap_start, 3),
+                    "end": round(overlap_end, 3),
+                }
+            )
+
+        if not clipped_windows:
+            updated_segments.append(dict(segment))
+            continue
+
+        clipped_windows.sort(key=lambda item: (float_value(item.get("start")), float_value(item.get("end"))))
+        merged_windows: list[dict[str, Any]] = []
+        for window in clipped_windows:
+            if (
+                merged_windows
+                and string_value(merged_windows[-1].get("speaker_id")) == string_value(window.get("speaker_id"))
+                and float_value(window.get("start")) <= float_value(merged_windows[-1].get("end")) + SPARSE_TURN_RESCUE_MERGE_GAP_SECONDS
+            ):
+                merged_windows[-1]["end"] = round(max(float_value(merged_windows[-1].get("end")), float_value(window.get("end"))), 3)
+                continue
+            merged_windows.append(dict(window))
+
+        merged_windows = [
+            {
+                **window,
+                "duration": round(float_value(window.get("end")) - float_value(window.get("start")), 3),
+            }
+            for window in merged_windows
+            if float_value(window.get("end")) - float_value(window.get("start")) >= SPARSE_TURN_RESCUE_MIN_OVERLAP_SECONDS
+        ]
+
+        if not merged_windows:
+            updated_segments.append(dict(segment))
+            continue
+
+        if len(merged_windows) > SPARSE_TURN_RESCUE_MAX_WINDOWS_PER_SEGMENT:
+            diagnostics.append(
+                {
+                    "segment_index": int(segment.get("index", -1)),
+                    "timestamp": string_value(segment.get("timestamp")),
+                    "text": text,
+                    "status": "skipped_too_many_sparse_windows",
+                    "window_count": len(merged_windows),
+                }
+            )
+            updated_segments.append(dict(segment))
+            continue
+
+        expanded_windows: list[dict[str, Any]] = []
+        for index, window in enumerate(merged_windows):
+            previous_end = segment_start if index == 0 else float_value(expanded_windows[-1].get("end"))
+            next_start = segment_end if index == len(merged_windows) - 1 else float_value(merged_windows[index + 1].get("start"))
+            current_start = float_value(window.get("start"))
+            current_end = float_value(window.get("end"))
+            current_duration = max(0.0, current_end - current_start)
+            target_duration = max(current_duration, SPARSE_TURN_RESCUE_MIN_WINDOW_SECONDS)
+            extra = max(0.0, target_duration - current_duration)
+            available_before = max(0.0, current_start - previous_end)
+            available_after = max(0.0, next_start - current_end)
+            expand_before = min(available_before, extra / 2)
+            expand_after = min(available_after, extra - expand_before)
+            if expand_before + expand_after < extra:
+                remaining = extra - expand_before - expand_after
+                extra_before = min(max(0.0, available_before - expand_before), remaining)
+                expand_before += extra_before
+                remaining -= extra_before
+                if remaining > 0:
+                    expand_after += min(max(0.0, available_after - expand_after), remaining)
+            expanded_windows.append(
+                {
+                    "speaker_id": string_value(window.get("speaker_id")),
+                    "start": round(max(previous_end, current_start - expand_before), 3),
+                    "end": round(min(next_start, current_end + expand_after), 3),
+                }
+            )
+
+        fragments: list[dict[str, Any]] = []
+        cursor = segment_start
+        for window in expanded_windows:
+            window_start = float_value(window.get("start"))
+            window_end = float_value(window.get("end"))
+            if window_start - cursor >= 0.05:
+                fragments.append(
+                    {
+                        "speaker_id": segment_speaker_id,
+                        "start": round(cursor, 3),
+                        "end": round(window_start, 3),
+                    }
+                )
+            fragments.append(
+                {
+                    "speaker_id": string_value(window.get("speaker_id")),
+                    "start": round(window_start, 3),
+                    "end": round(window_end, 3),
+                }
+            )
+            cursor = window_end
+        if segment_end - cursor >= 0.05:
+            fragments.append(
+                {
+                    "speaker_id": segment_speaker_id,
+                    "start": round(cursor, 3),
+                    "end": round(segment_end, 3),
+                }
+            )
+
+        fragments = [
+            {
+                **fragment,
+                "duration": round(float_value(fragment.get("end")) - float_value(fragment.get("start")), 3),
+            }
+            for fragment in fragments
+            if float_value(fragment.get("end")) - float_value(fragment.get("start")) >= 0.05
+        ]
+        if len(fragments) < 2:
+            updated_segments.append(dict(segment))
+            continue
+
+        fragment_durations = [float_value(item.get("duration")) for item in fragments]
+        text_parts = allocate_text_spans_with_separator_bias(text, fragment_durations)
+        raw_text_parts = allocate_text_spans_with_separator_bias(string_value(segment.get("raw_text"), text), fragment_durations)
+
+        created_fragments: list[dict[str, Any]] = []
+        for index, fragment in enumerate(fragments):
+            fragment_text = string_value(text_parts[index] if index < len(text_parts) else "")
+            fragment_raw_text = string_value(raw_text_parts[index] if index < len(raw_text_parts) else fragment_text)
+            if not has_value(fragment_text) and not has_value(fragment_raw_text):
+                continue
+            created_fragment = dict(segment)
+            created_fragment["start"] = round(float_value(fragment.get("start")), 3)
+            created_fragment["end"] = round(float_value(fragment.get("end")), 3)
+            created_fragment["timestamp"] = format_timestamp(float_value(fragment.get("start")))
+            created_fragment["speaker_id"] = string_value(fragment.get("speaker_id"))
+            created_fragment["text"] = fragment_text
+            created_fragment["raw_text"] = fragment_raw_text
+            created_fragment["source_segment_index"] = int(
+                segment.get("source_segment_index", segment.get("index", 0))
+                if segment.get("source_segment_index", segment.get("index", 0)) is not None
+                else 0
+            )
+            created_fragment["split_strategy"] = "sparse_speaker_turn_rescue"
+            created_fragments.append(created_fragment)
+
+        if len(created_fragments) < 2:
+            updated_segments.append(dict(segment))
+            continue
+
+        applied_segment_count += 1
+        applied_fragments += len(created_fragments)
+        diagnostics.append(
+            {
+                "segment_index": int(segment.get("index", -1)),
+                "timestamp": string_value(segment.get("timestamp")),
+                "speaker_id": segment_speaker_id,
+                "text": text,
+                "windows": [
+                    {
+                        "speaker_id": string_value(item.get("speaker_id")),
+                        "start": float_value(item.get("start")),
+                        "end": float_value(item.get("end")),
+                    }
+                    for item in expanded_windows
+                ],
+                "status": "applied",
+            }
+        )
+        updated_segments.extend(created_fragments)
+
+    return merge_adjacent_segments(updated_segments), {
+        "status": "applied" if applied_segment_count else "no_action",
+        "sparse_speaker_ids": sparse_speaker_ids,
+        "applied_segment_count": applied_segment_count,
+        "applied_fragments": applied_fragments,
+        "turn_distribution": turn_distribution,
+        "diagnostics": diagnostics,
+    }
+
+
+def apply_intro_text_guided_split(
+    segments: list[dict[str, Any]],
+    speaker_inference: dict[str, Any],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    auto_assignments = (
+        speaker_inference.get("auto_assignments")
+        if isinstance(speaker_inference.get("auto_assignments"), list)
+        else []
+    )
+    name_to_speaker_id: dict[str, str] = {}
+    for item in auto_assignments:
+        if not isinstance(item, dict):
+            continue
+        speaker_id = string_value(item.get("speaker_id"))
+        name = string_value(item.get("speaker"))
+        if has_value(speaker_id) and has_value(name) and name not in name_to_speaker_id:
+            name_to_speaker_id[name] = speaker_id
+
+    if len(name_to_speaker_id) < 2:
+        return segments, {
+            "status": "not_applicable",
+            "applied_segment_count": 0,
+            "applied_fragments": 0,
+            "diagnostics": [],
+        }
+
+    updated_segments: list[dict[str, Any]] = []
+    diagnostics: list[dict[str, Any]] = []
+    applied_segment_count = 0
+    applied_fragments = 0
+
+    for segment in segments:
+        text = string_value(segment.get("text"), segment.get("raw_text"))
+        phrases = extract_self_intro_phrases(text)
+        phrase_names = [string_value(item.get("name")) for item in phrases if has_value(item.get("name"))]
+
+        if (
+            float_value(segment.get("start")) > INTRO_WINDOW_SECONDS
+            or len(phrases) < 2
+            or len(dedupe_strings(phrase_names)) < 2
+        ):
+            updated_segments.append(dict(segment))
+            continue
+
+        mapped_speaker_ids = [string_value(name_to_speaker_id.get(name)) for name in phrase_names]
+        if any(not has_value(speaker_id) for speaker_id in mapped_speaker_ids):
+            diagnostics.append(
+                {
+                    "segment_index": int(segment.get("index", -1)),
+                    "timestamp": string_value(segment.get("timestamp")),
+                    "text": text,
+                    "names": phrase_names,
+                    "status": "skipped_missing_name_mapping",
+                }
+            )
+            updated_segments.append(dict(segment))
+            continue
+        if len(dedupe_strings(mapped_speaker_ids)) < len(mapped_speaker_ids):
+            diagnostics.append(
+                {
+                    "segment_index": int(segment.get("index", -1)),
+                    "timestamp": string_value(segment.get("timestamp")),
+                    "text": text,
+                    "names": phrase_names,
+                    "speaker_ids": mapped_speaker_ids,
+                    "status": "skipped_non_unique_speaker_mapping",
+                }
+            )
+            updated_segments.append(dict(segment))
+            continue
+
+        segment_start = float_value(segment.get("start"))
+        segment_end = max(segment_start, float_value(segment.get("end")))
+        segment_duration = max(0.001, segment_end - segment_start)
+        text_length = max(len(text), 1)
+        boundaries = [0] + [int(phrase.get("phrase_start", 0)) for phrase in phrases[1:]] + [text_length]
+        normalized_boundaries = [0]
+        for boundary in boundaries[1:-1]:
+            normalized_boundaries.append(max(normalized_boundaries[-1] + 1, min(boundary, text_length - 1)))
+        normalized_boundaries.append(text_length)
+
+        fragment_durations: list[float] = []
+        fragments: list[dict[str, Any]] = []
+        for index, phrase in enumerate(phrases):
+            char_start = normalized_boundaries[index]
+            char_end = normalized_boundaries[index + 1]
+            start = segment_start + segment_duration * (char_start / text_length)
+            end = segment_start + segment_duration * (char_end / text_length)
+            if index == len(phrases) - 1:
+                end = segment_end
+            if end - start < max(0.28, SPLIT_FRAGMENT_MIN_SECONDS * 0.6):
+                fragments = []
+                break
+            fragment_durations.append(round(end - start, 3))
+            fragments.append(
+                {
+                    "start": round(start, 3),
+                    "end": round(end, 3),
+                    "speaker_id": mapped_speaker_ids[index],
+                    "name": string_value(phrase.get("name")),
+                }
+            )
+
+        if len(fragments) < 2:
+            diagnostics.append(
+                {
+                    "segment_index": int(segment.get("index", -1)),
+                    "timestamp": string_value(segment.get("timestamp")),
+                    "text": text,
+                    "names": phrase_names,
+                    "status": "skipped_fragment_too_short",
+                }
+            )
+            updated_segments.append(dict(segment))
+            continue
+
+        text_parts = split_text_by_char_boundaries(text, normalized_boundaries)
+        raw_text_parts = allocate_text_spans(
+            string_value(segment.get("raw_text"), text),
+            fragment_durations,
+        )
+
+        created_fragments: list[dict[str, Any]] = []
+        for index, fragment in enumerate(fragments):
+            fragment_text = string_value(text_parts[index] if index < len(text_parts) else "")
+            fragment_raw_text = string_value(raw_text_parts[index] if index < len(raw_text_parts) else fragment_text)
+            if not has_value(fragment_text) and not has_value(fragment_raw_text):
+                continue
+            created_fragment = dict(segment)
+            created_fragment["start"] = round(float_value(fragment.get("start")), 3)
+            created_fragment["end"] = round(float_value(fragment.get("end")), 3)
+            created_fragment["timestamp"] = format_timestamp(float_value(fragment.get("start")))
+            created_fragment["speaker_id"] = string_value(fragment.get("speaker_id"))
+            created_fragment["text"] = fragment_text
+            created_fragment["raw_text"] = fragment_raw_text
+            created_fragment["source_segment_index"] = int(
+                segment.get("source_segment_index", segment.get("index", 0))
+                if segment.get("source_segment_index", segment.get("index", 0)) is not None
+                else 0
+            )
+            created_fragment["split_strategy"] = "intro_text_guided_self_intro"
+            created_fragments.append(created_fragment)
+
+        if len(created_fragments) < 2:
+            updated_segments.append(dict(segment))
+            continue
+
+        applied_segment_count += 1
+        applied_fragments += len(created_fragments)
+        diagnostics.append(
+            {
+                "segment_index": int(segment.get("index", -1)),
+                "timestamp": string_value(segment.get("timestamp")),
+                "text": text,
+                "names": phrase_names,
+                "speaker_ids": mapped_speaker_ids,
+                "fragments": [
+                    {
+                        "start": float_value(item.get("start")),
+                        "end": float_value(item.get("end")),
+                        "speaker_id": string_value(item.get("speaker_id")),
+                        "text": string_value(item.get("text")),
+                    }
+                    for item in created_fragments
+                ],
+                "status": "applied",
+            }
+        )
+        updated_segments.extend(created_fragments)
+
+    return merge_adjacent_segments(updated_segments), {
+        "status": "applied" if applied_segment_count else "no_action",
+        "applied_segment_count": applied_segment_count,
+        "applied_fragments": applied_fragments,
+        "diagnostics": diagnostics,
+    }
 
 
 def speaker_order_from_intro(
@@ -1731,6 +2280,20 @@ def main() -> int:
             turns=turns,
             min_overlap_ratio=float(args.min_overlap_ratio),
         )
+        _, pre_split_speaker_inference = infer_auto_speaker_profiles(
+            segments=segments_with_speaker_ids,
+            turns=turns,
+            intro_context=intro_context,
+        )
+        segments_with_speaker_ids, intro_text_guided_split = apply_intro_text_guided_split(
+            segments=segments_with_speaker_ids,
+            speaker_inference=pre_split_speaker_inference,
+        )
+        segments_with_speaker_ids, sparse_speaker_turn_rescue = apply_sparse_speaker_turn_rescue(
+            segments=segments_with_speaker_ids,
+            turns=turns,
+            expected_speaker_count=expected_speaker_count,
+        )
         auto_profiles, speaker_inference = infer_auto_speaker_profiles(
             segments=segments_with_speaker_ids,
             turns=turns,
@@ -1741,6 +2304,13 @@ def main() -> int:
             "expected_speaker_count": expected_speaker_count,
             "provider": provider,
             "refinement": refinement_summary,
+            "pre_text_guided_auto_assignments": (
+                pre_split_speaker_inference.get("auto_assignments")
+                if isinstance(pre_split_speaker_inference.get("auto_assignments"), list)
+                else []
+            ),
+            "intro_text_guided_split": intro_text_guided_split,
+            "sparse_speaker_turn_rescue": sparse_speaker_turn_rescue,
         }
         enriched_segments, speaker_map = apply_speaker_profiles(
             segments=segments_with_speaker_ids,
