@@ -599,11 +599,11 @@ function Test-PodcastCaptureHasReusableArtifacts {
     if ($null -eq $Capture) { return $false }
     $metadata = Get-DataValue -Data $Capture -Name 'metadata'
     $candidateValues = @(
-        Get-StringValue -Data $Capture -Name 'transcript' -DefaultValue '',
-        Get-StringValue -Data $Capture -Name 'audio_path' -DefaultValue '',
-        Get-StringValue -Data $Capture -Name 'transcript_path' -DefaultValue '',
-        Get-StringValue -Data $Capture -Name 'transcript_segments_path' -DefaultValue '',
-        Get-StringValue -Data $Capture -Name 'speakers_path' -DefaultValue '',
+        $(Get-StringValue -Data $Capture -Name 'transcript' -DefaultValue ''),
+        $(Get-StringValue -Data $Capture -Name 'audio_path' -DefaultValue ''),
+        $(Get-StringValue -Data $Capture -Name 'transcript_path' -DefaultValue ''),
+        $(Get-StringValue -Data $Capture -Name 'transcript_segments_path' -DefaultValue ''),
+        $(Get-StringValue -Data $Capture -Name 'speakers_path' -DefaultValue ''),
         $(if ($null -ne $metadata) { Get-StringValue -Data $metadata -Name 'audio_path' -DefaultValue '' } else { '' }),
         $(if ($null -ne $metadata) { Get-StringValue -Data $metadata -Name 'transcript_path' -DefaultValue '' } else { '' }),
         $(if ($null -ne $metadata) { Get-StringValue -Data $metadata -Name 'transcript_segments_path' -DefaultValue '' } else { '' }),
