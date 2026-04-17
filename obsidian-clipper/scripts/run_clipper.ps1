@@ -531,6 +531,222 @@ function Get-ConfiguredPathValue {
     $value
 }
 
+function Read-JsonFileIfExists {
+    param(
+        [string]$Path,
+        [int]$Depth = 64
+    )
+    if (-not (Test-HasValue $Path) -or -not (Test-Path $Path)) { return $null }
+    try {
+        ConvertFrom-JsonCompat -Json (Read-Utf8Text -Path $Path) -Depth $Depth
+    } catch {
+        $null
+    }
+}
+
+function Get-PodcastAssetDirectory {
+    param(
+        $Config,
+        [string]$ResolvedVaultPath,
+        [string]$Platform,
+        [string]$CaptureId
+    )
+    if (-not (Test-HasValue $ResolvedVaultPath) -or -not (Test-HasValue $CaptureId)) { return '' }
+    $attachmentsRoot = if ($null -ne $Config.clipper -and $null -ne $Config.clipper.PSObject.Properties['podcast_attachments_root'] -and (Test-HasValue ([string]$Config.clipper.podcast_attachments_root))) {
+        [string]$Config.clipper.podcast_attachments_root
+    } else {
+        'Attachments/Podcasts'
+    }
+    Join-Path (Join-Path (Join-Path $ResolvedVaultPath $attachmentsRoot) $Platform) $CaptureId
+}
+
+function Get-PodcastEpisodeAudioFile {
+    param([string]$AssetDirectory)
+    if (-not (Test-HasValue $AssetDirectory) -or -not (Test-Path $AssetDirectory)) { return '' }
+    $audioFile = Get-ChildItem -LiteralPath $AssetDirectory -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.BaseName -eq 'episode' -and $_.Extension -match '^\.(mp3|m4a|aac|wav|flac|mp4a)$' } |
+        Sort-Object LastWriteTime -Descending |
+        Select-Object -First 1
+    if ($null -eq $audioFile) { return '' }
+    $audioFile.FullName
+}
+
+function Test-IsLikelyNetworkFailureMessage {
+    param([string]$Message)
+    if (-not (Test-HasValue $Message)) { return $false }
+    $patterns = @(
+        '无法连接到远程服务器',
+        'The remote name could not be resolved',
+        'No such host is known',
+        'Name or service not known',
+        'timed out',
+        '超时',
+        'Unable to connect',
+        'actively refused',
+        'Connection refused',
+        '远程服务器',
+        'socket',
+        '连接'
+    )
+    foreach ($pattern in $patterns) {
+        if ($Message -match $pattern) { return $true }
+    }
+    $false
+}
+
+function Test-PodcastCaptureHasReusableArtifacts {
+    param($Capture)
+    if ($null -eq $Capture) { return $false }
+    $metadata = Get-DataValue -Data $Capture -Name 'metadata'
+    $candidateValues = @(
+        Get-StringValue -Data $Capture -Name 'transcript' -DefaultValue '',
+        Get-StringValue -Data $Capture -Name 'audio_path' -DefaultValue '',
+        Get-StringValue -Data $Capture -Name 'transcript_path' -DefaultValue '',
+        Get-StringValue -Data $Capture -Name 'transcript_segments_path' -DefaultValue '',
+        Get-StringValue -Data $Capture -Name 'speakers_path' -DefaultValue '',
+        $(if ($null -ne $metadata) { Get-StringValue -Data $metadata -Name 'audio_path' -DefaultValue '' } else { '' }),
+        $(if ($null -ne $metadata) { Get-StringValue -Data $metadata -Name 'transcript_path' -DefaultValue '' } else { '' }),
+        $(if ($null -ne $metadata) { Get-StringValue -Data $metadata -Name 'transcript_segments_path' -DefaultValue '' } else { '' }),
+        $(if ($null -ne $metadata) { Get-StringValue -Data $metadata -Name 'speakers_path' -DefaultValue '' } else { '' })
+    )
+    foreach ($value in $candidateValues) {
+        if (Test-HasValue $value) { return $true }
+    }
+    $false
+}
+
+function Try-LoadExistingPodcastCapture {
+    param(
+        $Config,
+        [string]$Url,
+        [string]$Platform,
+        [string]$ResolvedVaultPath,
+        [string]$ErrorText
+    )
+
+    if (-not (Test-HasValue $ResolvedVaultPath)) { return $null }
+    $identity = New-PodcastIdentity -Url $Url -Platform $Platform
+    if (-not (Test-HasValue $identity.capture_id)) { return $null }
+
+    $assetDirectory = Get-PodcastAssetDirectory -Config $Config -ResolvedVaultPath $ResolvedVaultPath -Platform $Platform -CaptureId $identity.capture_id
+    if (-not (Test-HasValue $assetDirectory) -or -not (Test-Path $assetDirectory)) { return $null }
+
+    $capturePath = Join-Path $assetDirectory 'capture.json'
+    $capture = Read-JsonFileIfExists -Path $capturePath -Depth 100
+    if ($null -eq $capture -or -not (Test-PodcastCaptureHasReusableArtifacts -Capture $capture)) { return $null }
+
+    $metadata = Get-DataValue -Data $capture -Name 'metadata'
+    if ($null -eq $metadata) {
+        $metadata = [pscustomobject]@{}
+        Set-ObjectField -Object $capture -Name 'metadata' -Value $metadata | Out-Null
+    }
+
+    Set-ObjectField -Object $metadata -Name 'extractor' -Value 'local-reuse-after-network-failure' | Out-Null
+    Set-ObjectField -Object $metadata -Name 'fallback_reason' -Value $ErrorText | Out-Null
+    Set-ObjectField -Object $metadata -Name 'page_fetch_error' -Value $ErrorText | Out-Null
+    Set-ObjectField -Object $metadata -Name 'reused_local_capture' -Value $true | Out-Null
+    Set-ObjectField -Object $metadata -Name 'analysis_ready' -Value $true | Out-Null
+    Set-ObjectField -Object $capture -Name 'metadata' -Value $metadata | Out-Null
+    $capture
+}
+
+function Apply-PodcastFormalDefaults {
+    param($Config)
+    if ($null -eq $Config -or $null -eq $Config.routes) { return $Config }
+
+    $podcastConfig = Get-DataValue -Data $Config.routes -Name 'podcast'
+    if ($null -eq $podcastConfig) { return $Config }
+
+    if (-not (Test-HasValue (Get-StringValue -Data $podcastConfig -Name 'runtime_profile' -DefaultValue ''))) {
+        Set-NestedObjectValue -Object $Config -Path @('routes', 'podcast', 'runtime_profile') -Value 'gpu_balanced' | Out-Null
+    }
+    if ($null -eq $podcastConfig.PSObject.Properties['reuse_existing_assets']) {
+        Set-NestedObjectValue -Object $Config -Path @('routes', 'podcast', 'reuse_existing_assets') -Value $true | Out-Null
+    }
+    if ($null -eq $podcastConfig.PSObject.Properties['reuse_local_capture_on_network_failure']) {
+        Set-NestedObjectValue -Object $Config -Path @('routes', 'podcast', 'reuse_local_capture_on_network_failure') -Value $true | Out-Null
+    }
+
+    $asrConfig = Get-DataValue -Data $podcastConfig -Name 'asr'
+    if ($null -ne $asrConfig) {
+        $asrScriptPath = Get-ConfiguredPathValue -Object $asrConfig -PropertyName 'script'
+        if ($null -eq $asrConfig.PSObject.Properties['enabled'] -and (Test-HasValue $asrScriptPath)) {
+            Set-NestedObjectValue -Object $Config -Path @('routes', 'podcast', 'asr', 'enabled') -Value $true | Out-Null
+        }
+        if (-not (Test-HasValue (Get-StringValue -Data $asrConfig -Name 'provider' -DefaultValue ''))) {
+            Set-NestedObjectValue -Object $Config -Path @('routes', 'podcast', 'asr', 'provider') -Value 'faster-whisper' | Out-Null
+        }
+        if (-not (Test-HasValue (Get-StringValue -Data $asrConfig -Name 'model' -DefaultValue ''))) {
+            Set-NestedObjectValue -Object $Config -Path @('routes', 'podcast', 'asr', 'model') -Value 'large-v3' | Out-Null
+        }
+        if (-not (Test-HasValue (Get-StringValue -Data $asrConfig -Name 'language' -DefaultValue ''))) {
+            Set-NestedObjectValue -Object $Config -Path @('routes', 'podcast', 'asr', 'language') -Value 'zh' | Out-Null
+        }
+        if (-not (Test-HasValue (Get-StringValue -Data $asrConfig -Name 'device' -DefaultValue ''))) {
+            Set-NestedObjectValue -Object $Config -Path @('routes', 'podcast', 'asr', 'device') -Value 'cuda' | Out-Null
+        }
+        if (-not (Test-HasValue (Get-StringValue -Data $asrConfig -Name 'compute_type' -DefaultValue ''))) {
+            Set-NestedObjectValue -Object $Config -Path @('routes', 'podcast', 'asr', 'compute_type') -Value 'float16' | Out-Null
+        }
+        if ($null -eq $asrConfig.PSObject.Properties['beam_size']) {
+            Set-NestedObjectValue -Object $Config -Path @('routes', 'podcast', 'asr', 'beam_size') -Value 5 | Out-Null
+        }
+        if ($null -eq $asrConfig.PSObject.Properties['vad_filter']) {
+            Set-NestedObjectValue -Object $Config -Path @('routes', 'podcast', 'asr', 'vad_filter') -Value $true | Out-Null
+        }
+        if (-not (Test-HasValue (Get-StringValue -Data $asrConfig -Name 'normalize_script' -DefaultValue ''))) {
+            Set-NestedObjectValue -Object $Config -Path @('routes', 'podcast', 'asr', 'normalize_script') -Value 'simplified' | Out-Null
+        }
+    }
+
+    $diarizationConfig = Get-DataValue -Data $podcastConfig -Name 'diarization'
+    if ($null -ne $diarizationConfig) {
+        $diarizationScriptPath = Get-ConfiguredPathValue -Object $diarizationConfig -PropertyName 'script'
+        if ($null -eq $diarizationConfig.PSObject.Properties['enabled'] -and (Test-HasValue $diarizationScriptPath)) {
+            Set-NestedObjectValue -Object $Config -Path @('routes', 'podcast', 'diarization', 'enabled') -Value $true | Out-Null
+        }
+        if (-not (Test-HasValue (Get-StringValue -Data $diarizationConfig -Name 'provider' -DefaultValue ''))) {
+            Set-NestedObjectValue -Object $Config -Path @('routes', 'podcast', 'diarization', 'provider') -Value 'pyannote' | Out-Null
+        }
+        if (-not (Test-HasValue (Get-StringValue -Data $diarizationConfig -Name 'model' -DefaultValue ''))) {
+            Set-NestedObjectValue -Object $Config -Path @('routes', 'podcast', 'diarization', 'model') -Value 'pyannote/speaker-diarization-3.1' | Out-Null
+        }
+        if (-not (Test-HasValue (Get-StringValue -Data $diarizationConfig -Name 'device' -DefaultValue ''))) {
+            Set-NestedObjectValue -Object $Config -Path @('routes', 'podcast', 'diarization', 'device') -Value 'cuda' | Out-Null
+        }
+        if ($null -eq $diarizationConfig.PSObject.Properties['min_overlap_ratio']) {
+            Set-NestedObjectValue -Object $Config -Path @('routes', 'podcast', 'diarization', 'min_overlap_ratio') -Value 0.35 | Out-Null
+        }
+
+        $refinementConfig = Get-DataValue -Data $diarizationConfig -Name 'refinement'
+        if ($null -eq $refinementConfig) {
+            Set-NestedObjectValue -Object $Config -Path @('routes', 'podcast', 'diarization', 'refinement') -Value ([pscustomobject]@{}) | Out-Null
+            $refinementConfig = Get-DataValue -Data (Get-DataValue -Data $Config.routes -Name 'podcast').diarization -Name 'refinement'
+        }
+        if ($null -ne $refinementConfig) {
+            if ($null -eq $refinementConfig.PSObject.Properties['enabled']) {
+                Set-NestedObjectValue -Object $Config -Path @('routes', 'podcast', 'diarization', 'refinement', 'enabled') -Value $true | Out-Null
+            }
+            if (-not (Test-HasValue (Get-StringValue -Data $refinementConfig -Name 'strategy' -DefaultValue ''))) {
+                Set-NestedObjectValue -Object $Config -Path @('routes', 'podcast', 'diarization', 'refinement', 'strategy') -Value 'embedding_agglomerative' | Out-Null
+            }
+            if ($null -eq $refinementConfig.PSObject.Properties['turn_min_seconds']) {
+                Set-NestedObjectValue -Object $Config -Path @('routes', 'podcast', 'diarization', 'refinement', 'turn_min_seconds') -Value 1.2 | Out-Null
+            }
+            if ($null -eq $refinementConfig.PSObject.Properties['window_seconds']) {
+                Set-NestedObjectValue -Object $Config -Path @('routes', 'podcast', 'diarization', 'refinement', 'window_seconds') -Value 3.2 | Out-Null
+            }
+            if ($null -eq $refinementConfig.PSObject.Properties['batch_size']) {
+                Set-NestedObjectValue -Object $Config -Path @('routes', 'podcast', 'diarization', 'refinement', 'batch_size') -Value 24 | Out-Null
+            }
+            if ($null -eq $refinementConfig.PSObject.Properties['max_turns']) {
+                Set-NestedObjectValue -Object $Config -Path @('routes', 'podcast', 'diarization', 'refinement', 'max_turns') -Value 600 | Out-Null
+            }
+        }
+    }
+    $Config
+}
+
 function Test-IsInteractiveHost {
     try {
         if (-not [Environment]::UserInteractive) { return $false }
@@ -594,7 +810,11 @@ function Invoke-PythonJsonProbe {
     }
 
     $commandOutput = ''
+    $previousErrorActionPreference = $ErrorActionPreference
+    $previousPythonWarnings = $env:PYTHONWARNINGS
     try {
+        $env:PYTHONWARNINGS = 'ignore'
+        $ErrorActionPreference = 'Continue'
         $commandOutput = (@($ProbeCode) | & $Command '-' 2>&1 | Out-String).Trim()
     } catch {
         return [pscustomobject]@{
@@ -602,6 +822,9 @@ function Invoke-PythonJsonProbe {
             error = $_.Exception.Message
             data = $null
         }
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+        $env:PYTHONWARNINGS = $previousPythonWarnings
     }
 
     if ($LASTEXITCODE -ne 0) {
@@ -889,8 +1112,8 @@ function Resolve-PodcastRuntimeSelection {
     $runtimeProfile = Get-StringValue -Data $podcastConfig -Name 'runtime_profile' -DefaultValue ''
     $asrConfig = Get-DataValue -Data $podcastConfig -Name 'asr'
     $diarizationConfig = Get-DataValue -Data $podcastConfig -Name 'diarization'
-    $asrDevice = if ($null -ne $asrConfig) { Get-StringValue -Data $asrConfig -Name 'device' -DefaultValue 'auto' } else { '' }
-    $diarizationDevice = if ($null -ne $diarizationConfig) { Get-StringValue -Data $diarizationConfig -Name 'device' -DefaultValue 'cpu' } else { '' }
+    $asrDevice = if ($null -ne $asrConfig) { Get-StringValue -Data $asrConfig -Name 'device' -DefaultValue 'cuda' } else { '' }
+    $diarizationDevice = if ($null -ne $diarizationConfig) { Get-StringValue -Data $diarizationConfig -Name 'device' -DefaultValue 'cuda' } else { '' }
     $requiresSelection = ($runtimeProfile.Trim().ToLowerInvariant() -in @('prompt', 'ask')) -or ($asrDevice.Trim().ToLowerInvariant() -eq 'prompt') -or ($diarizationDevice.Trim().ToLowerInvariant() -eq 'prompt')
     if (-not $requiresSelection) { return $Config }
 
@@ -1485,7 +1708,7 @@ function Invoke-PodcastAsrFallback {
     $enabled = Get-BoolValueFromData -Data $asrConfig -Name 'enabled' -DefaultValue $false
     $result.enabled = $enabled
     $provider = Get-StringValue -Data $asrConfig -Name 'provider' -DefaultValue 'faster-whisper'
-    $model = Get-StringValue -Data $asrConfig -Name 'model' -DefaultValue 'base'
+    $model = Get-StringValue -Data $asrConfig -Name 'model' -DefaultValue 'large-v3'
     $language = Get-StringValue -Data $asrConfig -Name 'language' -DefaultValue 'zh'
     $result.provider = $provider
     $result.model = $model
@@ -1510,8 +1733,8 @@ function Invoke-PodcastAsrFallback {
     $timeoutSec = 600
     $timeoutValue = Get-StringValue -Data $asrConfig -Name 'timeout_sec' -DefaultValue '600'
     if (Test-HasValue $timeoutValue) { $timeoutSec = [int]$timeoutValue }
-    $device = Get-StringValue -Data $asrConfig -Name 'device' -DefaultValue 'auto'
-    $computeType = Get-StringValue -Data $asrConfig -Name 'compute_type' -DefaultValue 'auto'
+    $device = Get-StringValue -Data $asrConfig -Name 'device' -DefaultValue 'cuda'
+    $computeType = Get-StringValue -Data $asrConfig -Name 'compute_type' -DefaultValue 'float16'
     $beamSize = Get-StringValue -Data $asrConfig -Name 'beam_size' -DefaultValue '5'
     $vadFilter = Get-BoolValueFromData -Data $asrConfig -Name 'vad_filter' -DefaultValue $true
     $normalizeScript = Get-StringValue -Data $asrConfig -Name 'normalize_script' -DefaultValue 'simplified'
@@ -1539,7 +1762,16 @@ function Invoke-PodcastAsrFallback {
 
     try {
         $result.attempted = $true
-        $commandOutput = & $command @arguments 2>&1 | Out-String
+        $previousErrorActionPreference = $ErrorActionPreference
+        $previousPythonWarnings = $env:PYTHONWARNINGS
+        try {
+            $env:PYTHONWARNINGS = 'ignore'
+            $ErrorActionPreference = 'Continue'
+            $commandOutput = & $command @arguments 2>&1 | Out-String
+        } finally {
+            $ErrorActionPreference = $previousErrorActionPreference
+            $env:PYTHONWARNINGS = $previousPythonWarnings
+        }
         $exitCode = $LASTEXITCODE
         $payload = $null
         if (Test-Path $outputJsonPath) {
@@ -1615,7 +1847,7 @@ function Invoke-PodcastSpeakerDiarization {
     $enabled = Get-BoolValueFromData -Data $diarizationConfig -Name 'enabled' -DefaultValue $false
     $result.enabled = $enabled
     $provider = Get-StringValue -Data $diarizationConfig -Name 'provider' -DefaultValue 'pyannote'
-    $model = Get-StringValue -Data $diarizationConfig -Name 'model' -DefaultValue ''
+    $model = Get-StringValue -Data $diarizationConfig -Name 'model' -DefaultValue 'pyannote/speaker-diarization-3.1'
     $result.provider = $provider
     $result.model = $model
     if (-not $enabled) { return [pscustomobject]$result }
@@ -1640,7 +1872,7 @@ function Invoke-PodcastSpeakerDiarization {
         return [pscustomobject]$result
     }
 
-    $device = Get-StringValue -Data $diarizationConfig -Name 'device' -DefaultValue 'cpu'
+    $device = Get-StringValue -Data $diarizationConfig -Name 'device' -DefaultValue 'cuda'
     $hfTokenEnv = Get-StringValue -Data $diarizationConfig -Name 'hf_token_env' -DefaultValue 'HF_TOKEN'
     $mockDiarizationPath = Get-ConfiguredPathValue -Object $diarizationConfig -PropertyName 'mock_diarization_path'
     $minOverlapRatio = Get-StringValue -Data $diarizationConfig -Name 'min_overlap_ratio' -DefaultValue '0.35'
@@ -1690,7 +1922,16 @@ function Invoke-PodcastSpeakerDiarization {
     try {
         $result.attempted = $true
         $commandOutput = ''
-        & $command @arguments
+        $previousErrorActionPreference = $ErrorActionPreference
+        $previousPythonWarnings = $env:PYTHONWARNINGS
+        try {
+            $env:PYTHONWARNINGS = 'ignore'
+            $ErrorActionPreference = 'Continue'
+            $commandOutput = & $command @arguments 2>&1 | Out-String
+        } finally {
+            $ErrorActionPreference = $previousErrorActionPreference
+            $env:PYTHONWARNINGS = $previousPythonWarnings
+        }
         $exitCode = $LASTEXITCODE
         $payload = $null
         if (Test-Path $outputJsonPath) {
@@ -1750,20 +1991,36 @@ function Save-PodcastArtifacts {
     if (-not (Test-HasValue $captureId) -and $null -ne $metadata) { $captureId = Get-StringValue -Data $metadata -Name 'capture_id' -DefaultValue '' }
     if (-not (Test-HasValue $captureId)) { return $Capture }
 
-    $attachmentsRoot = if ($null -ne $Config.clipper -and $null -ne $Config.clipper.PSObject.Properties['podcast_attachments_root'] -and (Test-HasValue ([string]$Config.clipper.podcast_attachments_root))) {
-        [string]$Config.clipper.podcast_attachments_root
-    } else {
-        'Attachments/Podcasts'
-    }
     $platform = Get-StringValue -Data $Capture -Name 'podcast_platform' -DefaultValue ''
     if (-not (Test-HasValue $platform)) { $platform = Get-StringValue -Data $Capture -Name 'platform' -DefaultValue 'podcast' }
-
-    $assetDirectory = Join-Path (Join-Path (Join-Path $ResolvedVaultPath $attachmentsRoot) $platform) $captureId
+    $assetDirectory = Get-PodcastAssetDirectory -Config $Config -ResolvedVaultPath $ResolvedVaultPath -Platform $platform -CaptureId $captureId
     New-Item -ItemType Directory -Path $assetDirectory -Force | Out-Null
+
+    $capturePath = Join-Path $assetDirectory 'capture.json'
+    $metadataPath = Join-Path $assetDirectory 'metadata.json'
+    $transcriptRawPath = Join-Path $assetDirectory 'transcript.raw.txt'
+    $transcriptPath = Join-Path $assetDirectory 'transcript.txt'
+    $transcriptSegmentsPath = Join-Path $assetDirectory 'transcript.segments.json'
+    $speakersPath = Join-Path $assetDirectory 'speakers.json'
+    $speakerAnnotatedTranscriptPath = Join-Path $assetDirectory 'transcript.speakers.txt'
+
+    $existingCapture = Read-JsonFileIfExists -Path $capturePath -Depth 100
+    $existingMetadata = Read-JsonFileIfExists -Path $metadataPath -Depth 100
+
+    $podcastRoute = if ($null -ne $Config.routes) { Get-DataValue -Data $Config.routes -Name 'podcast' } else { $null }
+    $asrConfig = if ($null -ne $podcastRoute) { Get-DataValue -Data $podcastRoute -Name 'asr' } else { $null }
+    $diarizationConfig = if ($null -ne $podcastRoute) { Get-DataValue -Data $podcastRoute -Name 'diarization' } else { $null }
+    $refinementConfig = if ($null -ne $diarizationConfig) { Get-DataValue -Data $diarizationConfig -Name 'refinement' } else { $null }
+    $reuseExistingAssets = if ($null -ne $podcastRoute) { Get-BoolValueFromData -Data $podcastRoute -Name 'reuse_existing_assets' -DefaultValue $true } else { $true }
+
+    $configuredAsrProvider = if ($null -ne $asrConfig) { Get-StringValue -Data $asrConfig -Name 'provider' -DefaultValue 'faster-whisper' } else { 'faster-whisper' }
+    $configuredAsrModel = if ($null -ne $asrConfig) { Get-StringValue -Data $asrConfig -Name 'model' -DefaultValue 'large-v3' } else { 'large-v3' }
+    $configuredDiarizationProvider = if ($null -ne $diarizationConfig) { Get-StringValue -Data $diarizationConfig -Name 'provider' -DefaultValue 'pyannote' } else { 'pyannote' }
+    $configuredDiarizationModel = if ($null -ne $diarizationConfig) { Get-StringValue -Data $diarizationConfig -Name 'model' -DefaultValue 'pyannote/speaker-diarization-3.1' } else { 'pyannote/speaker-diarization-3.1' }
+    $configuredRefinementEnabled = if ($null -ne $refinementConfig) { Get-BoolValueFromData -Data $refinementConfig -Name 'enabled' -DefaultValue $true } else { $true }
 
     $audioUrl = Get-StringValue -Data $Capture -Name 'enclosure_url' -DefaultValue ''
     if (-not (Test-HasValue $audioUrl) -and $null -ne $metadata) { $audioUrl = Get-StringValue -Data $metadata -Name 'enclosure_url' -DefaultValue '' }
-    $podcastRoute = if ($null -ne $Config.routes) { Get-DataValue -Data $Config.routes -Name 'podcast' } else { $null }
     $downloadAudio = $true
     if ($null -ne $podcastRoute) {
         $downloadAudio = Get-BoolValueFromData -Data $podcastRoute -Name 'download_audio' -DefaultValue $true
@@ -1775,7 +2032,15 @@ function Save-PodcastArtifacts {
     $audioDownloadStatus = if ($downloadAudio -and (Test-HasValue $audioUrl)) { 'pending' } elseif (Test-HasValue $audioUrl) { 'skipped' } else { 'missing' }
     $audioPath = ''
     $audioLocalPath = ''
-    if ($downloadAudio -and (Test-HasValue $audioUrl)) {
+    if ($reuseExistingAssets) {
+        $existingAudioLocalPath = Get-PodcastEpisodeAudioFile -AssetDirectory $assetDirectory
+        if (Test-HasValue $existingAudioLocalPath) {
+            $audioLocalPath = $existingAudioLocalPath
+            $audioPath = Get-VaultRelativePath -BasePath $ResolvedVaultPath -TargetPath $existingAudioLocalPath
+            $audioDownloadStatus = 'reused_local'
+        }
+    }
+    if (-not (Test-HasValue $audioLocalPath) -and $downloadAudio -and (Test-HasValue $audioUrl)) {
         $audioDownloadResult = Download-PodcastAudio -AudioUrl $audioUrl -TargetDirectory $assetDirectory -TimeoutSec $downloadTimeoutSec
         $audioDownloadStatus = [string]$audioDownloadResult.status
         if ($audioDownloadResult.success) {
@@ -1785,9 +2050,6 @@ function Save-PodcastArtifacts {
             Set-ObjectField -Object $metadata -Name 'audio_download_error' -Value ([string]$audioDownloadResult.error) | Out-Null
         }
     }
-
-    $capturePath = Join-Path $assetDirectory 'capture.json'
-    $metadataPath = Join-Path $assetDirectory 'metadata.json'
 
     $transcript = Get-StringValue -Data $Capture -Name 'transcript' -DefaultValue ''
     $transcriptStatus = if ($null -ne $metadata) { Get-StringValue -Data $metadata -Name 'transcript_status' -DefaultValue $(if (Test-HasValue $transcript) { 'available' } else { 'missing' }) } else { if (Test-HasValue $transcript) { 'available' } else { 'missing' } }
@@ -1799,9 +2061,32 @@ function Save-PodcastArtifacts {
     $asrError = if ($null -ne $metadata) { Get-StringValue -Data $metadata -Name 'asr_error' -DefaultValue '' } else { '' }
     $transcriptRaw = ''
     $transcriptSegments = @()
+    $existingAsrProvider = if ($null -ne $existingMetadata) { Get-StringValue -Data $existingMetadata -Name 'asr_provider' -DefaultValue '' } else { '' }
+    if (-not (Test-HasValue $existingAsrProvider) -and $null -ne $existingCapture) { $existingAsrProvider = Get-StringValue -Data $existingCapture -Name 'asr_provider' -DefaultValue '' }
+    $existingAsrModel = if ($null -ne $existingMetadata) { Get-StringValue -Data $existingMetadata -Name 'asr_model' -DefaultValue '' } else { '' }
+    if (-not (Test-HasValue $existingAsrModel) -and $null -ne $existingCapture) { $existingAsrModel = Get-StringValue -Data $existingCapture -Name 'asr_model' -DefaultValue '' }
+    $canReuseExistingTranscript = $reuseExistingAssets -and (Test-Path $transcriptPath) -and (
+        (-not (Test-HasValue $existingAsrProvider)) -or
+        (($existingAsrProvider -eq $configuredAsrProvider) -and ((-not (Test-HasValue $existingAsrModel)) -or ($existingAsrModel -eq $configuredAsrModel)))
+    )
     if (-not (Test-HasValue $audioLocalPath) -and (Test-HasValue $audioPath)) {
         $audioCandidatePath = Join-Path $ResolvedVaultPath ($audioPath -replace '/', '\')
         if (Test-Path $audioCandidatePath) { $audioLocalPath = $audioCandidatePath }
+    }
+    if (-not (Test-HasValue $transcript) -and $canReuseExistingTranscript) {
+        $transcript = Read-Utf8Text -Path $transcriptPath
+        if (Test-Path $transcriptRawPath) { $transcriptRaw = Read-Utf8Text -Path $transcriptRawPath }
+        if (Test-Path $transcriptSegmentsPath) {
+            $existingSegments = Read-JsonFileIfExists -Path $transcriptSegmentsPath -Depth 100
+            if ($null -ne $existingSegments) { $transcriptSegments = @($existingSegments) }
+        }
+        $transcriptStatus = 'available_local'
+        $transcriptSource = 'local_artifact'
+        $asrStatus = 'reused_local'
+        $asrProvider = if (Test-HasValue $existingAsrProvider) { $existingAsrProvider } else { $configuredAsrProvider }
+        $asrModel = if (Test-HasValue $existingAsrModel) { $existingAsrModel } else { $configuredAsrModel }
+        $asrNormalization = if ($null -ne $existingMetadata) { Get-StringValue -Data $existingMetadata -Name 'asr_normalization' -DefaultValue $asrNormalization } else { $asrNormalization }
+        $asrError = ''
     }
     if (-not (Test-HasValue $transcript)) {
         $asrResult = Invoke-PodcastAsrFallback -Config $Config -AudioPath $audioLocalPath -AssetDirectory $assetDirectory
@@ -1830,19 +2115,13 @@ function Save-PodcastArtifacts {
             $transcriptSource = 'missing'
         }
     }
-    $transcriptRawPath = ''
-    $transcriptPath = ''
-    $transcriptSegmentsPath = ''
     if (Test-HasValue $transcriptRaw) {
-        $transcriptRawPath = Join-Path $assetDirectory 'transcript.raw.txt'
         Write-Utf8Text -Path $transcriptRawPath -Content $transcriptRaw
     }
     if (Test-HasValue $transcript) {
-        $transcriptPath = Join-Path $assetDirectory 'transcript.txt'
         Write-Utf8Text -Path $transcriptPath -Content $transcript
     }
     if (@($transcriptSegments).Count -gt 0) {
-        $transcriptSegmentsPath = Join-Path $assetDirectory 'transcript.segments.json'
         Write-Utf8Text -Path $transcriptSegmentsPath -Content ((@($transcriptSegments) | ConvertTo-Json -Depth 20))
     }
 
@@ -1850,31 +2129,56 @@ function Save-PodcastArtifacts {
     $diarizationProvider = if ($null -ne $metadata) { Get-StringValue -Data $metadata -Name 'diarization_provider' -DefaultValue '' } else { '' }
     $diarizationModel = if ($null -ne $metadata) { Get-StringValue -Data $metadata -Name 'diarization_model' -DefaultValue '' } else { '' }
     $diarizationError = if ($null -ne $metadata) { Get-StringValue -Data $metadata -Name 'diarization_error' -DefaultValue '' } else { '' }
+    $diarizationRefinementEnabled = if ($null -ne $metadata) { Get-BoolValueFromData -Data $metadata -Name 'diarization_refinement_enabled' -DefaultValue $configuredRefinementEnabled } else { $configuredRefinementEnabled }
     $speakerMap = @()
     $speakerAnnotatedTranscript = ''
     $speakerInference = $null
-    $speakersPath = Join-Path $assetDirectory 'speakers.json'
-    $speakerAnnotatedTranscriptPath = ''
+    $existingDiarizationProvider = if ($null -ne $existingMetadata) { Get-StringValue -Data $existingMetadata -Name 'diarization_provider' -DefaultValue '' } else { '' }
+    $existingDiarizationModel = if ($null -ne $existingMetadata) { Get-StringValue -Data $existingMetadata -Name 'diarization_model' -DefaultValue '' } else { '' }
+    $existingDiarizationRefinementEnabled = if ($null -ne $existingMetadata) { Get-BoolValueFromData -Data $existingMetadata -Name 'diarization_refinement_enabled' -DefaultValue $configuredRefinementEnabled } else { $configuredRefinementEnabled }
+    $canReuseExistingDiarization = $reuseExistingAssets -and (Test-Path $transcriptSegmentsPath) -and (Test-Path $speakersPath) -and (
+        (-not (Test-HasValue $existingDiarizationProvider)) -or
+        (($existingDiarizationProvider -eq $configuredDiarizationProvider) -and
+         ((-not (Test-HasValue $existingDiarizationModel)) -or ($existingDiarizationModel -eq $configuredDiarizationModel)) -and
+         ($existingDiarizationRefinementEnabled -eq $configuredRefinementEnabled))
+    )
 
-    if ((Test-HasValue $audioLocalPath) -and (Test-HasValue $transcriptSegmentsPath)) {
-        $diarizationResult = Invoke-PodcastSpeakerDiarization -Config $Config -AudioPath $audioLocalPath -SegmentsJsonPath $transcriptSegmentsPath -AssetDirectory $assetDirectory -ManualSpeakersPath $speakersPath
-        $diarizationStatus = [string]$diarizationResult.status
-        $diarizationProvider = [string]$diarizationResult.provider
-        $diarizationModel = [string]$diarizationResult.model
-        $diarizationError = [string]$diarizationResult.error
-        if (-not $diarizationResult.success) {
-            $diarizationFailure = if (Test-HasValue $diarizationError) { $diarizationError } else { "Diarization status: $diarizationStatus" }
-            throw ("Podcast diarization failed under GPU-only policy. {0}" -f $diarizationFailure)
+    if ((Test-HasValue $audioLocalPath) -and (Test-Path $transcriptSegmentsPath)) {
+        if ($canReuseExistingDiarization) {
+            $existingSpeakerManifest = Read-JsonFileIfExists -Path $speakersPath -Depth 100
+            if ($null -ne $existingSpeakerManifest) {
+                $speakerMapData = Get-DataValue -Data $existingSpeakerManifest -Name 'speaker_map'
+                if ($null -ne $speakerMapData) { $speakerMap = @($speakerMapData) }
+                $speakerInferenceData = Get-DataValue -Data $existingSpeakerManifest -Name 'speaker_inference'
+                if ($null -ne $speakerInferenceData) { $speakerInference = $speakerInferenceData }
+                if (Test-Path $speakerAnnotatedTranscriptPath) { $speakerAnnotatedTranscript = Read-Utf8Text -Path $speakerAnnotatedTranscriptPath }
+                $diarizationStatus = 'reused_local'
+                $diarizationProvider = if (Test-HasValue $existingDiarizationProvider) { $existingDiarizationProvider } else { $configuredDiarizationProvider }
+                $diarizationModel = if (Test-HasValue $existingDiarizationModel) { $existingDiarizationModel } else { $configuredDiarizationModel }
+                $diarizationError = ''
+                $diarizationRefinementEnabled = $existingDiarizationRefinementEnabled
+            }
         }
-        if ($diarizationResult.success -and @($diarizationResult.segments).Count -gt 0) {
-            $transcriptSegments = @($diarizationResult.segments)
-            $speakerMap = @($diarizationResult.speaker_map)
-            $speakerAnnotatedTranscript = [string]$diarizationResult.speaker_transcript
-            $speakerInference = $diarizationResult.speaker_inference
-            Write-Utf8Text -Path $transcriptSegmentsPath -Content ((@($transcriptSegments) | ConvertTo-Json -Depth 20))
-            if (Test-HasValue $speakerAnnotatedTranscript) {
-                $speakerAnnotatedTranscriptPath = Join-Path $assetDirectory 'transcript.speakers.txt'
-                Write-Utf8Text -Path $speakerAnnotatedTranscriptPath -Content $speakerAnnotatedTranscript
+        if (@($speakerMap).Count -eq 0) {
+            $diarizationResult = Invoke-PodcastSpeakerDiarization -Config $Config -AudioPath $audioLocalPath -SegmentsJsonPath $transcriptSegmentsPath -AssetDirectory $assetDirectory -ManualSpeakersPath $speakersPath
+            $diarizationStatus = [string]$diarizationResult.status
+            $diarizationProvider = [string]$diarizationResult.provider
+            $diarizationModel = [string]$diarizationResult.model
+            $diarizationError = [string]$diarizationResult.error
+            $diarizationRefinementEnabled = $configuredRefinementEnabled
+            if (-not $diarizationResult.success) {
+                $diarizationFailure = if (Test-HasValue $diarizationError) { $diarizationError } else { "Diarization status: $diarizationStatus" }
+                throw ("Podcast diarization failed under GPU-only policy. {0}" -f $diarizationFailure)
+            }
+            if ($diarizationResult.success -and @($diarizationResult.segments).Count -gt 0) {
+                $transcriptSegments = @($diarizationResult.segments)
+                $speakerMap = @($diarizationResult.speaker_map)
+                $speakerAnnotatedTranscript = [string]$diarizationResult.speaker_transcript
+                $speakerInference = $diarizationResult.speaker_inference
+                Write-Utf8Text -Path $transcriptSegmentsPath -Content ((@($transcriptSegments) | ConvertTo-Json -Depth 20))
+                if (Test-HasValue $speakerAnnotatedTranscript) {
+                    Write-Utf8Text -Path $speakerAnnotatedTranscriptPath -Content $speakerAnnotatedTranscript
+                }
             }
         }
     }
@@ -1884,6 +2188,7 @@ function Save-PodcastArtifacts {
         diarization_status = $diarizationStatus
         diarization_provider = $diarizationProvider
         diarization_model = $diarizationModel
+        diarization_refinement_enabled = $diarizationRefinementEnabled
         generated_at = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
         speaker_count = @($speakerMap).Count
         speaker_map = @($speakerMap)
@@ -1897,11 +2202,11 @@ function Save-PodcastArtifacts {
 
     $relativeCapturePath = Get-VaultRelativePath -BasePath $ResolvedVaultPath -TargetPath $capturePath
     $relativeMetadataPath = Get-VaultRelativePath -BasePath $ResolvedVaultPath -TargetPath $metadataPath
-    $relativeTranscriptRawPath = if (Test-HasValue $transcriptRawPath) { Get-VaultRelativePath -BasePath $ResolvedVaultPath -TargetPath $transcriptRawPath } else { '' }
-    $relativeTranscriptPath = if (Test-HasValue $transcriptPath) { Get-VaultRelativePath -BasePath $ResolvedVaultPath -TargetPath $transcriptPath } else { '' }
-    $relativeTranscriptSegmentsPath = if (Test-HasValue $transcriptSegmentsPath) { Get-VaultRelativePath -BasePath $ResolvedVaultPath -TargetPath $transcriptSegmentsPath } else { '' }
-    $relativeSpeakersPath = if (Test-HasValue $speakersPath) { Get-VaultRelativePath -BasePath $ResolvedVaultPath -TargetPath $speakersPath } else { '' }
-    $relativeSpeakerAnnotatedTranscriptPath = if (Test-HasValue $speakerAnnotatedTranscriptPath) { Get-VaultRelativePath -BasePath $ResolvedVaultPath -TargetPath $speakerAnnotatedTranscriptPath } else { '' }
+    $relativeTranscriptRawPath = if (Test-Path $transcriptRawPath) { Get-VaultRelativePath -BasePath $ResolvedVaultPath -TargetPath $transcriptRawPath } else { '' }
+    $relativeTranscriptPath = if (Test-Path $transcriptPath) { Get-VaultRelativePath -BasePath $ResolvedVaultPath -TargetPath $transcriptPath } else { '' }
+    $relativeTranscriptSegmentsPath = if (Test-Path $transcriptSegmentsPath) { Get-VaultRelativePath -BasePath $ResolvedVaultPath -TargetPath $transcriptSegmentsPath } else { '' }
+    $relativeSpeakersPath = if (Test-Path $speakersPath) { Get-VaultRelativePath -BasePath $ResolvedVaultPath -TargetPath $speakersPath } else { '' }
+    $relativeSpeakerAnnotatedTranscriptPath = if (Test-Path $speakerAnnotatedTranscriptPath) { Get-VaultRelativePath -BasePath $ResolvedVaultPath -TargetPath $speakerAnnotatedTranscriptPath } else { '' }
 
     Set-ObjectField -Object $Capture -Name 'sidecar_path' -Value $relativeCapturePath | Out-Null
     Set-ObjectField -Object $Capture -Name 'metadata_path' -Value $relativeMetadataPath | Out-Null
@@ -1918,6 +2223,7 @@ function Save-PodcastArtifacts {
     Set-ObjectField -Object $Capture -Name 'diarization_status' -Value $diarizationStatus | Out-Null
     Set-ObjectField -Object $Capture -Name 'diarization_provider' -Value $diarizationProvider | Out-Null
     Set-ObjectField -Object $Capture -Name 'diarization_model' -Value $diarizationModel | Out-Null
+    Set-ObjectField -Object $Capture -Name 'diarization_refinement_enabled' -Value $diarizationRefinementEnabled | Out-Null
     Set-ObjectField -Object $Capture -Name 'diarization_error' -Value $diarizationError | Out-Null
     Set-ObjectField -Object $Capture -Name 'speaker_count' -Value @($speakerMap).Count | Out-Null
     if (@($speakerMap).Count -gt 0) { Set-ObjectField -Object $Capture -Name 'speaker_map' -Value @($speakerMap) | Out-Null }
@@ -1948,6 +2254,7 @@ function Save-PodcastArtifacts {
         Set-ObjectField -Object $metadata -Name 'diarization_status' -Value $diarizationStatus | Out-Null
         Set-ObjectField -Object $metadata -Name 'diarization_provider' -Value $diarizationProvider | Out-Null
         Set-ObjectField -Object $metadata -Name 'diarization_model' -Value $diarizationModel | Out-Null
+        Set-ObjectField -Object $metadata -Name 'diarization_refinement_enabled' -Value $diarizationRefinementEnabled | Out-Null
         Set-ObjectField -Object $metadata -Name 'diarization_error' -Value $diarizationError | Out-Null
         Set-ObjectField -Object $metadata -Name 'speaker_count' -Value @($speakerMap).Count | Out-Null
         if (@($speakerMap).Count -gt 0) { Set-ObjectField -Object $metadata -Name 'speaker_map' -Value @($speakerMap) | Out-Null }
@@ -2413,7 +2720,14 @@ function Invoke-PodcastCapture {
         $capture = Save-PodcastArtifacts -Config $Config -Capture $capture -ResolvedVaultPath $ResolvedVaultPath
         return $capture
     } catch {
-        return (New-PodcastFallbackCapture -Url $Url -TitleHint $TitleHint -Platform $Platform -ErrorText $_.Exception.Message)
+        $errorText = $_.Exception.Message
+        $podcastRoute = if ($null -ne $Config.routes) { Get-DataValue -Data $Config.routes -Name 'podcast' } else { $null }
+        $reuseLocalCapture = if ($null -ne $podcastRoute) { Get-BoolValueFromData -Data $podcastRoute -Name 'reuse_local_capture_on_network_failure' -DefaultValue $true } else { $true }
+        if ($reuseLocalCapture -and (Test-IsLikelyNetworkFailureMessage -Message $errorText)) {
+            $reusedCapture = Try-LoadExistingPodcastCapture -Config $Config -Url $Url -Platform $Platform -ResolvedVaultPath $ResolvedVaultPath -ErrorText $errorText
+            if ($null -ne $reusedCapture) { return $reusedCapture }
+        }
+        return (New-PodcastFallbackCapture -Url $Url -TitleHint $TitleHint -Platform $Platform -ErrorText $errorText)
     }
 }
 
@@ -3151,6 +3465,7 @@ try {
     }
     $resolvedConfigPath = $ConfigPath
     $config = Get-Config -Path $resolvedConfigPath
+    $config = Apply-PodcastFormalDefaults -Config $config
     $config = Resolve-PodcastRuntimeSelection -Config $config -ConfigPath $resolvedConfigPath
     $resolvedVaultPath = Get-ResolvedVaultPath -Config $config -VaultPath $VaultPath
     $defaultDebugDirectory = Get-DefaultDebugDirectory -Config $config -RequestedDebugDirectory $DebugDirectory

@@ -4,12 +4,21 @@ import os
 import re
 import site
 import sys
+import warnings
 from pathlib import Path
 from typing import Any
 
 
 TIMESTAMP_RE = re.compile(r"^(?P<ts>(?:\d{2}:)?\d{2}:\d{2})\s+(?P<text>.+?)\s*$")
 CUDA_DLL_HANDLES: list[Any] = []
+CUDA_KEEPALIVE_REFERENCES: list[Any] = []
+
+# requests may emit an environment-level dependency warning on import, which is
+# noisy but not fatal for local GPU ASR execution.
+warnings.filterwarnings(
+    "ignore",
+    message=r".*urllib3 .* doesn't match a supported version!.*",
+)
 
 
 def parse_bool(value: str | bool) -> bool:
@@ -21,6 +30,26 @@ def parse_bool(value: str | bool) -> bool:
 
 def write_json(path: str, payload: dict[str, Any]) -> None:
     Path(path).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def should_hard_exit(provider: str, device: str) -> bool:
+    return sys.platform == "win32" and str(provider).strip().lower() == "faster-whisper" and str(device).strip().lower() == "cuda"
+
+
+def hard_exit(code: int) -> int:
+    try:
+        sys.stdout.flush()
+    except Exception:
+        pass
+    try:
+        sys.stderr.flush()
+    except Exception:
+        pass
+    os._exit(int(code))
+
+
+def keep_cuda_objects_alive(*refs: Any) -> None:
+    CUDA_KEEPALIVE_REFERENCES[:] = list(refs)
 
 
 def read_text_if_exists(path: str | None) -> str:
@@ -290,7 +319,7 @@ def build_faster_whisper_result(
 
     detected_language = getattr(info, "language", "") or language
     transcript_raw = "\n".join(raw_lines).strip()
-    return build_result_payload(
+    payload = build_result_payload(
         provider="faster-whisper",
         model=model_name,
         language=detected_language,
@@ -298,6 +327,12 @@ def build_faster_whisper_result(
         segments=segments_payload,
         normalization=normalization,
     )
+    if should_hard_exit("faster-whisper", device):
+        # Keep the CUDA-backed objects alive until the caller writes JSON and
+        # terminates the process. Releasing them during function return can
+        # abort the interpreter on Windows.
+        keep_cuda_objects_alive(model, info, segments, converter)
+    return payload
 
 
 def main() -> int:
@@ -334,6 +369,8 @@ def main() -> int:
             "error": f"Audio file does not exist: {audio_path}",
         }
         write_json(output_json, payload)
+        if should_hard_exit(provider, args.device):
+            hard_exit(1)
         return 1
 
     try:
@@ -367,9 +404,13 @@ def main() -> int:
             "error": str(exc),
         }
         write_json(output_json, payload)
+        if should_hard_exit(provider, args.device):
+            hard_exit(1)
         return 1
 
     write_json(output_json, payload)
+    if should_hard_exit(provider, args.device):
+        hard_exit(0)
     return 0
 
 

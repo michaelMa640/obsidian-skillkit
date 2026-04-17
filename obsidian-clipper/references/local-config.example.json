@@ -68,6 +68,8 @@
       "download_audio": true,
       "download_timeout_sec": 60,
       "runtime_profile": "gpu_balanced",
+      "reuse_existing_assets": true,
+      "reuse_local_capture_on_network_failure": true,
       "asr": {
         "enabled": false,
         "command": "python",
@@ -94,7 +96,7 @@
         "min_overlap_ratio": 0.35,
         "mock_diarization_path": "E:/REPLACE/WITH/YOUR/obsidian-clipper/.tmp/mock-diarization.json",
         "refinement": {
-          "enabled": false,
+          "enabled": true,
           "strategy": "embedding_agglomerative",
           "turn_min_seconds": 1.2,
           "window_seconds": 3.2,

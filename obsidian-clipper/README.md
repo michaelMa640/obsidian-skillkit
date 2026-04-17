@@ -2,10 +2,14 @@
 
 ## Document Status
 
-- Last Updated: `2026-04-13`
+- Last Updated: `2026-04-17`
 
 ## Change Log
 
+- `2026-04-17`
+  - documented the formal podcast default runtime as `gpu_balanced`
+  - documented local asset reuse and network-failure local capture reuse for `run_clipper`
+  - removed outdated CPU/GPU prompt guidance from the podcast setup notes
 - `2026-04-13`
   - documented the first-run podcast runtime profile flow
   - documented that a new machine should complete the first podcast setup from a local entry before iOS Shortcut is used
@@ -157,24 +161,24 @@ Important config points:
   - default `http://127.0.0.1:5556/xhs/detail`
 - `routes.podcast.download_audio`
 - `routes.podcast.runtime_profile`
-  - recommended `prompt` on a new machine
+  - keep `gpu_balanced` as the formal default
 - `routes.podcast.asr.*`
-  - optional transcript fallback configuration for Phase 3
+  - formal default is `faster-whisper large-v3 + cuda + float16`
 - `routes.podcast.diarization.*`
-  - optional speaker diarization configuration for Step 6
+  - formal default is `pyannote/speaker-diarization-3.1 + refinement + cuda`
 
 ### Podcast runtime profile
 
-Podcast runtime now supports a first-run device selection flow.
+Podcast runtime is now fixed to a GPU profile by default.
 
-Recommended setup on a new machine:
+Formal default:
 
-1. keep `routes.podcast.runtime_profile = "prompt"`
-2. start the first podcast task from a local entry that can show terminal interaction
-3. choose the detected runtime profile
-4. let `run_clipper.ps1` write the selected values back into `local-config.json`
+1. keep `routes.podcast.runtime_profile = "gpu_balanced"`
+2. keep `routes.podcast.asr.device = "cuda"` and `compute_type = "float16"`
+3. keep `routes.podcast.diarization.device = "cuda"`
+4. keep diarization refinement enabled unless we explicitly change the formal scheme after validation
 
-The selected profile updates these fields:
+`run_clipper.ps1` still supports resolving a prompt-style profile if an older local config explicitly asks for it, and the selected profile updates these fields:
 
 - `routes.podcast.runtime_profile`
 - `routes.podcast.asr.device`
@@ -184,14 +188,16 @@ The selected profile updates these fields:
 Why this matters:
 
 - podcast ASR and diarization are locked to GPU-only execution
-- the active Python environment must expose CUDA for both stages before the first successful run
-- first-run setup avoids hidden CPU fallback and writes the validated GPU profile for later runs
+- the active Python environment must expose CUDA for both stages before any successful run
+- if GPU is unavailable, the clipper now fails closed instead of silently dropping to CPU
+- `run_clipper` can now prefer existing local podcast artifacts and reuse a previous local capture on network failure
 
 Important:
 
-- if the machine has never handled podcast clipping before, do the first run from Feishu/OpenClaw or local terminal
-- do not use iPhone Shortcut as the first podcast entry, because it cannot reliably surface CUDA setup failures or repair steps
-- after the local machine has written the selected GPU runtime profile into `local-config.json`, iPhone Shortcut can use that machine normally
+- if the machine has never handled podcast clipping before, validate CUDA from a local terminal entry before relying on automation
+- do not switch podcast ASR or diarization to `cpu` or `auto` as a workaround
+- if CUDA checks fail, stop and repair the environment instead of letting the pipeline continue
+- after the local machine has a working GPU config, iPhone Shortcut can use that machine normally
 - on Windows, GPU ASR and diarization require CUDA runtime DLLs plus CUDA-enabled Python packages inside the active environment; installing `faster-whisper` alone is not enough
 
 Validate config with:

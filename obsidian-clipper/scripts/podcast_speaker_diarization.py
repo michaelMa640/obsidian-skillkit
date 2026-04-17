@@ -1962,16 +1962,46 @@ def load_pyannote_pipeline(model_name: str, token_env: str, device: str):
     if not token:
         raise RuntimeError(f"Environment variable {token_env or 'HF_TOKEN'} is required for pyannote diarization.")
 
-    pipeline_kwargs: dict[str, Any] = {}
-    from_pretrained_signature = inspect.signature(Pipeline.from_pretrained)
-    if "token" in from_pretrained_signature.parameters:
-        pipeline_kwargs["token"] = token
-    else:
-        pipeline_kwargs["use_auth_token"] = token
+    requested_model = model_name or "pyannote/speaker-diarization-3.1"
+    local_snapshot_path = find_huggingface_snapshot_path(requested_model)
+    model_source = local_snapshot_path if has_value(local_snapshot_path) else requested_model
 
-    pipeline = Pipeline.from_pretrained(model_name or "pyannote/speaker-diarization-3.1", **pipeline_kwargs)
+    pipeline_kwargs: dict[str, Any] = {}
+    if not has_value(local_snapshot_path):
+        from_pretrained_signature = inspect.signature(Pipeline.from_pretrained)
+        if "token" in from_pretrained_signature.parameters:
+            pipeline_kwargs["token"] = token
+        else:
+            pipeline_kwargs["use_auth_token"] = token
+
+    pipeline = Pipeline.from_pretrained(model_source, **pipeline_kwargs)
     pipeline.to(torch.device("cuda"))
     return pipeline
+
+
+def find_huggingface_snapshot_path(model_name: str) -> str:
+    normalized_model = string_value(model_name)
+    if not has_value(normalized_model) or "/" not in normalized_model:
+        return ""
+
+    cache_root = Path.home() / ".cache" / "huggingface" / "hub" / f"models--{normalized_model.replace('/', '--')}"
+    snapshots_root = cache_root / "snapshots"
+    if not snapshots_root.exists():
+        return ""
+
+    ref_main = cache_root / "refs" / "main"
+    if ref_main.exists():
+        revision = string_value(ref_main.read_text(encoding="utf-8"))
+        preferred_snapshot = snapshots_root / revision
+        if preferred_snapshot.exists():
+            return str(preferred_snapshot)
+
+    snapshots = [candidate for candidate in snapshots_root.iterdir() if candidate.is_dir()]
+    if not snapshots:
+        return ""
+
+    snapshots.sort(key=lambda item: item.stat().st_mtime, reverse=True)
+    return str(snapshots[0])
 
 
 def load_audio_input(audio_path: str) -> dict[str, Any]:
