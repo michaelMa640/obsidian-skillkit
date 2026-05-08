@@ -119,3 +119,93 @@
 3. 能明确判断 speaker 质量是否达到可接受水平。
 4. 能明确判断长音频下热负载是否可接受。
 5. 若结果不理想，能给出下一步调参或替代路线，而不是停留在模糊描述。
+
+## 实际验收结果
+
+### 真实样本
+
+- 平台：小宇宙
+- 单集链接：`https://www.xiaoyuzhoufm.com/episode/69a79fd2de29766da95733a1`
+- 单集标题：`2026第一期`
+- 播客名称：`Being and Becoming`
+- 本地音频时长：`2697.247` 秒，约 `44 分 57 秒`
+
+### 端到端结果
+
+- ASR：成功
+  - provider：`mlx-whisper`
+  - model：`mlx-community/whisper-large-v3-turbo`
+  - device：`mps`
+  - transcript segments：`1010`
+  - transcript chars：`19197`
+- speaker diarization：成功
+  - provider：`pyannote`
+  - model：`pyannote/speaker-diarization-community-1`
+  - speaker segments：`227`
+  - detected speakers：`2`
+- thermal guard：未触发中断
+  - `thermal_abort = false`
+
+### speaker 质量诊断
+
+- `speaker_quality_gate.status = passed`
+- `speaker_quality_gate.status_detail = speaker_context_allowed`
+- `distribution_summary.status = balanced`
+- `intro_diagnostics.status = not_applicable`
+- `sparse_speaker_turn_rescue.status = not_applicable`
+
+本次真实样本的 speaker 分布结果为：
+
+- `老王`
+  - `107` 段
+  - `366.144` 秒
+  - 占比 `13.81%`
+- `小庄`
+  - `108` 段
+  - `2285.166` 秒
+  - 占比 `86.19%`
+
+这说明当前长音频样本下，speaker 标签没有出现明显塌缩，也没有被质量门槛判定为不可信。
+
+### 长音频保守模式命中情况
+
+`refinement.runtime_settings` 实际结果为：
+
+- `audio_duration_seconds = 2697.247`
+- `long_audio_mode = conservative`
+- `long_audio_threshold_seconds = 2400`
+- `long_audio_applied = true`
+- `turn_min_seconds = 1.8`
+- `window_seconds = 2.8`
+- `batch_size = 8`
+- `max_turns = 180`
+
+这说明 `phase2` 中设计的长音频自动降载策略已经在真实样本中实际命中，而不是只停留在配置层。
+
+### 本轮额外修复
+
+在真实样本验收过程中，额外暴露并修复了两处 Mac 兼容性问题：
+
+1. 修复了 `Get-VaultRelativePath` 的跨平台 URI 构造问题。
+   - 原问题会导致 macOS 下本地绝对路径被当成相对 URI，进而在播客链路里触发 `MakeRelativeUri` 错误。
+2. 修复了 `Start-Process` 外部命令参数传递问题。
+   - 原问题会导致带空格的脚本路径在 macOS 下被拆断，进而使本地 ASR / diarization 无法正常启动。
+
+这两处修复都属于 `phase2` 的真实价值，因为它们只会在 Mac 本地真实节目验收时暴露出来。
+
+## 当前结论
+
+按本阶段定义的完成标准，`phase2` 现在可以标记为完成。
+
+已满足的标准包括：
+
+- 长音频自动保守策略已正式接入代码与配置
+- 已完成 1 条真实小宇宙长节目样本的端到端本地验证
+- 已能明确判断 speaker 质量达到当前可接受水平
+- 已能明确判断长音频下本轮热负载可接受，且没有触发温控中断
+- 当真实样本暴露出 Mac 兼容性阻塞时，已经修复到可继续正式运行
+
+仍需单独记录的剩余观察项：
+
+- 还应继续增加更多不同节目类型样本，观察多嘉宾、串场更复杂、背景音乐更重时的 speaker 稳定性
+- 当前知识速览步骤仍是 `mock` 输出，这不阻塞本次 podcast 本地主流程验收，但不应误记为知识分析链路已完成

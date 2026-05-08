@@ -1249,6 +1249,29 @@ function Read-TextFileIfExists {
     Read-Utf8Text -Path $Path
 }
 
+function Convert-ToProcessArgumentString {
+    param(
+        [string[]]$Arguments
+    )
+
+    $escaped = New-Object System.Collections.Generic.List[string]
+    foreach ($argument in @($Arguments)) {
+        $value = if ($null -ne $argument) { [string]$argument } else { '' }
+        if ($value.Length -eq 0) {
+            $escaped.Add('""') | Out-Null
+            continue
+        }
+        if ($value -notmatch '[\s"]') {
+            $escaped.Add($value) | Out-Null
+            continue
+        }
+        $quoted = $value -replace '(\\*)"', '$1$1\"'
+        $quoted = $quoted -replace '(\\+)$', '$1$1'
+        $escaped.Add('"' + $quoted + '"') | Out-Null
+    }
+    return ($escaped -join ' ')
+}
+
 function Invoke-ExternalCommandWithThermalGuard {
     param(
         [string]$Command,
@@ -1272,9 +1295,10 @@ function Invoke-ExternalCommandWithThermalGuard {
 
     $process = $null
     try {
+        $argumentString = Convert-ToProcessArgumentString -Arguments $Arguments
         $startParams = @{
             FilePath = $Command
-            ArgumentList = @($Arguments)
+            ArgumentList = $argumentString
             PassThru = $true
             RedirectStandardOutput = $StdoutPath
             RedirectStandardError = $StderrPath
@@ -2441,8 +2465,9 @@ function Get-VaultRelativePath {
         [string]$TargetPath
     )
     if (-not (Test-HasValue $BasePath) -or -not (Test-HasValue $TargetPath)) { return '' }
-    $baseUri = [System.Uri](([System.IO.Path]::GetFullPath($BasePath).TrimEnd('\', '/')) + '\')
-    $targetUri = [System.Uri]([System.IO.Path]::GetFullPath($TargetPath))
+    $baseFullPath = [System.IO.Path]::GetFullPath($BasePath).TrimEnd('\', '/')
+    $baseUri = [System.Uri]::new(($baseFullPath + [System.IO.Path]::DirectorySeparatorChar))
+    $targetUri = [System.Uri]::new([System.IO.Path]::GetFullPath($TargetPath))
     [System.Uri]::UnescapeDataString($baseUri.MakeRelativeUri($targetUri).ToString()).Replace('\', '/')
 }
 
