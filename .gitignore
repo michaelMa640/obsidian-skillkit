@@ -1,5 +1,6 @@
 # Local Python / package installs
 .venv/
+.venv-*/
 .x-reader-site/
 
 # Local temp and test artifacts

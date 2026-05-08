@@ -13,7 +13,7 @@
       "social uses python + scripts/capture_social_playwright.py and download_social_media.ps1 by default",
       "video_metadata uses yt-dlp by default",
       "podcast uses the built-in web metadata route inside run_clipper.ps1 and does not require a separate command",
-      "podcast is now locked to GPU-only execution; keep routes.podcast.runtime_profile on a GPU profile and do not switch ASR or diarization to cpu/auto"
+      "podcast now uses fail-closed high-performance execution; keep routes.podcast.runtime_profile on a supported accelerator profile and do not switch ASR or diarization to cpu for formal runs"
     ]
   },
   "obsidian": {
@@ -67,17 +67,27 @@
       "prefer_show_notes": true,
       "download_audio": true,
       "download_timeout_sec": 60,
-      "runtime_profile": "gpu_balanced",
+      "runtime_profile": "windows_cuda_balanced",
+      "execution_policy": "fail_closed_no_cpu",
       "reuse_existing_assets": true,
       "reuse_local_capture_on_network_failure": true,
+      "thermal_guard": {
+        "enabled": true,
+        "temperature_celsius": 90,
+        "duration_seconds": 30,
+        "poll_interval_seconds": 3,
+        "fallback_to_thermal_state": true,
+        "temperature_command": "",
+        "temperature_command_arguments": []
+      },
       "asr": {
         "enabled": false,
         "command": "python",
         "script": "E:/REPLACE/WITH/YOUR/obsidian-clipper/scripts/podcast_asr_fallback.py",
-        "provider": "faster-whisper",
-        "model": "large-v3",
+        "provider": "mlx-whisper",
+        "model": "mlx-community/whisper-large-v3-turbo",
         "language": "zh",
-        "device": "cuda",
+        "device": "mps",
         "compute_type": "float16",
         "beam_size": 5,
         "vad_filter": true,
@@ -90,8 +100,8 @@
         "command": "python",
         "script": "E:/REPLACE/WITH/YOUR/obsidian-clipper/scripts/podcast_speaker_diarization.py",
         "provider": "pyannote",
-        "model": "pyannote/speaker-diarization-3.1",
-        "device": "cuda",
+        "model": "pyannote/speaker-diarization-community-1",
+        "device": "mps",
         "hf_token_env": "HF_TOKEN",
         "min_overlap_ratio": 0.35,
         "mock_diarization_path": "E:/REPLACE/WITH/YOUR/obsidian-clipper/.tmp/mock-diarization.json",
@@ -101,7 +111,13 @@
           "turn_min_seconds": 1.2,
           "window_seconds": 3.2,
           "batch_size": 24,
-          "max_turns": 600
+          "max_turns": 600,
+          "long_audio_mode": "conservative",
+          "long_audio_threshold_seconds": 2400,
+          "long_audio_turn_min_seconds": 1.8,
+          "long_audio_window_seconds": 2.8,
+          "long_audio_batch_size": 8,
+          "long_audio_max_turns": 180
         }
       }
     }

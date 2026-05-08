@@ -161,22 +161,22 @@ Important config points:
   - default `http://127.0.0.1:5556/xhs/detail`
 - `routes.podcast.download_audio`
 - `routes.podcast.runtime_profile`
-  - keep `gpu_balanced` as the formal default
+  - keep a platform-appropriate accelerator profile such as `windows_cuda_balanced` or `mac_metal_balanced`
 - `routes.podcast.asr.*`
-  - formal default is `faster-whisper large-v3 + cuda + float16`
+  - formal default should match the selected runtime profile and stay on a non-CPU backend
 - `routes.podcast.diarization.*`
-  - formal default is `pyannote/speaker-diarization-3.1 + refinement + cuda`
+  - formal default should stay on a supported accelerator backend and must not silently fall back to CPU
 
 ### Podcast runtime profile
 
-Podcast runtime is now fixed to a GPU profile by default.
+Podcast runtime now defaults to an accelerator-only profile and fails closed if only CPU is available.
 
 Formal default:
 
-1. keep `routes.podcast.runtime_profile = "gpu_balanced"`
-2. keep `routes.podcast.asr.device = "cuda"` and `compute_type = "float16"`
-3. keep `routes.podcast.diarization.device = "cuda"`
-4. keep diarization refinement enabled unless we explicitly change the formal scheme after validation
+1. keep `routes.podcast.runtime_profile` on a supported accelerator profile for the current platform
+2. keep `routes.podcast.execution_policy = "fail_closed_no_cpu"`
+3. keep `routes.podcast.asr.device` on the backend implied by that profile, for example `cuda` on Windows or `mps` on Apple Silicon
+4. keep `routes.podcast.diarization.device` on a supported accelerator backend and avoid CPU fallback
 
 `run_clipper.ps1` still supports resolving a prompt-style profile if an older local config explicitly asks for it, and the selected profile updates these fields:
 
@@ -187,16 +187,16 @@ Formal default:
 
 Why this matters:
 
-- podcast ASR and diarization are locked to GPU-only execution
-- the active Python environment must expose CUDA for both stages before any successful run
-- if GPU is unavailable, the clipper now fails closed instead of silently dropping to CPU
+- podcast ASR and diarization are locked to high-performance backends only
+- the active Python environment must expose the requested accelerator backend before any successful formal run
+- if the requested backend is unavailable, the clipper now fails closed instead of silently dropping to CPU
 - `run_clipper` can now prefer existing local podcast artifacts and reuse a previous local capture on network failure
 
 Important:
 
-- if the machine has never handled podcast clipping before, validate CUDA from a local terminal entry before relying on automation
+- if the machine has never handled podcast clipping before, validate the requested accelerator backend from a local terminal entry before relying on automation
 - do not switch podcast ASR or diarization to `cpu` or `auto` as a workaround
-- if CUDA checks fail, stop and repair the environment instead of letting the pipeline continue
+- if backend checks fail, stop and repair the environment instead of letting the pipeline continue
 - after the local machine has a working GPU config, iPhone Shortcut can use that machine normally
 - on Windows, GPU ASR and diarization require CUDA runtime DLLs plus CUDA-enabled Python packages inside the active environment; installing `faster-whisper` alone is not enough
 
@@ -266,5 +266,4 @@ Preferred files to share first:
 - if you need the note, clipper alone is enough
 - if you need the Xiaohongshu video file to land locally, keep `XHS-Downloader` running
 - if Feishu behavior does not match this repo, verify the OpenClaw runtime copy under `C:\Users\<user>\.openclaw\workspace\skills\obsidian-clipper`
-
 

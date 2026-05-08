@@ -658,13 +658,38 @@ function Apply-PodcastFormalDefaults {
     if ($null -eq $podcastConfig) { return $Config }
 
     if (-not (Test-HasValue (Get-StringValue -Data $podcastConfig -Name 'runtime_profile' -DefaultValue ''))) {
-        Set-NestedObjectValue -Object $Config -Path @('routes', 'podcast', 'runtime_profile') -Value 'gpu_balanced' | Out-Null
+        Set-NestedObjectValue -Object $Config -Path @('routes', 'podcast', 'runtime_profile') -Value (Get-DefaultPodcastRuntimeProfileId) | Out-Null
+    }
+    if (-not (Test-HasValue (Get-StringValue -Data $podcastConfig -Name 'execution_policy' -DefaultValue ''))) {
+        Set-NestedObjectValue -Object $Config -Path @('routes', 'podcast', 'execution_policy') -Value 'fail_closed_no_cpu' | Out-Null
     }
     if ($null -eq $podcastConfig.PSObject.Properties['reuse_existing_assets']) {
         Set-NestedObjectValue -Object $Config -Path @('routes', 'podcast', 'reuse_existing_assets') -Value $true | Out-Null
     }
     if ($null -eq $podcastConfig.PSObject.Properties['reuse_local_capture_on_network_failure']) {
         Set-NestedObjectValue -Object $Config -Path @('routes', 'podcast', 'reuse_local_capture_on_network_failure') -Value $true | Out-Null
+    }
+    $thermalGuardConfig = Get-DataValue -Data $podcastConfig -Name 'thermal_guard'
+    if ($null -eq $thermalGuardConfig) {
+        Set-NestedObjectValue -Object $Config -Path @('routes', 'podcast', 'thermal_guard') -Value ([pscustomobject]@{}) | Out-Null
+        $thermalGuardConfig = Get-DataValue -Data (Get-DataValue -Data $Config.routes -Name 'podcast') -Name 'thermal_guard'
+    }
+    if ($null -ne $thermalGuardConfig) {
+        if ($null -eq $thermalGuardConfig.PSObject.Properties['enabled']) {
+            Set-NestedObjectValue -Object $Config -Path @('routes', 'podcast', 'thermal_guard', 'enabled') -Value $true | Out-Null
+        }
+        if ($null -eq $thermalGuardConfig.PSObject.Properties['temperature_celsius']) {
+            Set-NestedObjectValue -Object $Config -Path @('routes', 'podcast', 'thermal_guard', 'temperature_celsius') -Value 90 | Out-Null
+        }
+        if ($null -eq $thermalGuardConfig.PSObject.Properties['duration_seconds']) {
+            Set-NestedObjectValue -Object $Config -Path @('routes', 'podcast', 'thermal_guard', 'duration_seconds') -Value 30 | Out-Null
+        }
+        if ($null -eq $thermalGuardConfig.PSObject.Properties['poll_interval_seconds']) {
+            Set-NestedObjectValue -Object $Config -Path @('routes', 'podcast', 'thermal_guard', 'poll_interval_seconds') -Value 3 | Out-Null
+        }
+        if ($null -eq $thermalGuardConfig.PSObject.Properties['fallback_to_thermal_state']) {
+            Set-NestedObjectValue -Object $Config -Path @('routes', 'podcast', 'thermal_guard', 'fallback_to_thermal_state') -Value $true | Out-Null
+        }
     }
 
     $asrConfig = Get-DataValue -Data $podcastConfig -Name 'asr'
@@ -683,10 +708,16 @@ function Apply-PodcastFormalDefaults {
             Set-NestedObjectValue -Object $Config -Path @('routes', 'podcast', 'asr', 'language') -Value 'zh' | Out-Null
         }
         if (-not (Test-HasValue (Get-StringValue -Data $asrConfig -Name 'device' -DefaultValue ''))) {
-            Set-NestedObjectValue -Object $Config -Path @('routes', 'podcast', 'asr', 'device') -Value 'cuda' | Out-Null
+            $runtimeProfile = Get-StringValue -Data $podcastConfig -Name 'runtime_profile' -DefaultValue (Get-DefaultPodcastRuntimeProfileId)
+            $runtimePreset = Get-PodcastRuntimeProfilePreset -ProfileId $runtimeProfile
+            $defaultDevice = if ($null -ne $runtimePreset) { $runtimePreset.asr_device } else { 'cuda' }
+            Set-NestedObjectValue -Object $Config -Path @('routes', 'podcast', 'asr', 'device') -Value $defaultDevice | Out-Null
         }
         if (-not (Test-HasValue (Get-StringValue -Data $asrConfig -Name 'compute_type' -DefaultValue ''))) {
-            Set-NestedObjectValue -Object $Config -Path @('routes', 'podcast', 'asr', 'compute_type') -Value 'float16' | Out-Null
+            $runtimeProfile = Get-StringValue -Data $podcastConfig -Name 'runtime_profile' -DefaultValue (Get-DefaultPodcastRuntimeProfileId)
+            $runtimePreset = Get-PodcastRuntimeProfilePreset -ProfileId $runtimeProfile
+            $defaultComputeType = if ($null -ne $runtimePreset) { $runtimePreset.asr_compute_type } else { 'float16' }
+            Set-NestedObjectValue -Object $Config -Path @('routes', 'podcast', 'asr', 'compute_type') -Value $defaultComputeType | Out-Null
         }
         if ($null -eq $asrConfig.PSObject.Properties['beam_size']) {
             Set-NestedObjectValue -Object $Config -Path @('routes', 'podcast', 'asr', 'beam_size') -Value 5 | Out-Null
@@ -712,7 +743,10 @@ function Apply-PodcastFormalDefaults {
             Set-NestedObjectValue -Object $Config -Path @('routes', 'podcast', 'diarization', 'model') -Value 'pyannote/speaker-diarization-3.1' | Out-Null
         }
         if (-not (Test-HasValue (Get-StringValue -Data $diarizationConfig -Name 'device' -DefaultValue ''))) {
-            Set-NestedObjectValue -Object $Config -Path @('routes', 'podcast', 'diarization', 'device') -Value 'cuda' | Out-Null
+            $runtimeProfile = Get-StringValue -Data $podcastConfig -Name 'runtime_profile' -DefaultValue (Get-DefaultPodcastRuntimeProfileId)
+            $runtimePreset = Get-PodcastRuntimeProfilePreset -ProfileId $runtimeProfile
+            $defaultDevice = if ($null -ne $runtimePreset) { $runtimePreset.diarization_device } else { 'cuda' }
+            Set-NestedObjectValue -Object $Config -Path @('routes', 'podcast', 'diarization', 'device') -Value $defaultDevice | Out-Null
         }
         if ($null -eq $diarizationConfig.PSObject.Properties['min_overlap_ratio']) {
             Set-NestedObjectValue -Object $Config -Path @('routes', 'podcast', 'diarization', 'min_overlap_ratio') -Value 0.35 | Out-Null
@@ -742,8 +776,27 @@ function Apply-PodcastFormalDefaults {
             if ($null -eq $refinementConfig.PSObject.Properties['max_turns']) {
                 Set-NestedObjectValue -Object $Config -Path @('routes', 'podcast', 'diarization', 'refinement', 'max_turns') -Value 600 | Out-Null
             }
+            if (-not (Test-HasValue (Get-StringValue -Data $refinementConfig -Name 'long_audio_mode' -DefaultValue ''))) {
+                Set-NestedObjectValue -Object $Config -Path @('routes', 'podcast', 'diarization', 'refinement', 'long_audio_mode') -Value 'conservative' | Out-Null
+            }
+            if ($null -eq $refinementConfig.PSObject.Properties['long_audio_threshold_seconds']) {
+                Set-NestedObjectValue -Object $Config -Path @('routes', 'podcast', 'diarization', 'refinement', 'long_audio_threshold_seconds') -Value 2400 | Out-Null
+            }
+            if ($null -eq $refinementConfig.PSObject.Properties['long_audio_turn_min_seconds']) {
+                Set-NestedObjectValue -Object $Config -Path @('routes', 'podcast', 'diarization', 'refinement', 'long_audio_turn_min_seconds') -Value 1.8 | Out-Null
+            }
+            if ($null -eq $refinementConfig.PSObject.Properties['long_audio_window_seconds']) {
+                Set-NestedObjectValue -Object $Config -Path @('routes', 'podcast', 'diarization', 'refinement', 'long_audio_window_seconds') -Value 2.8 | Out-Null
+            }
+            if ($null -eq $refinementConfig.PSObject.Properties['long_audio_batch_size']) {
+                Set-NestedObjectValue -Object $Config -Path @('routes', 'podcast', 'diarization', 'refinement', 'long_audio_batch_size') -Value 8 | Out-Null
+            }
+            if ($null -eq $refinementConfig.PSObject.Properties['long_audio_max_turns']) {
+                Set-NestedObjectValue -Object $Config -Path @('routes', 'podcast', 'diarization', 'refinement', 'long_audio_max_turns') -Value 180 | Out-Null
+            }
         }
     }
+    $Config = Apply-PodcastRuntimeProfilePreset -Config $Config
     $Config
 }
 
@@ -793,6 +846,562 @@ function Save-Config {
         $Config
     )
     Write-Utf8Text -Path $Path -Content ($Config | ConvertTo-Json -Depth 64)
+}
+
+function Get-CurrentPlatformName {
+    if ($IsMacOS) { return 'macos' }
+    if ($IsWindows) { return 'windows' }
+    if ($IsLinux) { return 'linux' }
+    return 'unknown'
+}
+
+function Get-DefaultPodcastRuntimeProfileId {
+    $platformName = Get-CurrentPlatformName
+    switch ($platformName) {
+        'macos' { return 'mac_metal_balanced' }
+        'windows' { return 'windows_cuda_balanced' }
+        default { return 'windows_cuda_balanced' }
+    }
+}
+
+function Get-PodcastRuntimeProfilePreset {
+    param([string]$ProfileId)
+
+    $normalized = if (Test-HasValue $ProfileId) { $ProfileId.Trim().ToLowerInvariant() } else { '' }
+    switch ($normalized) {
+        'gpu_balanced' {
+            return [pscustomobject]@{
+                id = 'windows_cuda_balanced'
+                label = 'Windows CUDA 平衡'
+                description = 'ASR 与 diarization 都使用 CUDA，优先速度与整体体验。'
+                asr_device = 'cuda'
+                asr_compute_type = 'float16'
+                diarization_device = 'cuda'
+                thermal_poll_interval_seconds = 3
+                refinement_turn_min_seconds = 1.2
+                refinement_window_seconds = 3.2
+                refinement_batch_size = 24
+                refinement_max_turns = 600
+                refinement_long_audio_mode = 'conservative'
+                refinement_long_audio_threshold_seconds = 2400
+                refinement_long_audio_turn_min_seconds = 1.8
+                refinement_long_audio_window_seconds = 2.8
+                refinement_long_audio_batch_size = 8
+                refinement_long_audio_max_turns = 180
+            }
+        }
+        'windows_cuda_balanced' {
+            return [pscustomobject]@{
+                id = 'windows_cuda_balanced'
+                label = 'Windows CUDA 平衡'
+                description = 'ASR 与 diarization 都使用 CUDA，优先速度与整体体验。'
+                asr_device = 'cuda'
+                asr_compute_type = 'float16'
+                diarization_device = 'cuda'
+                thermal_poll_interval_seconds = 3
+                refinement_turn_min_seconds = 1.2
+                refinement_window_seconds = 3.2
+                refinement_batch_size = 24
+                refinement_max_turns = 600
+                refinement_long_audio_mode = 'conservative'
+                refinement_long_audio_threshold_seconds = 2400
+                refinement_long_audio_turn_min_seconds = 1.8
+                refinement_long_audio_window_seconds = 2.8
+                refinement_long_audio_batch_size = 8
+                refinement_long_audio_max_turns = 180
+            }
+        }
+        'gpu_memory_saver' {
+            return [pscustomobject]@{
+                id = 'windows_cuda_memory_saver'
+                label = 'Windows CUDA 省显存'
+                description = 'ASR 使用更保守的 CUDA 精度，适合显存较紧张的机器。'
+                asr_device = 'cuda'
+                asr_compute_type = 'int8_float16'
+                diarization_device = 'cuda'
+                thermal_poll_interval_seconds = 3
+                refinement_turn_min_seconds = 1.2
+                refinement_window_seconds = 3.2
+                refinement_batch_size = 20
+                refinement_max_turns = 480
+                refinement_long_audio_mode = 'conservative'
+                refinement_long_audio_threshold_seconds = 2100
+                refinement_long_audio_turn_min_seconds = 2.0
+                refinement_long_audio_window_seconds = 2.6
+                refinement_long_audio_batch_size = 6
+                refinement_long_audio_max_turns = 140
+            }
+        }
+        'windows_cuda_memory_saver' {
+            return [pscustomobject]@{
+                id = 'windows_cuda_memory_saver'
+                label = 'Windows CUDA 省显存'
+                description = 'ASR 使用更保守的 CUDA 精度，适合显存较紧张的机器。'
+                asr_device = 'cuda'
+                asr_compute_type = 'int8_float16'
+                diarization_device = 'cuda'
+                thermal_poll_interval_seconds = 3
+                refinement_turn_min_seconds = 1.2
+                refinement_window_seconds = 3.2
+                refinement_batch_size = 20
+                refinement_max_turns = 480
+                refinement_long_audio_mode = 'conservative'
+                refinement_long_audio_threshold_seconds = 2100
+                refinement_long_audio_turn_min_seconds = 2.0
+                refinement_long_audio_window_seconds = 2.6
+                refinement_long_audio_batch_size = 6
+                refinement_long_audio_max_turns = 140
+            }
+        }
+        'mac_metal_balanced' {
+            return [pscustomobject]@{
+                id = 'mac_metal_balanced'
+                label = 'Mac Metal 平衡'
+                description = '优先使用 Apple Silicon 的本地高性能后端，并禁止正式 CPU 路径。'
+                asr_device = 'mps'
+                asr_compute_type = 'float16'
+                diarization_device = 'mps'
+                thermal_poll_interval_seconds = 3
+                refinement_turn_min_seconds = 1.2
+                refinement_window_seconds = 3.2
+                refinement_batch_size = 24
+                refinement_max_turns = 600
+                refinement_long_audio_mode = 'conservative'
+                refinement_long_audio_threshold_seconds = 2400
+                refinement_long_audio_turn_min_seconds = 1.8
+                refinement_long_audio_window_seconds = 2.8
+                refinement_long_audio_batch_size = 8
+                refinement_long_audio_max_turns = 180
+            }
+        }
+        'mac_metal_cooldown_guarded' {
+            return [pscustomobject]@{
+                id = 'mac_metal_cooldown_guarded'
+                label = 'Mac Metal 温控优先'
+                description = '优先使用 Apple Silicon 的本地高性能后端，并搭配更保守的温控策略。'
+                asr_device = 'mps'
+                asr_compute_type = 'float16'
+                diarization_device = 'mps'
+                thermal_poll_interval_seconds = 2
+                refinement_turn_min_seconds = 1.5
+                refinement_window_seconds = 2.8
+                refinement_batch_size = 12
+                refinement_max_turns = 320
+                refinement_long_audio_mode = 'conservative'
+                refinement_long_audio_threshold_seconds = 1800
+                refinement_long_audio_turn_min_seconds = 2.1
+                refinement_long_audio_window_seconds = 2.4
+                refinement_long_audio_batch_size = 6
+                refinement_long_audio_max_turns = 120
+            }
+        }
+        default { return $null }
+    }
+}
+
+function Get-PodcastExecutionPolicy {
+    param($PodcastRoute)
+
+    if ($null -eq $PodcastRoute) { return 'fail_closed_no_cpu' }
+    $configured = Get-StringValue -Data $PodcastRoute -Name 'execution_policy' -DefaultValue 'fail_closed_no_cpu'
+    if (-not (Test-HasValue $configured)) { return 'fail_closed_no_cpu' }
+    return $configured.Trim().ToLowerInvariant()
+}
+
+function Get-PodcastThermalGuardConfig {
+    param($PodcastRoute)
+
+    $thermalGuard = if ($null -ne $PodcastRoute) { Get-DataValue -Data $PodcastRoute -Name 'thermal_guard' } else { $null }
+    $enabled = if ($null -ne $thermalGuard) { Get-BoolValueFromData -Data $thermalGuard -Name 'enabled' -DefaultValue $true } else { $true }
+    $temperatureThreshold = if ($null -ne $thermalGuard) { [double](Get-StringValue -Data $thermalGuard -Name 'temperature_celsius' -DefaultValue '90') } else { 90.0 }
+    $durationSeconds = if ($null -ne $thermalGuard) { [int](Get-StringValue -Data $thermalGuard -Name 'duration_seconds' -DefaultValue '30') } else { 30 }
+    $pollIntervalSeconds = if ($null -ne $thermalGuard) { [int](Get-StringValue -Data $thermalGuard -Name 'poll_interval_seconds' -DefaultValue '3') } else { 3 }
+    $fallbackToThermalState = if ($null -ne $thermalGuard) { Get-BoolValueFromData -Data $thermalGuard -Name 'fallback_to_thermal_state' -DefaultValue $true } else { $true }
+    $temperatureCommand = if ($null -ne $thermalGuard) { Get-ConfiguredPathValue -Object $thermalGuard -PropertyName 'temperature_command' } else { '' }
+    $temperatureCommandArguments = if ($null -ne $thermalGuard) { @(Get-StringArrayValue -Data $thermalGuard -Name 'temperature_command_arguments') } else { @() }
+    [pscustomobject]@{
+        enabled = $enabled
+        temperature_celsius = $temperatureThreshold
+        duration_seconds = [Math]::Max($durationSeconds, 1)
+        poll_interval_seconds = [Math]::Max($pollIntervalSeconds, 1)
+        fallback_to_thermal_state = $fallbackToThermalState
+        temperature_command = $temperatureCommand
+        temperature_command_arguments = @($temperatureCommandArguments)
+    }
+}
+
+function Apply-PodcastRuntimeProfilePreset {
+    param($Config)
+
+    if ($null -eq $Config -or $null -eq $Config.routes) { return $Config }
+    $podcastConfig = Get-DataValue -Data $Config.routes -Name 'podcast'
+    if ($null -eq $podcastConfig) { return $Config }
+
+    $runtimeProfile = Get-StringValue -Data $podcastConfig -Name 'runtime_profile' -DefaultValue ''
+    $preset = Get-PodcastRuntimeProfilePreset -ProfileId $runtimeProfile
+    if ($null -eq $preset) { return $Config }
+
+    Set-NestedObjectValue -Object $Config -Path @('routes', 'podcast', 'runtime_profile') -Value $preset.id | Out-Null
+
+    $asrConfig = Get-DataValue -Data $podcastConfig -Name 'asr'
+    if ($null -ne $asrConfig) {
+        Set-NestedObjectValue -Object $Config -Path @('routes', 'podcast', 'asr', 'device') -Value $preset.asr_device | Out-Null
+        Set-NestedObjectValue -Object $Config -Path @('routes', 'podcast', 'asr', 'compute_type') -Value $preset.asr_compute_type | Out-Null
+    }
+
+    $diarizationConfig = Get-DataValue -Data $podcastConfig -Name 'diarization'
+    if ($null -ne $diarizationConfig) {
+        Set-NestedObjectValue -Object $Config -Path @('routes', 'podcast', 'diarization', 'device') -Value $preset.diarization_device | Out-Null
+
+        $refinementConfig = Get-DataValue -Data $diarizationConfig -Name 'refinement'
+        if ($null -ne $refinementConfig) {
+            Set-NestedObjectValue -Object $Config -Path @('routes', 'podcast', 'diarization', 'refinement', 'turn_min_seconds') -Value $preset.refinement_turn_min_seconds | Out-Null
+            Set-NestedObjectValue -Object $Config -Path @('routes', 'podcast', 'diarization', 'refinement', 'window_seconds') -Value $preset.refinement_window_seconds | Out-Null
+            Set-NestedObjectValue -Object $Config -Path @('routes', 'podcast', 'diarization', 'refinement', 'batch_size') -Value $preset.refinement_batch_size | Out-Null
+            Set-NestedObjectValue -Object $Config -Path @('routes', 'podcast', 'diarization', 'refinement', 'max_turns') -Value $preset.refinement_max_turns | Out-Null
+            Set-NestedObjectValue -Object $Config -Path @('routes', 'podcast', 'diarization', 'refinement', 'long_audio_mode') -Value $preset.refinement_long_audio_mode | Out-Null
+            Set-NestedObjectValue -Object $Config -Path @('routes', 'podcast', 'diarization', 'refinement', 'long_audio_threshold_seconds') -Value $preset.refinement_long_audio_threshold_seconds | Out-Null
+            Set-NestedObjectValue -Object $Config -Path @('routes', 'podcast', 'diarization', 'refinement', 'long_audio_turn_min_seconds') -Value $preset.refinement_long_audio_turn_min_seconds | Out-Null
+            Set-NestedObjectValue -Object $Config -Path @('routes', 'podcast', 'diarization', 'refinement', 'long_audio_window_seconds') -Value $preset.refinement_long_audio_window_seconds | Out-Null
+            Set-NestedObjectValue -Object $Config -Path @('routes', 'podcast', 'diarization', 'refinement', 'long_audio_batch_size') -Value $preset.refinement_long_audio_batch_size | Out-Null
+            Set-NestedObjectValue -Object $Config -Path @('routes', 'podcast', 'diarization', 'refinement', 'long_audio_max_turns') -Value $preset.refinement_long_audio_max_turns | Out-Null
+        }
+    }
+
+    $thermalGuardConfig = Get-DataValue -Data $podcastConfig -Name 'thermal_guard'
+    if ($null -ne $thermalGuardConfig) {
+        Set-NestedObjectValue -Object $Config -Path @('routes', 'podcast', 'thermal_guard', 'poll_interval_seconds') -Value $preset.thermal_poll_interval_seconds | Out-Null
+    }
+
+    return $Config
+}
+
+function Test-PodcastAsrProviderSupportsBackend {
+    param(
+        [string]$Provider,
+        [string]$Backend
+    )
+
+    $normalizedProvider = if (Test-HasValue $Provider) { $Provider.Trim().ToLowerInvariant() } else { '' }
+    $normalizedBackend = if (Test-HasValue $Backend) { $Backend.Trim().ToLowerInvariant() } else { '' }
+    switch ($normalizedProvider) {
+        'mock' { return $true }
+        'faster-whisper' { return $normalizedBackend -in @('cuda', 'cpu') }
+        'mlx-whisper' { return $normalizedBackend -in @('mps', 'cpu') }
+        'whisper.cpp' { return $normalizedBackend -in @('mps', 'metal', 'cpu') }
+        default { return $false }
+    }
+}
+
+function Test-PodcastDiarizationProviderSupportsBackend {
+    param(
+        [string]$Provider,
+        [string]$Backend
+    )
+
+    $normalizedProvider = if (Test-HasValue $Provider) { $Provider.Trim().ToLowerInvariant() } else { '' }
+    $normalizedBackend = if (Test-HasValue $Backend) { $Backend.Trim().ToLowerInvariant() } else { '' }
+    switch ($normalizedProvider) {
+        'mock' { return $true }
+        'pyannote' { return $normalizedBackend -in @('cuda', 'mps', 'metal') }
+        'whisperx' { return $normalizedBackend -in @('cuda') }
+        default { return $false }
+    }
+}
+
+function Get-PodcastThermalStateSnapshot {
+    $platformName = Get-CurrentPlatformName
+    if ($platformName -ne 'macos') {
+        return [pscustomobject]@{
+            available = $false
+            state = ''
+            source = ''
+            error = ''
+        }
+    }
+
+    $swiftScript = @'
+import Foundation
+let thermalState = ProcessInfo.processInfo.thermalState
+switch thermalState {
+case .nominal:
+    print("nominal")
+case .fair:
+    print("fair")
+case .serious:
+    print("serious")
+case .critical:
+    print("critical")
+@unknown default:
+    print("unknown")
+}
+'@
+
+    try {
+        $output = (& swift -e $swiftScript 2>$null | Out-String).Trim()
+        if (-not (Test-HasValue $output)) {
+            return [pscustomobject]@{
+                available = $false
+                state = ''
+                source = 'swift'
+                error = 'macOS thermal state probe returned empty output.'
+            }
+        }
+        return [pscustomobject]@{
+            available = $true
+            state = $output.Trim().ToLowerInvariant()
+            source = 'swift'
+            error = ''
+        }
+    } catch {
+        return [pscustomobject]@{
+            available = $false
+            state = ''
+            source = 'swift'
+            error = $_.Exception.Message
+        }
+    }
+}
+
+function Get-PodcastTemperatureSnapshot {
+    param($ThermalGuardConfig)
+
+    $command = if ($null -ne $ThermalGuardConfig) { [string]$ThermalGuardConfig.temperature_command } else { '' }
+    if (-not (Test-HasValue $command)) {
+        return [pscustomobject]@{
+            available = $false
+            temperature_celsius = $null
+            source = ''
+            error = ''
+        }
+    }
+
+    $arguments = if ($null -ne $ThermalGuardConfig) { @($ThermalGuardConfig.temperature_command_arguments) } else { @() }
+    try {
+        $output = (& $command @arguments 2>&1 | Out-String).Trim()
+        if (-not (Test-HasValue $output)) {
+            return [pscustomobject]@{
+                available = $false
+                temperature_celsius = $null
+                source = $command
+                error = 'Temperature command returned empty output.'
+            }
+        }
+        $match = [regex]::Match($output, '(-?\d+(?:\.\d+)?)')
+        if (-not $match.Success) {
+            return [pscustomobject]@{
+                available = $false
+                temperature_celsius = $null
+                source = $command
+                error = "Temperature command output did not contain a numeric value: $output"
+            }
+        }
+        return [pscustomobject]@{
+            available = $true
+            temperature_celsius = [double]$match.Groups[1].Value
+            source = $command
+            error = ''
+        }
+    } catch {
+        return [pscustomobject]@{
+            available = $false
+            temperature_celsius = $null
+            source = $command
+            error = $_.Exception.Message
+        }
+    }
+}
+
+function Set-ClipperThermalAbortContext {
+    param(
+        [string]$Stage,
+        [string]$Provider,
+        [string]$Model,
+        [string]$RuntimeProfile,
+        [string]$DeviceBackend,
+        [string]$Reason,
+        [string]$ErrorMessage,
+        $ThermalGuardConfig,
+        $TemperatureSnapshot,
+        $ThermalStateSnapshot,
+        [int]$DurationSeconds
+    )
+
+    $script:ClipperLastThermalAbort = [pscustomobject]@{
+        stage = $Stage
+        provider = $Provider
+        model = $Model
+        runtime_profile = $RuntimeProfile
+        device_backend = $DeviceBackend
+        reason = $Reason
+        error = $ErrorMessage
+        threshold = if ($null -ne $ThermalGuardConfig) { $ThermalGuardConfig.temperature_celsius } else { $null }
+        duration_seconds = $DurationSeconds
+        temperature_celsius = if ($null -ne $TemperatureSnapshot) { $TemperatureSnapshot.temperature_celsius } else { $null }
+        thermal_state = if ($null -ne $ThermalStateSnapshot) { $ThermalStateSnapshot.state } else { '' }
+        action = 'process_terminated'
+    }
+}
+
+function Read-TextFileIfExists {
+    param([string]$Path)
+    if (-not (Test-HasValue $Path) -or -not (Test-Path $Path)) { return '' }
+    Read-Utf8Text -Path $Path
+}
+
+function Invoke-ExternalCommandWithThermalGuard {
+    param(
+        [string]$Command,
+        [string[]]$Arguments,
+        [string]$WorkingDirectory,
+        [string]$StdoutPath,
+        [string]$StderrPath,
+        [int]$TimeoutSec,
+        $ThermalGuardConfig,
+        [string]$Stage,
+        [string]$Provider,
+        [string]$Model,
+        [string]$RuntimeProfile,
+        [string]$DeviceBackend
+    )
+
+    if (Test-HasValue $StdoutPath) { New-Directory -Path ([System.IO.Path]::GetDirectoryName($StdoutPath)) | Out-Null }
+    if (Test-HasValue $StderrPath) { New-Directory -Path ([System.IO.Path]::GetDirectoryName($StderrPath)) | Out-Null }
+    if (Test-Path $StdoutPath) { Remove-Item -Path $StdoutPath -Force -ErrorAction SilentlyContinue }
+    if (Test-Path $StderrPath) { Remove-Item -Path $StderrPath -Force -ErrorAction SilentlyContinue }
+
+    $process = $null
+    try {
+        $startParams = @{
+            FilePath = $Command
+            ArgumentList = @($Arguments)
+            PassThru = $true
+            RedirectStandardOutput = $StdoutPath
+            RedirectStandardError = $StderrPath
+        }
+        if (Test-HasValue $WorkingDirectory) {
+            $startParams.WorkingDirectory = $WorkingDirectory
+        }
+        $process = Start-Process @startParams
+    } catch {
+        return [pscustomobject]@{
+            success = $false
+            exit_code = -1
+            stdout = ''
+            stderr = $_.Exception.Message
+            timed_out = $false
+            thermal_abort = $false
+            thermal_abort_context = $null
+        }
+    }
+
+    $startedAt = Get-Date
+    $highTemperatureSince = $null
+    $seriousThermalSince = $null
+    $pollSeconds = if ($null -ne $ThermalGuardConfig) { [Math]::Max([int]$ThermalGuardConfig.poll_interval_seconds, 1) } else { 3 }
+    $timeoutSeconds = [Math]::Max($TimeoutSec, 0)
+
+    while (-not $process.HasExited) {
+        if ($timeoutSeconds -gt 0) {
+            $elapsedSeconds = [int]([DateTime]::UtcNow - $startedAt.ToUniversalTime()).TotalSeconds
+            if ($elapsedSeconds -ge $timeoutSeconds) {
+                try { Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue } catch {}
+                try { $process.WaitForExit() } catch {}
+                return [pscustomobject]@{
+                    success = $false
+                    exit_code = -1
+                    stdout = (Read-TextFileIfExists -Path $StdoutPath)
+                    stderr = (Read-TextFileIfExists -Path $StderrPath)
+                    timed_out = $true
+                    thermal_abort = $false
+                    thermal_abort_context = $null
+                }
+            }
+        }
+
+        if ($null -ne $ThermalGuardConfig -and [bool]$ThermalGuardConfig.enabled) {
+            $temperatureSnapshot = Get-PodcastTemperatureSnapshot -ThermalGuardConfig $ThermalGuardConfig
+            $thermalStateSnapshot = Get-PodcastThermalStateSnapshot
+            $now = Get-Date
+
+            if ($temperatureSnapshot.available -and $null -ne $temperatureSnapshot.temperature_celsius -and [double]$temperatureSnapshot.temperature_celsius -gt [double]$ThermalGuardConfig.temperature_celsius) {
+                if ($null -eq $highTemperatureSince) { $highTemperatureSince = $now }
+            } else {
+                $highTemperatureSince = $null
+            }
+
+            if ($thermalStateSnapshot.available -and $thermalStateSnapshot.state -eq 'serious') {
+                if ($null -eq $seriousThermalSince) { $seriousThermalSince = $now }
+            } else {
+                $seriousThermalSince = $null
+            }
+
+            $temperatureDurationSeconds = if ($null -ne $highTemperatureSince) { [int]($now - $highTemperatureSince).TotalSeconds } else { 0 }
+            if ($temperatureDurationSeconds -ge [int]$ThermalGuardConfig.duration_seconds) {
+                try { Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue } catch {}
+                try { $process.WaitForExit() } catch {}
+                $message = "Thermal protection aborted $Stage after temperature stayed above $($ThermalGuardConfig.temperature_celsius)C for $temperatureDurationSeconds seconds."
+                Set-ClipperThermalAbortContext -Stage $Stage -Provider $Provider -Model $Model -RuntimeProfile $RuntimeProfile -DeviceBackend $DeviceBackend -Reason 'temperature_above_threshold_for_duration' -ErrorMessage $message -ThermalGuardConfig $ThermalGuardConfig -TemperatureSnapshot $temperatureSnapshot -ThermalStateSnapshot $thermalStateSnapshot -DurationSeconds $temperatureDurationSeconds
+                return [pscustomobject]@{
+                    success = $false
+                    exit_code = -1
+                    stdout = (Read-TextFileIfExists -Path $StdoutPath)
+                    stderr = (Read-TextFileIfExists -Path $StderrPath)
+                    timed_out = $false
+                    thermal_abort = $true
+                    thermal_abort_context = $script:ClipperLastThermalAbort
+                }
+            }
+
+            if ([bool]$ThermalGuardConfig.fallback_to_thermal_state -and $thermalStateSnapshot.available) {
+                if ($thermalStateSnapshot.state -eq 'critical') {
+                    try { Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue } catch {}
+                    try { $process.WaitForExit() } catch {}
+                    $message = "Thermal protection aborted $Stage because macOS thermal state reached critical."
+                    Set-ClipperThermalAbortContext -Stage $Stage -Provider $Provider -Model $Model -RuntimeProfile $RuntimeProfile -DeviceBackend $DeviceBackend -Reason 'thermal_state_critical' -ErrorMessage $message -ThermalGuardConfig $ThermalGuardConfig -TemperatureSnapshot $temperatureSnapshot -ThermalStateSnapshot $thermalStateSnapshot -DurationSeconds 0
+                    return [pscustomobject]@{
+                        success = $false
+                        exit_code = -1
+                        stdout = (Read-TextFileIfExists -Path $StdoutPath)
+                        stderr = (Read-TextFileIfExists -Path $StderrPath)
+                        timed_out = $false
+                        thermal_abort = $true
+                        thermal_abort_context = $script:ClipperLastThermalAbort
+                    }
+                }
+
+                $seriousDurationSeconds = if ($null -ne $seriousThermalSince) { [int]($now - $seriousThermalSince).TotalSeconds } else { 0 }
+                if ($seriousDurationSeconds -ge [int]$ThermalGuardConfig.duration_seconds) {
+                    try { Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue } catch {}
+                    try { $process.WaitForExit() } catch {}
+                    $message = "Thermal protection aborted $Stage because macOS thermal state stayed at serious for $seriousDurationSeconds seconds."
+                    Set-ClipperThermalAbortContext -Stage $Stage -Provider $Provider -Model $Model -RuntimeProfile $RuntimeProfile -DeviceBackend $DeviceBackend -Reason 'thermal_state_serious_for_duration' -ErrorMessage $message -ThermalGuardConfig $ThermalGuardConfig -TemperatureSnapshot $temperatureSnapshot -ThermalStateSnapshot $thermalStateSnapshot -DurationSeconds $seriousDurationSeconds
+                    return [pscustomobject]@{
+                        success = $false
+                        exit_code = -1
+                        stdout = (Read-TextFileIfExists -Path $StdoutPath)
+                        stderr = (Read-TextFileIfExists -Path $StderrPath)
+                        timed_out = $false
+                        thermal_abort = $true
+                        thermal_abort_context = $script:ClipperLastThermalAbort
+                    }
+                }
+            }
+        }
+
+        Start-Sleep -Seconds $pollSeconds
+        $process.Refresh()
+    }
+
+    return [pscustomobject]@{
+        success = $true
+        exit_code = $process.ExitCode
+        stdout = (Read-TextFileIfExists -Path $StdoutPath)
+        stderr = (Read-TextFileIfExists -Path $StderrPath)
+        timed_out = $false
+        thermal_abort = $false
+        thermal_abort_context = $null
+    }
 }
 
 function Invoke-PythonJsonProbe {
@@ -866,14 +1475,24 @@ function Invoke-PythonJsonProbe {
 function Get-PodcastAsrRuntimeProbe {
     param($AsrConfig)
 
+    $provider = if ($null -ne $AsrConfig) { Get-StringValue -Data $AsrConfig -Name 'provider' -DefaultValue 'faster-whisper' } else { 'faster-whisper' }
     $probe = [ordered]@{
         enabled = $false
         command = ''
+        provider = $provider
+        requested_device = ''
         supports_cuda = $false
+        supports_mps = $false
+        supports_metal = $false
+        supports_requested_backend = $false
+        recommended_backend = ''
         python_executable = ''
         torch_cuda_available = $false
+        torch_mps_built = $false
+        torch_mps_available = $false
         ctranslate2_cuda_device_count = 0
         device_name = ''
+        backend_reason = ''
         status = 'not_enabled'
         status_message = 'ASR is disabled.'
     }
@@ -881,6 +1500,7 @@ function Get-PodcastAsrRuntimeProbe {
     if ($null -eq $AsrConfig) { return [pscustomobject]$probe }
     $probe.enabled = Get-BoolValueFromData -Data $AsrConfig -Name 'enabled' -DefaultValue $false
     $probe.command = Get-ConfiguredPathValue -Object $AsrConfig -PropertyName 'command'
+    $probe.requested_device = Get-StringValue -Data $AsrConfig -Name 'device' -DefaultValue ''
     if (-not $probe.enabled) { return [pscustomobject]$probe }
     if (-not (Test-HasValue $probe.command)) {
         $probe.status = 'missing_command'
@@ -891,21 +1511,46 @@ function Get-PodcastAsrRuntimeProbe {
     $probeCode = @'
 import json
 result = {
+  "provider": "",
   "python_executable": "",
   "supports_cuda": False,
+  "supports_mps": False,
+  "supports_metal": False,
+  "supports_mlx": False,
+  "supports_faster_whisper": False,
   "torch_cuda_available": False,
+  "torch_mps_built": False,
+  "torch_mps_available": False,
   "ctranslate2_cuda_device_count": 0,
   "device_name": "",
+  "platform": "",
   "errors": []
 }
 try:
     import sys
     result["python_executable"] = sys.executable
+    result["platform"] = sys.platform
 except Exception as exc:
     result["errors"].append(f"sys:{exc}")
+provider = ""
+try:
+    provider = __import__("os").environ.get("PODCAST_ASR_PROVIDER", "").strip().lower()
+    result["provider"] = provider
+except Exception as exc:
+    result["errors"].append(f"provider:{exc}")
 try:
     import torch
     result["torch_cuda_available"] = bool(torch.cuda.is_available())
+    mps_backend = getattr(getattr(torch, "backends", None), "mps", None)
+    if mps_backend is not None:
+        try:
+            result["torch_mps_built"] = bool(mps_backend.is_built())
+        except Exception:
+            pass
+        try:
+            result["torch_mps_available"] = bool(mps_backend.is_available())
+        except Exception:
+            pass
     if result["torch_cuda_available"]:
         result["device_name"] = torch.cuda.get_device_name(0)
 except Exception as exc:
@@ -917,29 +1562,107 @@ try:
         result["ctranslate2_cuda_device_count"] = int(getter())
 except Exception as exc:
     result["errors"].append(f"ctranslate2:{exc}")
+try:
+    import faster_whisper  # noqa: F401
+    result["supports_faster_whisper"] = True
+except Exception as exc:
+    result["errors"].append(f"faster_whisper:{exc}")
+try:
+    import mlx.core as mx  # noqa: F401
+    import mlx_whisper  # noqa: F401
+    machine = ""
+    try:
+        import platform
+        machine = platform.machine().lower()
+    except Exception:
+        machine = ""
+    result["supports_mlx"] = result["platform"] == "darwin" and machine == "arm64"
+except Exception as exc:
+    result["errors"].append(f"mlx:{exc}")
 result["supports_cuda"] = result["ctranslate2_cuda_device_count"] > 0
+result["supports_mps"] = result["torch_mps_available"]
+result["supports_metal"] = result["supports_mps"]
+if result["provider"] == "mlx-whisper":
+    result["supports_mps"] = result["supports_mlx"]
+    result["supports_metal"] = result["supports_mlx"]
 print(json.dumps(result, ensure_ascii=False))
 '@
 
-    $probeResult = Invoke-PythonJsonProbe -Command $probe.command -ProbeCode $probeCode
+    $previousAsrProvider = $env:PODCAST_ASR_PROVIDER
+    try {
+        $env:PODCAST_ASR_PROVIDER = $provider
+        $probeResult = Invoke-PythonJsonProbe -Command $probe.command -ProbeCode $probeCode
+    } finally {
+        $env:PODCAST_ASR_PROVIDER = $previousAsrProvider
+    }
     if (-not $probeResult.success -or $null -eq $probeResult.data) {
-        $probe.status = 'probe_failed'
-        $probe.status_message = "ASR runtime probe failed: $($probeResult.error)"
+        if ($provider.Trim().ToLowerInvariant() -eq 'mlx-whisper') {
+            $probe.status = 'provider_missing'
+            $probe.status_message = "ASR runtime probe failed for provider '$provider': $($probeResult.error)"
+        } else {
+            $probe.status = 'probe_failed'
+            $probe.status_message = "ASR runtime probe failed: $($probeResult.error)"
+        }
         return [pscustomobject]$probe
     }
 
     $probe.python_executable = Get-StringValue -Data $probeResult.data -Name 'python_executable' -DefaultValue ''
     $probe.supports_cuda = Get-BoolValueFromData -Data $probeResult.data -Name 'supports_cuda' -DefaultValue $false
+    $probe.supports_mps = Get-BoolValueFromData -Data $probeResult.data -Name 'supports_mps' -DefaultValue $false
+    $probe.supports_metal = Get-BoolValueFromData -Data $probeResult.data -Name 'supports_metal' -DefaultValue $false
     $probe.torch_cuda_available = Get-BoolValueFromData -Data $probeResult.data -Name 'torch_cuda_available' -DefaultValue $false
+    $probe.torch_mps_built = Get-BoolValueFromData -Data $probeResult.data -Name 'torch_mps_built' -DefaultValue $false
+    $probe.torch_mps_available = Get-BoolValueFromData -Data $probeResult.data -Name 'torch_mps_available' -DefaultValue $false
     $probe.ctranslate2_cuda_device_count = [int](Get-StringValue -Data $probeResult.data -Name 'ctranslate2_cuda_device_count' -DefaultValue '0')
     $probe.device_name = Get-StringValue -Data $probeResult.data -Name 'device_name' -DefaultValue ''
-    $probe.status = if ($probe.supports_cuda) { 'gpu_ready' } else { 'cpu_only' }
-    $probe.status_message = if ($probe.supports_cuda) {
-        "ASR runtime can use GPU$($(if (Test-HasValue $probe.device_name) { ": $($probe.device_name)" } else { '' }))."
-    } elseif ($probe.torch_cuda_available) {
-        'ASR runtime sees CUDA in torch, but ctranslate2 GPU support is not available.'
+    $normalizedRequestedDevice = if (Test-HasValue $probe.requested_device) { $probe.requested_device.Trim().ToLowerInvariant() } else { '' }
+    switch ($normalizedRequestedDevice) {
+        'cuda' { $probe.supports_requested_backend = $probe.supports_cuda }
+        'mps' { $probe.supports_requested_backend = $probe.supports_mps }
+        'metal' { $probe.supports_requested_backend = $probe.supports_metal }
+        'cpu' { $probe.supports_requested_backend = $true }
+        default { $probe.supports_requested_backend = $false }
+    }
+    $normalizedProvider = $provider.Trim().ToLowerInvariant()
+    $supportsMlx = Get-BoolValueFromData -Data $probeResult.data -Name 'supports_mlx' -DefaultValue $false
+    $supportsFasterWhisper = Get-BoolValueFromData -Data $probeResult.data -Name 'supports_faster_whisper' -DefaultValue $false
+    if ($normalizedProvider -eq 'mlx-whisper') {
+        if ($supportsMlx) {
+            $probe.recommended_backend = 'mps'
+            $probe.status = 'accelerator_ready'
+            $probe.backend_reason = 'mlx_ready'
+            $probe.status_message = 'ASR runtime can use MLX Whisper on Apple Silicon.'
+        } else {
+            $probe.recommended_backend = 'cpu'
+            $probe.status = 'provider_missing'
+            $probe.backend_reason = 'mlx_unavailable'
+            $probe.status_message = 'ASR runtime cannot use MLX Whisper because mlx/mlx-whisper is missing or the current machine is not Apple Silicon.'
+        }
+    } elseif ($probe.supports_cuda) {
+        $probe.recommended_backend = 'cuda'
+        $probe.status = 'gpu_ready'
+        $probe.backend_reason = 'cuda_ready'
+        $probe.status_message = "ASR runtime can use GPU$($(if (Test-HasValue $probe.device_name) { ": $($probe.device_name)" } else { '' }))."
+    } elseif ($probe.supports_mps) {
+        $probe.recommended_backend = 'mps'
+        $probe.status = 'accelerator_ready'
+        $probe.backend_reason = 'mps_ready'
+        $probe.status_message = 'ASR runtime can use Apple Silicon MPS acceleration.'
+    } elseif ($probe.torch_cuda_available -or $supportsFasterWhisper) {
+        $probe.recommended_backend = 'cpu'
+        $probe.status = 'partial_acceleration'
+        $probe.backend_reason = 'torch_cuda_without_ctranslate2'
+        $probe.status_message = 'ASR runtime sees CUDA in torch, but ctranslate2 GPU support is not available.'
     } else {
-        'ASR runtime is currently CPU-only.'
+        $probe.recommended_backend = 'cpu'
+        $probe.status = 'cpu_only'
+        $probe.backend_reason = 'cpu_only'
+        $probe.status_message = 'ASR runtime is currently CPU-only.'
+    }
+    if ($probe.supports_cuda) {
+        $probe.status_message = if ($probe.supports_cuda) {
+        "ASR runtime can use GPU$($(if (Test-HasValue $probe.device_name) { ": $($probe.device_name)" } else { '' }))."
+        } else { $probe.status_message }
     }
     [pscustomobject]$probe
 }
@@ -947,13 +1670,23 @@ print(json.dumps(result, ensure_ascii=False))
 function Get-PodcastDiarizationRuntimeProbe {
     param($DiarizationConfig)
 
+    $provider = if ($null -ne $DiarizationConfig) { Get-StringValue -Data $DiarizationConfig -Name 'provider' -DefaultValue 'pyannote' } else { 'pyannote' }
     $probe = [ordered]@{
         enabled = $false
         command = ''
+        provider = $provider
+        requested_device = ''
         supports_cuda = $false
+        supports_mps = $false
+        supports_metal = $false
+        supports_requested_backend = $false
+        recommended_backend = ''
         python_executable = ''
         torch_cuda_available = $false
+        torch_mps_built = $false
+        torch_mps_available = $false
         device_name = ''
+        backend_reason = ''
         status = 'not_enabled'
         status_message = 'Diarization is disabled.'
     }
@@ -961,6 +1694,7 @@ function Get-PodcastDiarizationRuntimeProbe {
     if ($null -eq $DiarizationConfig) { return [pscustomobject]$probe }
     $probe.enabled = Get-BoolValueFromData -Data $DiarizationConfig -Name 'enabled' -DefaultValue $false
     $probe.command = Get-ConfiguredPathValue -Object $DiarizationConfig -PropertyName 'command'
+    $probe.requested_device = Get-StringValue -Data $DiarizationConfig -Name 'device' -DefaultValue ''
     if (-not $probe.enabled) { return [pscustomobject]$probe }
     if (-not (Test-HasValue $probe.command)) {
         $probe.status = 'missing_command'
@@ -971,29 +1705,78 @@ function Get-PodcastDiarizationRuntimeProbe {
     $probeCode = @'
 import json
 result = {
+  "provider": "",
   "python_executable": "",
   "supports_cuda": False,
+  "supports_mps": False,
+  "supports_metal": False,
+  "supports_pyannote": False,
+  "supports_whisperx": False,
   "torch_cuda_available": False,
+  "torch_mps_built": False,
+  "torch_mps_available": False,
   "device_name": "",
+  "platform": "",
   "errors": []
 }
 try:
     import sys
     result["python_executable"] = sys.executable
+    result["platform"] = sys.platform
 except Exception as exc:
     result["errors"].append(f"sys:{exc}")
+provider = ""
+try:
+    provider = __import__("os").environ.get("PODCAST_DIARIZATION_PROVIDER", "").strip().lower()
+    result["provider"] = provider
+except Exception as exc:
+    result["errors"].append(f"provider:{exc}")
 try:
     import torch
     result["torch_cuda_available"] = bool(torch.cuda.is_available())
+    mps_backend = getattr(getattr(torch, "backends", None), "mps", None)
+    if mps_backend is not None:
+        try:
+            result["torch_mps_built"] = bool(mps_backend.is_built())
+        except Exception:
+            pass
+        try:
+            result["torch_mps_available"] = bool(mps_backend.is_available())
+        except Exception:
+            pass
     result["supports_cuda"] = result["torch_cuda_available"]
     if result["torch_cuda_available"]:
         result["device_name"] = torch.cuda.get_device_name(0)
 except Exception as exc:
     result["errors"].append(f"torch:{exc}")
+try:
+    from pyannote.audio import Pipeline  # noqa: F401
+    result["supports_pyannote"] = True
+except Exception as exc:
+    result["errors"].append(f"pyannote:{exc}")
+try:
+    import whisperx  # noqa: F401
+    result["supports_whisperx"] = True
+except Exception as exc:
+    result["errors"].append(f"whisperx:{exc}")
+result["supports_mps"] = result["torch_mps_available"]
+result["supports_metal"] = result["supports_mps"]
+if result["provider"] == "pyannote":
+    result["supports_cuda"] = result["supports_cuda"] and result["supports_pyannote"]
+    result["supports_mps"] = result["supports_mps"] and result["supports_pyannote"]
+    result["supports_metal"] = result["supports_metal"] and result["supports_pyannote"]
+elif result["provider"] == "whisperx":
+    result["supports_cuda"] = result["supports_cuda"] and result["supports_whisperx"]
 print(json.dumps(result, ensure_ascii=False))
 '@
 
-    $probeResult = Invoke-PythonJsonProbe -Command $probe.command -ProbeCode $probeCode
+    $previousDiarizationProvider = $env:PODCAST_DIARIZATION_PROVIDER
+    try {
+        $env:PODCAST_DIARIZATION_PROVIDER = $provider
+        $probeResult = Invoke-PythonJsonProbe -Command $probe.command -ProbeCode $probeCode
+    } finally {
+        $env:PODCAST_DIARIZATION_PROVIDER = $previousDiarizationProvider
+    }
     if (-not $probeResult.success -or $null -eq $probeResult.data) {
         $probe.status = 'probe_failed'
         $probe.status_message = "Diarization runtime probe failed: $($probeResult.error)"
@@ -1002,13 +1785,53 @@ print(json.dumps(result, ensure_ascii=False))
 
     $probe.python_executable = Get-StringValue -Data $probeResult.data -Name 'python_executable' -DefaultValue ''
     $probe.supports_cuda = Get-BoolValueFromData -Data $probeResult.data -Name 'supports_cuda' -DefaultValue $false
+    $probe.supports_mps = Get-BoolValueFromData -Data $probeResult.data -Name 'supports_mps' -DefaultValue $false
+    $probe.supports_metal = Get-BoolValueFromData -Data $probeResult.data -Name 'supports_metal' -DefaultValue $false
     $probe.torch_cuda_available = Get-BoolValueFromData -Data $probeResult.data -Name 'torch_cuda_available' -DefaultValue $false
+    $probe.torch_mps_built = Get-BoolValueFromData -Data $probeResult.data -Name 'torch_mps_built' -DefaultValue $false
+    $probe.torch_mps_available = Get-BoolValueFromData -Data $probeResult.data -Name 'torch_mps_available' -DefaultValue $false
     $probe.device_name = Get-StringValue -Data $probeResult.data -Name 'device_name' -DefaultValue ''
-    $probe.status = if ($probe.supports_cuda) { 'gpu_ready' } else { 'cpu_only' }
-    $probe.status_message = if ($probe.supports_cuda) {
-        "Diarization runtime can use GPU$($(if (Test-HasValue $probe.device_name) { ": $($probe.device_name)" } else { '' }))."
+    $normalizedRequestedDevice = if (Test-HasValue $probe.requested_device) { $probe.requested_device.Trim().ToLowerInvariant() } else { '' }
+    switch ($normalizedRequestedDevice) {
+        'cuda' { $probe.supports_requested_backend = $probe.supports_cuda }
+        'mps' { $probe.supports_requested_backend = $probe.supports_mps }
+        'metal' { $probe.supports_requested_backend = $probe.supports_metal }
+        'cpu' { $probe.supports_requested_backend = $true }
+        default { $probe.supports_requested_backend = $false }
+    }
+    $normalizedProvider = $provider.Trim().ToLowerInvariant()
+    $supportsPyannote = Get-BoolValueFromData -Data $probeResult.data -Name 'supports_pyannote' -DefaultValue $false
+    $supportsWhisperx = Get-BoolValueFromData -Data $probeResult.data -Name 'supports_whisperx' -DefaultValue $false
+    if ($normalizedProvider -eq 'pyannote' -and -not $supportsPyannote) {
+        $probe.recommended_backend = 'cpu'
+        $probe.status = 'provider_missing'
+        $probe.backend_reason = 'pyannote_missing'
+        $probe.status_message = 'Diarization runtime cannot use pyannote because pyannote.audio is missing from the active Python environment.'
+    } elseif ($normalizedProvider -eq 'whisperx' -and -not $supportsWhisperx) {
+        $probe.recommended_backend = 'cpu'
+        $probe.status = 'provider_missing'
+        $probe.backend_reason = 'whisperx_missing'
+        $probe.status_message = 'Diarization runtime cannot use WhisperX because whisperx is missing from the active Python environment.'
+    } elseif ($probe.supports_cuda) {
+        $probe.recommended_backend = 'cuda'
+        $probe.status = 'gpu_ready'
+        $probe.backend_reason = 'cuda_ready'
+        $probe.status_message = "Diarization runtime can use GPU$($(if (Test-HasValue $probe.device_name) { ": $($probe.device_name)" } else { '' }))."
+    } elseif ($probe.supports_mps) {
+        $probe.recommended_backend = 'mps'
+        $probe.status = 'accelerator_ready'
+        $probe.backend_reason = 'mps_ready'
+        $probe.status_message = 'Diarization runtime can use Apple Silicon MPS acceleration.'
     } else {
-        'Diarization runtime is currently CPU-only.'
+        $probe.recommended_backend = 'cpu'
+        $probe.status = 'cpu_only'
+        $probe.backend_reason = 'cpu_only'
+        $probe.status_message = 'Diarization runtime is currently CPU-only.'
+    }
+    if ($probe.supports_cuda) {
+        $probe.status_message = if ($probe.supports_cuda) {
+        "Diarization runtime can use GPU$($(if (Test-HasValue $probe.device_name) { ": $($probe.device_name)" } else { '' }))."
+        } else { $probe.status_message }
     }
     [pscustomobject]$probe
 }
@@ -1041,11 +1864,18 @@ function Get-PodcastRuntimeProfileOptions {
     $options = New-Object System.Collections.ArrayList
     $asrGpuReady = ($null -ne $Capabilities.asr -and $Capabilities.asr.supports_cuda)
     $diarizationGpuReady = ($null -ne $Capabilities.diarization -and $Capabilities.diarization.supports_cuda)
+    $asrMpsReady = ($null -ne $Capabilities.asr -and $Capabilities.asr.supports_mps)
+    $diarizationMpsReady = ($null -ne $Capabilities.diarization -and $Capabilities.diarization.supports_mps)
 
     if ($asrGpuReady -and $diarizationGpuReady) {
-        $null = $options.Add((New-PodcastRuntimeProfileOption -Id 'gpu_balanced' -Label 'GPU 平衡' -Description 'ASR 与 diarization 都使用 GPU，优先速度与整体体验。' -AsrDevice 'cuda' -AsrComputeType 'float16' -DiarizationDevice 'cuda' -Recommended $true))
-        $null = $options.Add((New-PodcastRuntimeProfileOption -Id 'gpu_memory_saver' -Label 'GPU 省显存' -Description 'ASR 使用更保守的 GPU 精度，适合显存较紧张的机器。' -AsrDevice 'cuda' -AsrComputeType 'int8_float16' -DiarizationDevice 'cuda'))
-        return @($options)
+        $null = $options.Add((New-PodcastRuntimeProfileOption -Id 'windows_cuda_balanced' -Label 'Windows CUDA 平衡' -Description 'ASR 与 diarization 都使用 CUDA，优先速度与整体体验。' -AsrDevice 'cuda' -AsrComputeType 'float16' -DiarizationDevice 'cuda' -Recommended $true))
+        $null = $options.Add((New-PodcastRuntimeProfileOption -Id 'windows_cuda_memory_saver' -Label 'Windows CUDA 省显存' -Description 'ASR 使用更保守的 CUDA 精度，适合显存较紧张的机器。' -AsrDevice 'cuda' -AsrComputeType 'int8_float16' -DiarizationDevice 'cuda'))
+    }
+
+    if ($asrMpsReady -and $diarizationMpsReady) {
+        $isRecommended = (-not $asrGpuReady -and -not $diarizationGpuReady)
+        $null = $options.Add((New-PodcastRuntimeProfileOption -Id 'mac_metal_balanced' -Label 'Mac Metal 平衡' -Description 'ASR 与 diarization 都优先使用 Apple Silicon 高性能后端。' -AsrDevice 'mps' -AsrComputeType 'float16' -DiarizationDevice 'mps' -Recommended $isRecommended))
+        $null = $options.Add((New-PodcastRuntimeProfileOption -Id 'mac_metal_cooldown_guarded' -Label 'Mac Metal 温控优先' -Description 'ASR 与 diarization 都优先使用 Apple Silicon 高性能后端，并搭配更保守的温控策略。' -AsrDevice 'mps' -AsrComputeType 'float16' -DiarizationDevice 'mps'))
     }
 
     @($options)
@@ -1125,7 +1955,7 @@ function Resolve-PodcastRuntimeSelection {
     if ($options.Count -eq 0) {
         $asrStatusMessage = if ($null -ne $capabilities.asr) { [string]$capabilities.asr.status_message } else { 'ASR runtime probe unavailable.' }
         $diarizationStatusMessage = if ($null -ne $capabilities.diarization) { [string]$capabilities.diarization.status_message } else { 'Diarization runtime probe unavailable.' }
-        throw ("Podcast pipeline is locked to GPU-only. Both ASR and diarization must be CUDA-ready before execution. ASR: {0} Diarization: {1}" -f $asrStatusMessage, $diarizationStatusMessage)
+        throw ("Podcast pipeline requires a supported high-performance backend and does not allow CPU fallback. ASR: {0} Diarization: {1}" -f $asrStatusMessage, $diarizationStatusMessage)
     }
 
     $selectedOption = Select-PodcastRuntimeProfileOption -Options $options -Capabilities $capabilities -Interactive (Test-IsInteractiveHost)
@@ -1698,6 +2528,8 @@ function Invoke-PodcastAsrFallback {
         transcript = ''
         transcript_raw = ''
         segments = @()
+        thermal_abort = $false
+        thermal_abort_context = $null
         error = ''
     }
 
@@ -1739,22 +2571,33 @@ function Invoke-PodcastAsrFallback {
     $vadFilter = Get-BoolValueFromData -Data $asrConfig -Name 'vad_filter' -DefaultValue $true
     $normalizeScript = Get-StringValue -Data $asrConfig -Name 'normalize_script' -DefaultValue 'simplified'
     $mockTranscriptPath = Get-ConfiguredPathValue -Object $asrConfig -PropertyName 'mock_transcript_path'
+    $runtimeProfile = if ($null -ne $podcastRoute) { Get-StringValue -Data $podcastRoute -Name 'runtime_profile' -DefaultValue (Get-DefaultPodcastRuntimeProfileId) } else { Get-DefaultPodcastRuntimeProfileId }
+    $executionPolicy = Get-PodcastExecutionPolicy -PodcastRoute $podcastRoute
+    $thermalGuardConfig = Get-PodcastThermalGuardConfig -PodcastRoute $podcastRoute
 
     $normalizedDevice = $device.Trim().ToLowerInvariant()
-    if ($normalizedDevice -ne 'cuda') {
-        $result.status = 'gpu_required'
-        $result.error = 'Podcast ASR is locked to GPU-only. routes.podcast.asr.device must be "cuda".'
+    $providerSupportsBackend = Test-PodcastAsrProviderSupportsBackend -Provider $provider -Backend $normalizedDevice
+    if (-not $providerSupportsBackend) {
+        $result.status = 'backend_unsupported'
+        $result.error = "Podcast ASR provider '$provider' does not support backend '$device'."
+        return [pscustomobject]$result
+    }
+    if ($executionPolicy -eq 'fail_closed_no_cpu' -and $normalizedDevice -eq 'cpu') {
+        $result.status = 'cpu_forbidden'
+        $result.error = 'Podcast ASR CPU execution is forbidden by routes.podcast.execution_policy.'
         return [pscustomobject]$result
     }
 
     $runtimeProbe = Get-PodcastAsrRuntimeProbe -AsrConfig $asrConfig
-    if (-not $runtimeProbe.supports_cuda) {
-        $result.status = 'gpu_unavailable'
-        $result.error = "Podcast ASR is locked to GPU-only, but the active runtime cannot use CUDA. $($runtimeProbe.status_message)"
+    if (-not $runtimeProbe.supports_requested_backend) {
+        $result.status = 'backend_unavailable'
+        $result.error = "Podcast ASR requires backend '$device', but the active runtime cannot use it. $($runtimeProbe.status_message)"
         return [pscustomobject]$result
     }
 
     $outputJsonPath = Join-Path $AssetDirectory 'asr-output.json'
+    $stdoutPath = Join-Path $AssetDirectory 'asr-stdout.log'
+    $stderrPath = Join-Path $AssetDirectory 'asr-stderr.log'
     $arguments = @()
     if (Test-HasValue $scriptPath) { $arguments += @($scriptPath) }
     $arguments += @('--audio-path', $AudioPath, '--output-json', $outputJsonPath, '--provider', $provider, '--model', $model, '--language', $language, '--device', $device, '--compute-type', $computeType, '--beam-size', $beamSize, '--vad-filter', $(if ($vadFilter) { 'true' } else { 'false' }), '--normalize-script', $normalizeScript)
@@ -1762,17 +2605,28 @@ function Invoke-PodcastAsrFallback {
 
     try {
         $result.attempted = $true
-        $previousErrorActionPreference = $ErrorActionPreference
+        $commandOutput = ''
         $previousPythonWarnings = $env:PYTHONWARNINGS
         try {
             $env:PYTHONWARNINGS = 'ignore'
-            $ErrorActionPreference = 'Continue'
-            $commandOutput = & $command @arguments 2>&1 | Out-String
+            $execution = Invoke-ExternalCommandWithThermalGuard -Command $command -Arguments $arguments -WorkingDirectory $AssetDirectory -StdoutPath $stdoutPath -StderrPath $stderrPath -TimeoutSec $timeoutSec -ThermalGuardConfig $thermalGuardConfig -Stage 'asr' -Provider $provider -Model $model -RuntimeProfile $runtimeProfile -DeviceBackend $normalizedDevice
         } finally {
-            $ErrorActionPreference = $previousErrorActionPreference
             $env:PYTHONWARNINGS = $previousPythonWarnings
         }
-        $exitCode = $LASTEXITCODE
+        $commandOutput = (($execution.stdout, $execution.stderr | Where-Object { Test-HasValue $_ }) -join [Environment]::NewLine).Trim()
+        if ($execution.thermal_abort) {
+            $result.status = 'thermal_abort'
+            $result.error = if ($null -ne $execution.thermal_abort_context) { [string]$execution.thermal_abort_context.error } else { 'Thermal protection aborted ASR.' }
+            $result.thermal_abort = $true
+            $result.thermal_abort_context = $execution.thermal_abort_context
+            return [pscustomobject]$result
+        }
+        if ($execution.timed_out) {
+            $result.status = 'timeout'
+            $result.error = "ASR command exceeded timeout of $timeoutSec seconds."
+            return [pscustomobject]$result
+        }
+        $exitCode = [int]$execution.exit_code
         $payload = $null
         if (Test-Path $outputJsonPath) {
             try {
@@ -1837,6 +2691,8 @@ function Invoke-PodcastSpeakerDiarization {
         speaker_map = @()
         speaker_transcript = ''
         speaker_inference = $null
+        thermal_abort = $false
+        thermal_abort_context = $null
         error = ''
     }
 
@@ -1883,21 +2739,39 @@ function Invoke-PodcastSpeakerDiarization {
     $refinementWindowSeconds = if ($null -ne $refinementConfig) { Get-StringValue -Data $refinementConfig -Name 'window_seconds' -DefaultValue '3.2' } else { '3.2' }
     $refinementBatchSize = if ($null -ne $refinementConfig) { Get-StringValue -Data $refinementConfig -Name 'batch_size' -DefaultValue '24' } else { '24' }
     $refinementMaxTurns = if ($null -ne $refinementConfig) { Get-StringValue -Data $refinementConfig -Name 'max_turns' -DefaultValue '600' } else { '600' }
+    $refinementLongAudioMode = if ($null -ne $refinementConfig) { Get-StringValue -Data $refinementConfig -Name 'long_audio_mode' -DefaultValue 'conservative' } else { 'conservative' }
+    $refinementLongAudioThresholdSeconds = if ($null -ne $refinementConfig) { Get-StringValue -Data $refinementConfig -Name 'long_audio_threshold_seconds' -DefaultValue '2400' } else { '2400' }
+    $refinementLongAudioTurnMinSeconds = if ($null -ne $refinementConfig) { Get-StringValue -Data $refinementConfig -Name 'long_audio_turn_min_seconds' -DefaultValue '1.8' } else { '1.8' }
+    $refinementLongAudioWindowSeconds = if ($null -ne $refinementConfig) { Get-StringValue -Data $refinementConfig -Name 'long_audio_window_seconds' -DefaultValue '2.8' } else { '2.8' }
+    $refinementLongAudioBatchSize = if ($null -ne $refinementConfig) { Get-StringValue -Data $refinementConfig -Name 'long_audio_batch_size' -DefaultValue '8' } else { '8' }
+    $refinementLongAudioMaxTurns = if ($null -ne $refinementConfig) { Get-StringValue -Data $refinementConfig -Name 'long_audio_max_turns' -DefaultValue '180' } else { '180' }
+    $timeoutSec = if ($null -ne $diarizationConfig) { [int](Get-StringValue -Data $diarizationConfig -Name 'timeout_sec' -DefaultValue '1200') } else { 1200 }
+    $runtimeProfile = if ($null -ne $podcastRoute) { Get-StringValue -Data $podcastRoute -Name 'runtime_profile' -DefaultValue (Get-DefaultPodcastRuntimeProfileId) } else { Get-DefaultPodcastRuntimeProfileId }
+    $executionPolicy = Get-PodcastExecutionPolicy -PodcastRoute $podcastRoute
+    $thermalGuardConfig = Get-PodcastThermalGuardConfig -PodcastRoute $podcastRoute
     $normalizedDevice = $device.Trim().ToLowerInvariant()
-    if ($normalizedDevice -ne 'cuda') {
-        $result.status = 'gpu_required'
-        $result.error = 'Podcast diarization is locked to GPU-only. routes.podcast.diarization.device must be "cuda".'
+    $providerSupportsBackend = Test-PodcastDiarizationProviderSupportsBackend -Provider $provider -Backend $normalizedDevice
+    if (-not $providerSupportsBackend) {
+        $result.status = 'backend_unsupported'
+        $result.error = "Podcast diarization provider '$provider' does not support backend '$device'."
+        return [pscustomobject]$result
+    }
+    if ($executionPolicy -eq 'fail_closed_no_cpu' -and $normalizedDevice -eq 'cpu') {
+        $result.status = 'cpu_forbidden'
+        $result.error = 'Podcast diarization CPU execution is forbidden by routes.podcast.execution_policy.'
         return [pscustomobject]$result
     }
 
     $runtimeProbe = Get-PodcastDiarizationRuntimeProbe -DiarizationConfig $diarizationConfig
-    if (-not $runtimeProbe.supports_cuda) {
-        $result.status = 'gpu_unavailable'
-        $result.error = "Podcast diarization is locked to GPU-only, but the active runtime cannot use CUDA. $($runtimeProbe.status_message)"
+    if (-not $runtimeProbe.supports_requested_backend) {
+        $result.status = 'backend_unavailable'
+        $result.error = "Podcast diarization requires backend '$device', but the active runtime cannot use it. $($runtimeProbe.status_message)"
         return [pscustomobject]$result
     }
 
     $outputJsonPath = Join-Path $AssetDirectory 'speaker-diarization-output.json'
+    $stdoutPath = Join-Path $AssetDirectory 'speaker-diarization-stdout.log'
+    $stderrPath = Join-Path $AssetDirectory 'speaker-diarization-stderr.log'
     $arguments = @()
     if (Test-HasValue $scriptPath) { $arguments += @($scriptPath) }
     $arguments += @(
@@ -1913,7 +2787,13 @@ function Invoke-PodcastSpeakerDiarization {
         '--refinement-turn-min-seconds', $refinementTurnMinSeconds,
         '--refinement-window-seconds', $refinementWindowSeconds,
         '--refinement-batch-size', $refinementBatchSize,
-        '--refinement-max-turns', $refinementMaxTurns
+        '--refinement-max-turns', $refinementMaxTurns,
+        '--refinement-long-audio-mode', $refinementLongAudioMode,
+        '--refinement-long-audio-threshold-seconds', $refinementLongAudioThresholdSeconds,
+        '--refinement-long-audio-turn-min-seconds', $refinementLongAudioTurnMinSeconds,
+        '--refinement-long-audio-window-seconds', $refinementLongAudioWindowSeconds,
+        '--refinement-long-audio-batch-size', $refinementLongAudioBatchSize,
+        '--refinement-long-audio-max-turns', $refinementLongAudioMaxTurns
     )
     if (Test-HasValue $model) { $arguments += @('--model', $model) }
     if (Test-HasValue $mockDiarizationPath) { $arguments += @('--mock-diarization-path', $mockDiarizationPath) }
@@ -1921,18 +2801,27 @@ function Invoke-PodcastSpeakerDiarization {
 
     try {
         $result.attempted = $true
-        $commandOutput = ''
-        $previousErrorActionPreference = $ErrorActionPreference
         $previousPythonWarnings = $env:PYTHONWARNINGS
         try {
             $env:PYTHONWARNINGS = 'ignore'
-            $ErrorActionPreference = 'Continue'
-            $commandOutput = & $command @arguments 2>&1 | Out-String
+            $execution = Invoke-ExternalCommandWithThermalGuard -Command $command -Arguments $arguments -WorkingDirectory $AssetDirectory -StdoutPath $stdoutPath -StderrPath $stderrPath -TimeoutSec $timeoutSec -ThermalGuardConfig $thermalGuardConfig -Stage $(if ($refinementEnabled) { 'diarization' } else { 'diarization' }) -Provider $provider -Model $model -RuntimeProfile $runtimeProfile -DeviceBackend $normalizedDevice
         } finally {
-            $ErrorActionPreference = $previousErrorActionPreference
             $env:PYTHONWARNINGS = $previousPythonWarnings
         }
-        $exitCode = $LASTEXITCODE
+        $commandOutput = (($execution.stdout, $execution.stderr | Where-Object { Test-HasValue $_ }) -join [Environment]::NewLine).Trim()
+        if ($execution.thermal_abort) {
+            $result.status = 'thermal_abort'
+            $result.error = if ($null -ne $execution.thermal_abort_context) { [string]$execution.thermal_abort_context.error } else { 'Thermal protection aborted diarization.' }
+            $result.thermal_abort = $true
+            $result.thermal_abort_context = $execution.thermal_abort_context
+            return [pscustomobject]$result
+        }
+        if ($execution.timed_out) {
+            $result.status = 'timeout'
+            $result.error = "Speaker diarization command exceeded timeout of $timeoutSec seconds."
+            return [pscustomobject]$result
+        }
+        $exitCode = [int]$execution.exit_code
         $payload = $null
         if (Test-Path $outputJsonPath) {
             try {
@@ -2095,9 +2984,25 @@ function Save-PodcastArtifacts {
         $asrModel = [string]$asrResult.model
         $asrNormalization = [string]$asrResult.normalization
         $asrError = [string]$asrResult.error
+        if ($asrResult.thermal_abort -and $null -ne $metadata) {
+            $thermalAbortContext = $asrResult.thermal_abort_context
+            if ($null -ne $thermalAbortContext) {
+                Set-ObjectField -Object $metadata -Name 'thermal_abort' -Value $true | Out-Null
+                Set-ObjectField -Object $metadata -Name 'thermal_abort_stage' -Value ([string]$thermalAbortContext.stage) | Out-Null
+                Set-ObjectField -Object $metadata -Name 'thermal_abort_reason' -Value ([string]$thermalAbortContext.reason) | Out-Null
+                Set-ObjectField -Object $metadata -Name 'thermal_abort_device_backend' -Value ([string]$thermalAbortContext.device_backend) | Out-Null
+                Set-ObjectField -Object $metadata -Name 'thermal_abort_runtime_profile' -Value ([string]$thermalAbortContext.runtime_profile) | Out-Null
+                Set-ObjectField -Object $metadata -Name 'thermal_abort_temperature_celsius' -Value $thermalAbortContext.temperature_celsius | Out-Null
+                Set-ObjectField -Object $metadata -Name 'thermal_abort_duration_seconds' -Value $thermalAbortContext.duration_seconds | Out-Null
+                Set-ObjectField -Object $metadata -Name 'thermal_abort_thermal_state' -Value ([string]$thermalAbortContext.thermal_state) | Out-Null
+            }
+        }
         if (-not $asrResult.success) {
             $asrFailure = if (Test-HasValue $asrError) { $asrError } else { "ASR status: $asrStatus" }
-            throw ("Podcast ASR failed under GPU-only policy. {0}" -f $asrFailure)
+            if ($asrStatus -eq 'thermal_abort') {
+                throw ("Podcast ASR aborted by thermal protection. {0}" -f $asrFailure)
+            }
+            throw ("Podcast ASR failed under high-performance execution policy. {0}" -f $asrFailure)
         }
         if ($asrResult.success -and (Test-HasValue $asrResult.transcript)) {
             $transcript = [string]$asrResult.transcript
@@ -2166,9 +3071,25 @@ function Save-PodcastArtifacts {
             $diarizationModel = [string]$diarizationResult.model
             $diarizationError = [string]$diarizationResult.error
             $diarizationRefinementEnabled = $configuredRefinementEnabled
+            if ($diarizationResult.thermal_abort -and $null -ne $metadata) {
+                $thermalAbortContext = $diarizationResult.thermal_abort_context
+                if ($null -ne $thermalAbortContext) {
+                    Set-ObjectField -Object $metadata -Name 'thermal_abort' -Value $true | Out-Null
+                    Set-ObjectField -Object $metadata -Name 'thermal_abort_stage' -Value ([string]$thermalAbortContext.stage) | Out-Null
+                    Set-ObjectField -Object $metadata -Name 'thermal_abort_reason' -Value ([string]$thermalAbortContext.reason) | Out-Null
+                    Set-ObjectField -Object $metadata -Name 'thermal_abort_device_backend' -Value ([string]$thermalAbortContext.device_backend) | Out-Null
+                    Set-ObjectField -Object $metadata -Name 'thermal_abort_runtime_profile' -Value ([string]$thermalAbortContext.runtime_profile) | Out-Null
+                    Set-ObjectField -Object $metadata -Name 'thermal_abort_temperature_celsius' -Value $thermalAbortContext.temperature_celsius | Out-Null
+                    Set-ObjectField -Object $metadata -Name 'thermal_abort_duration_seconds' -Value $thermalAbortContext.duration_seconds | Out-Null
+                    Set-ObjectField -Object $metadata -Name 'thermal_abort_thermal_state' -Value ([string]$thermalAbortContext.thermal_state) | Out-Null
+                }
+            }
             if (-not $diarizationResult.success) {
                 $diarizationFailure = if (Test-HasValue $diarizationError) { $diarizationError } else { "Diarization status: $diarizationStatus" }
-                throw ("Podcast diarization failed under GPU-only policy. {0}" -f $diarizationFailure)
+                if ($diarizationStatus -eq 'thermal_abort') {
+                    throw ("Podcast diarization aborted by thermal protection. {0}" -f $diarizationFailure)
+                }
+                throw ("Podcast diarization failed under high-performance execution policy. {0}" -f $diarizationFailure)
             }
             if ($diarizationResult.success -and @($diarizationResult.segments).Count -gt 0) {
                 $transcriptSegments = @($diarizationResult.segments)
@@ -3278,6 +4199,14 @@ function Add-RunFinalStatusFields {
     $fallbackReason = Get-StringValue -Data $Result -Name 'fallback_reason' -DefaultValue ''
     $knowledgeSummaryStatus = Get-StringValue -Data $Result -Name 'knowledge_summary_status' -DefaultValue ''
     $knowledgeSummaryError = Get-StringValue -Data $Result -Name 'knowledge_summary_error' -DefaultValue ''
+    $thermalAbort = ($null -ne $Result.PSObject.Properties['thermal_abort']) -and [bool]$Result.thermal_abort
+    $thermalAbortStage = Get-StringValue -Data $Result -Name 'thermal_abort_stage' -DefaultValue ''
+    $thermalAbortReason = Get-StringValue -Data $Result -Name 'thermal_abort_reason' -DefaultValue ''
+    $thermalAbortThermalState = Get-StringValue -Data $Result -Name 'thermal_abort_thermal_state' -DefaultValue ''
+    $thermalAbortDeviceBackend = Get-StringValue -Data $Result -Name 'thermal_abort_device_backend' -DefaultValue ''
+    $thermalAbortRuntimeProfile = Get-StringValue -Data $Result -Name 'thermal_abort_runtime_profile' -DefaultValue ''
+    $thermalAbortTemperature = Get-DataValue -Data $Result -Name 'thermal_abort_temperature_celsius'
+    $thermalAbortDuration = Get-DataValue -Data $Result -Name 'thermal_abort_duration_seconds'
 
     if (-not [bool]$Result.success) {
         Set-ObjectField -Object $Result -Name 'final_run_status' -Value 'FAILED' | Out-Null
@@ -3285,6 +4214,34 @@ function Add-RunFinalStatusFields {
         if (-not (Test-HasValue $failedStep)) { Set-ObjectField -Object $Result -Name 'failed_step' -Value 'unknown' | Out-Null }
         Set-ObjectField -Object $Result -Name 'final_message_en' -Value (Get-StringValue -Data $Result -Name 'error_message' -DefaultValue 'The clipper run failed.') | Out-Null
         Set-ObjectField -Object $Result -Name 'final_message_zh' -Value (Get-StringValue -Data $Result -Name 'error_message_zh' -DefaultValue (Zh '\u672c\u6b21 Clipper \u8fd0\u884c\u5931\u8d25\u3002')) | Out-Null
+        return $Result
+    }
+
+    if ($thermalAbort) {
+        Set-ObjectField -Object $Result -Name 'final_run_status' -Value 'FAILED' | Out-Null
+        Set-ObjectField -Object $Result -Name 'final_run_status_zh' -Value (Zh '\u5931\u8d25') | Out-Null
+        if (-not (Test-HasValue $failedStep)) {
+            Set-ObjectField -Object $Result -Name 'failed_step' -Value $(if (Test-HasValue $thermalAbortStage) { $thermalAbortStage } else { 'thermal_abort' }) | Out-Null
+        }
+        $thermalMessageEn = 'The run was aborted by thermal protection.'
+        if (Test-HasValue $thermalAbortStage) { $thermalMessageEn = '{0} Stage: {1}.' -f $thermalMessageEn, $thermalAbortStage }
+        if (Test-HasValue $thermalAbortDeviceBackend) { $thermalMessageEn = '{0} Backend: {1}.' -f $thermalMessageEn, $thermalAbortDeviceBackend }
+        if ($null -ne $thermalAbortTemperature) { $thermalMessageEn = '{0} Temperature: {1}C.' -f $thermalMessageEn, $thermalAbortTemperature }
+        if ($null -ne $thermalAbortDuration) { $thermalMessageEn = '{0} Duration above threshold: {1}s.' -f $thermalMessageEn, $thermalAbortDuration }
+        if (Test-HasValue $thermalAbortThermalState) { $thermalMessageEn = '{0} Thermal state: {1}.' -f $thermalMessageEn, $thermalAbortThermalState }
+        if (Test-HasValue $thermalAbortReason) { $thermalMessageEn = '{0} Reason: {1}.' -f $thermalMessageEn, $thermalAbortReason }
+        if (Test-HasValue $thermalAbortRuntimeProfile) { $thermalMessageEn = '{0} Runtime profile: {1}.' -f $thermalMessageEn, $thermalAbortRuntimeProfile }
+        Set-ObjectField -Object $Result -Name 'final_message_en' -Value $thermalMessageEn | Out-Null
+
+        $thermalMessageZh = (Zh '\u672c\u6b21\u4efb\u52a1\u56e0\u70ed\u4fdd\u62a4\u89e6\u53d1\u800c\u4e2d\u65ad\u3002')
+        if (Test-HasValue $thermalAbortStage) { $thermalMessageZh = '{0} {1}: {2}。' -f $thermalMessageZh, (Zh '\u9636\u6bb5'), $thermalAbortStage }
+        if (Test-HasValue $thermalAbortDeviceBackend) { $thermalMessageZh = '{0} {1}: {2}。' -f $thermalMessageZh, (Zh '\u8bbe\u5907\u540e\u7aef'), $thermalAbortDeviceBackend }
+        if ($null -ne $thermalAbortTemperature) { $thermalMessageZh = '{0} {1}: {2}°C。' -f $thermalMessageZh, (Zh '\u6e29\u5ea6'), $thermalAbortTemperature }
+        if ($null -ne $thermalAbortDuration) { $thermalMessageZh = '{0} {1}: {2}\u79d2。' -f $thermalMessageZh, (Zh '\u8d85\u9608\u6301\u7eed\u65f6\u957f'), $thermalAbortDuration }
+        if (Test-HasValue $thermalAbortThermalState) { $thermalMessageZh = '{0} {1}: {2}。' -f $thermalMessageZh, (Zh '\u7cfb\u7edf\u70ed\u72b6\u6001'), $thermalAbortThermalState }
+        if (Test-HasValue $thermalAbortReason) { $thermalMessageZh = '{0} {1}: {2}。' -f $thermalMessageZh, (Zh '\u539f\u56e0'), $thermalAbortReason }
+        if (Test-HasValue $thermalAbortRuntimeProfile) { $thermalMessageZh = '{0} {1}: {2}。' -f $thermalMessageZh, (Zh '\u8fd0\u884c\u6863\u4f4d'), $thermalAbortRuntimeProfile }
+        Set-ObjectField -Object $Result -Name 'final_message_zh' -Value $thermalMessageZh | Out-Null
         return $Result
     }
 
@@ -3391,6 +4348,19 @@ function Get-RunSummaryLines {
     if ($null -ne $Result.PSObject.Properties['asr_status']) { $lines.Add("asr      : $($Result.asr_status) / $($Result.asr_provider)") }
     if ($null -ne $Result.PSObject.Properties['asr_normalization'] -and (Test-HasValue ([string]$Result.asr_normalization))) { $lines.Add("asr_norm : $($Result.asr_normalization)") }
     if ($null -ne $Result.PSObject.Properties['diarization_status']) { $lines.Add("speaker  : $($Result.diarization_status) / $($Result.diarization_provider)") }
+    if ($null -ne $Result.PSObject.Properties['thermal_abort'] -and [bool]$Result.thermal_abort) {
+        $thermalLine = 'triggered'
+        if ($null -ne $Result.PSObject.Properties['thermal_abort_stage'] -and (Test-HasValue ([string]$Result.thermal_abort_stage))) {
+            $thermalLine = '{0} / stage={1}' -f $thermalLine, $Result.thermal_abort_stage
+        }
+        if ($null -ne $Result.PSObject.Properties['thermal_abort_temperature_celsius'] -and $null -ne $Result.thermal_abort_temperature_celsius) {
+            $thermalLine = '{0} / temp={1}C' -f $thermalLine, $Result.thermal_abort_temperature_celsius
+        }
+        if ($null -ne $Result.PSObject.Properties['thermal_abort_thermal_state'] -and (Test-HasValue ([string]$Result.thermal_abort_thermal_state))) {
+            $thermalLine = '{0} / state={1}' -f $thermalLine, $Result.thermal_abort_thermal_state
+        }
+        $lines.Add("thermal  : $thermalLine")
+    }
     if ($null -ne $Result.PSObject.Properties['knowledge_summary_status']) {
         $knowledgeLine = [string]$Result.knowledge_summary_status
         if ($null -ne $Result.PSObject.Properties['knowledge_summary_note_updated']) {
@@ -3541,6 +4511,14 @@ try {
     $authSessionLikelyValidForResult = Get-DataValue -Data $capture -Name 'auth_session_likely_valid'
     $captureLevelForResult = if ($null -ne $captureMetadata) { Get-StringValue -Data $captureMetadata -Name 'capture_level' -DefaultValue '' } else { '' }
     $fallbackReasonForResult = if ($null -ne $captureMetadata) { Get-StringValue -Data $captureMetadata -Name 'fallback_reason' -DefaultValue '' } else { '' }
+    $thermalAbortForResult = if ($null -ne $captureMetadata) { Get-BoolValueFromData -Data $captureMetadata -Name 'thermal_abort' -DefaultValue $false } else { $false }
+    $thermalAbortStageForResult = if ($null -ne $captureMetadata) { Get-StringValue -Data $captureMetadata -Name 'thermal_abort_stage' -DefaultValue '' } else { '' }
+    $thermalAbortReasonForResult = if ($null -ne $captureMetadata) { Get-StringValue -Data $captureMetadata -Name 'thermal_abort_reason' -DefaultValue '' } else { '' }
+    $thermalAbortDeviceBackendForResult = if ($null -ne $captureMetadata) { Get-StringValue -Data $captureMetadata -Name 'thermal_abort_device_backend' -DefaultValue '' } else { '' }
+    $thermalAbortRuntimeProfileForResult = if ($null -ne $captureMetadata) { Get-StringValue -Data $captureMetadata -Name 'thermal_abort_runtime_profile' -DefaultValue '' } else { '' }
+    $thermalAbortThermalStateForResult = if ($null -ne $captureMetadata) { Get-StringValue -Data $captureMetadata -Name 'thermal_abort_thermal_state' -DefaultValue '' } else { '' }
+    $thermalAbortTemperatureForResult = if ($null -ne $captureMetadata) { Get-DataValue -Data $captureMetadata -Name 'thermal_abort_temperature_celsius' } else { $null }
+    $thermalAbortDurationForResult = if ($null -ne $captureMetadata) { Get-DataValue -Data $captureMetadata -Name 'thermal_abort_duration_seconds' } else { $null }
     $notePathFromRenderer = Get-StringValue -Data $note -Name 'note_path' -DefaultValue ''
     $knowledgeSummaryAttempted = $false
     $knowledgeSummaryStatus = 'skipped'
@@ -3665,6 +4643,14 @@ try {
         auth_session_likely_valid = if ($null -ne $authSessionLikelyValidForResult) { [bool]$authSessionLikelyValidForResult } else { $null }
         capture_level = $captureLevelForResult
         fallback_reason = $fallbackReasonForResult
+        thermal_abort = $thermalAbortForResult
+        thermal_abort_stage = $thermalAbortStageForResult
+        thermal_abort_reason = $thermalAbortReasonForResult
+        thermal_abort_device_backend = $thermalAbortDeviceBackendForResult
+        thermal_abort_runtime_profile = $thermalAbortRuntimeProfileForResult
+        thermal_abort_thermal_state = $thermalAbortThermalStateForResult
+        thermal_abort_temperature_celsius = $thermalAbortTemperatureForResult
+        thermal_abort_duration_seconds = $thermalAbortDurationForResult
         tags = $note.tags
         note_preview = $note.note_body
         vault_path = $resolvedVaultPath
@@ -3753,4 +4739,3 @@ try {
     Write-RunSummary -Result $failureObject
     throw
 }
-

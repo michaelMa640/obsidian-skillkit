@@ -1,0 +1,121 @@
+# 小宇宙 Mac 全本地方案 Phase 2
+
+## 阶段目标
+
+本阶段目标不是再证明“本地链路能跑”，而是把它推进到“真实节目可用”。
+
+重点包括：
+
+1. 用真实长节目样本验证 Mac 全本地链路。
+2. 提升长音频下的 speaker 区分稳定性。
+3. 控制 diarization refinement 的长时热负载。
+4. 为后续真实节目验收建立明确的质量门槛与诊断信息。
+
+## 为什么需要 Phase 2
+
+`Phase 1` 已经完成了这些事情：
+
+- Mac 本地 ASR 已真实跑通
+- Mac 本地 diarization 已真实跑通
+- CPU 正式禁用
+- 热保护可触发并可报告
+
+但 `Phase 1` 仍然保留了两个现实风险：
+
+1. 最小样本跑通，不代表真实长节目 speaker 区分质量足够稳定。
+2. diarization refinement 在长音频下可能带来更高热负载与更长运行时。
+
+所以 `Phase 2` 的重点是从“技术通路成立”进入“真实可用性验证与保守优化”。
+
+## 本阶段范围
+
+### 1. 长音频 refinement 保守策略
+
+目标：
+
+- 对长音频自动切换到更保守的 refinement 参数
+- 降低批处理热负载
+- 控制候选 turn 数量，避免无上限放大计算量
+
+建议策略：
+
+- 保留现有 refinement 默认策略
+- 新增长音频保守模式：
+  - `long_audio_mode`
+  - `long_audio_threshold_seconds`
+  - `long_audio_turn_min_seconds`
+  - `long_audio_window_seconds`
+  - `long_audio_batch_size`
+  - `long_audio_max_turns`
+
+默认思路：
+
+- 短音频保持现有精度优先策略
+- 长音频自动切到保守参数
+- `mac_metal_cooldown_guarded` 档位比 `mac_metal_balanced` 更早进入保守模式
+
+### 2. 真实节目样本验收
+
+目标：
+
+- 用真实小宇宙节目完成一轮端到端验证
+- 观察 speaker 分离质量、运行时长、热保护触发情况
+
+建议至少记录：
+
+- 节目时长
+- 是否命中长音频保守模式
+- ASR 总耗时
+- diarization 总耗时
+- refinement 是否启用
+- 最终 speaker 数量
+- speaker quality gate 是否通过
+- 是否触发 thermal abort
+
+### 3. 质量门槛与诊断
+
+目标：
+
+- 让“结果是否可信”变得更可判断
+- 让“为什么不可信”变得更可定位
+
+重点观察：
+
+- `distribution_summary`
+- `speaker_quality_gate`
+- `intro_diagnostics`
+- `sparse_speaker_turn_rescue`
+- `refinement.runtime_settings`
+
+### 4. 后续分流决策
+
+如果真实节目验证后结果较好：
+
+- 继续维持全本地正式路线
+
+如果真实节目验证后结果一般但可接受：
+
+- 优先继续调 refinement 与长音频保守参数
+
+如果真实节目验证后质量或热负载都明显不可接受：
+
+- 再讨论备选方案
+- 包括：
+  - 更保守的本地配置
+  - 更换本地 diarization 路线
+  - 最后才讨论 hosted 方案
+
+## 当前实施顺序
+
+1. 先把长音频保守 refinement 策略正式接入代码与配置。
+2. 再准备一份真实节目验证用的本地配置。
+3. 然后做第一轮真实节目长样本验收。
+4. 最后根据结果决定是否继续调参或进入下一阶段。
+
+## 本阶段完成标准
+
+1. 长音频自动保守策略已正式接入代码与配置。
+2. 至少完成 1 条真实节目样本的端到端本地验证。
+3. 能明确判断 speaker 质量是否达到可接受水平。
+4. 能明确判断长音频下热负载是否可接受。
+5. 若结果不理想，能给出下一步调参或替代路线，而不是停留在模糊描述。

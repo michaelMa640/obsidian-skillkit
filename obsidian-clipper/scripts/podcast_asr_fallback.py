@@ -1,6 +1,7 @@
 import argparse
 import json
 import os
+import platform
 import re
 import site
 import sys
@@ -152,6 +153,24 @@ def require_cuda_runtime(device: str) -> None:
         )
 
 
+def require_mlx_runtime(device: str) -> None:
+    requested_device = str(device).strip().lower()
+    if requested_device not in {"mps", "metal", "cpu"}:
+        raise RuntimeError("MLX Whisper only supports mps/metal style execution on Apple Silicon.")
+    if sys.platform != "darwin":
+        raise RuntimeError("MLX Whisper requires macOS.")
+    if platform.machine().lower() != "arm64":
+        raise RuntimeError("MLX Whisper requires Apple Silicon (arm64).")
+
+    try:
+        import mlx.core as mx  # noqa: F401
+        import mlx_whisper  # noqa: F401
+    except ImportError as exc:
+        raise RuntimeError(
+            "mlx-whisper is not installed. Install mlx, mlx-whisper, and model dependencies in the active Python environment before enabling Mac local ASR."
+        ) from exc
+
+
 def build_converter(normalize_script: str) -> tuple[Any | None, str]:
     normalized = normalize_script.strip().lower()
     if normalized in {"", "none", "original", "raw"}:
@@ -218,6 +237,35 @@ def parse_mock_segments(transcript_raw: str, converter: Any | None) -> list[dict
             )
         )
     return segments
+
+
+def parse_segment_records(raw_segments: Any, converter: Any | None) -> tuple[list[dict[str, Any]], str]:
+    segments_payload: list[dict[str, Any]] = []
+    raw_lines: list[str] = []
+    if not isinstance(raw_segments, list):
+        return segments_payload, ""
+
+    for item in raw_segments:
+        if not isinstance(item, dict):
+            continue
+        raw_text = str(item.get("text", "")).strip()
+        if not raw_text:
+            continue
+        start = float(item.get("start", 0.0) or 0.0)
+        end = float(item.get("end", start) or start)
+        normalized_text = normalize_text(raw_text, converter)
+        segments_payload.append(
+            build_segment(
+                index=len(segments_payload),
+                start=start,
+                end=end,
+                raw_text=raw_text,
+                text=normalized_text,
+            )
+        )
+        raw_lines.append(f"{format_timestamp(start)} {raw_text}")
+
+    return segments_payload, "\n".join(raw_lines).strip()
 
 
 def build_result_payload(
@@ -335,6 +383,65 @@ def build_faster_whisper_result(
     return payload
 
 
+def build_mlx_whisper_result(
+    audio_path: str,
+    model_name: str,
+    language: str,
+    device: str,
+    compute_type: str,
+    normalize_script: str,
+) -> dict[str, Any]:
+    require_mlx_runtime(device)
+    try:
+        import mlx_whisper
+    except ImportError as exc:
+        raise RuntimeError(
+            "mlx-whisper is not installed. Install mlx, mlx-whisper, and model dependencies in the active Python environment before enabling Mac local ASR."
+        ) from exc
+
+    normalized_compute_type = str(compute_type).strip().lower()
+    use_fp16 = normalized_compute_type not in {"float32", "fp32"}
+    transcribe_kwargs: dict[str, Any] = {
+        "path_or_hf_repo": model_name,
+        "word_timestamps": False,
+        "fp16": use_fp16,
+    }
+    if language and language.lower() != "auto":
+        transcribe_kwargs["language"] = language
+
+    result = mlx_whisper.transcribe(audio_path, **transcribe_kwargs)
+    if not isinstance(result, dict):
+        raise RuntimeError("mlx-whisper returned an unexpected result payload.")
+
+    converter, normalization = build_converter(normalize_script)
+    segments_payload, transcript_raw = parse_segment_records(result.get("segments"), converter)
+    if not segments_payload:
+        raw_text = str(result.get("text", "")).strip()
+        if not raw_text:
+            raise RuntimeError("ASR finished without returning any transcript text.")
+        normalized_text = normalize_text(raw_text, converter)
+        segments_payload = [
+            build_segment(
+                index=0,
+                start=0.0,
+                end=0.0,
+                raw_text=raw_text,
+                text=normalized_text,
+            )
+        ]
+        transcript_raw = f"00:00 {raw_text}"
+
+    detected_language = str(result.get("language", "")).strip() or language
+    return build_result_payload(
+        provider="mlx-whisper",
+        model=model_name,
+        language=detected_language,
+        transcript_raw=transcript_raw,
+        segments=segments_payload,
+        normalization=normalization,
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Podcast ASR fallback runner.")
     parser.add_argument("--audio-path", required=True)
@@ -385,6 +492,15 @@ def main() -> int:
                 compute_type=str(args.compute_type),
                 beam_size=int(args.beam_size),
                 vad_filter=parse_bool(args.vad_filter),
+                normalize_script=str(args.normalize_script),
+            )
+        elif provider == "mlx-whisper":
+            payload = build_mlx_whisper_result(
+                audio_path=audio_path,
+                model_name=str(args.model),
+                language=str(args.language),
+                device=str(args.device),
+                compute_type=str(args.compute_type),
                 normalize_script=str(args.normalize_script),
             )
         else:

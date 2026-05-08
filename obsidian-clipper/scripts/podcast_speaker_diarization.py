@@ -2,6 +2,7 @@ import argparse
 import inspect
 import json
 import os
+import platform
 import re
 import sys
 import tempfile
@@ -28,6 +29,12 @@ DEFAULT_REFINEMENT_TURN_MIN_SECONDS = 1.2
 DEFAULT_REFINEMENT_WINDOW_SECONDS = 3.2
 DEFAULT_REFINEMENT_BATCH_SIZE = 24
 DEFAULT_REFINEMENT_MAX_TURNS = 600
+DEFAULT_REFINEMENT_LONG_AUDIO_MODE = "conservative"
+DEFAULT_REFINEMENT_LONG_AUDIO_THRESHOLD_SECONDS = 40 * 60
+DEFAULT_REFINEMENT_LONG_AUDIO_TURN_MIN_SECONDS = 1.8
+DEFAULT_REFINEMENT_LONG_AUDIO_WINDOW_SECONDS = 2.8
+DEFAULT_REFINEMENT_LONG_AUDIO_BATCH_SIZE = 8
+DEFAULT_REFINEMENT_LONG_AUDIO_MAX_TURNS = 180
 INVALID_NAME_TOKENS = {
     "大家",
     "大家好",
@@ -126,6 +133,39 @@ def require_cuda_runtime(device: str, component_name: str) -> None:
         )
 
 
+def require_torch_accelerator_runtime(device: str, component_name: str) -> str:
+    requested_device = string_value(device, default="").lower()
+    normalized_device = "mps" if requested_device == "metal" else requested_device
+    if normalized_device not in {"cuda", "mps"}:
+        raise RuntimeError(f"{component_name} only supports high-performance backends. --device must be cuda or mps.")
+
+    try:
+        import torch
+    except ImportError as exc:
+        raise RuntimeError(f"{component_name} requires torch in the active Python environment.") from exc
+
+    if normalized_device == "cuda":
+        if not torch.cuda.is_available():
+            raise RuntimeError(
+                f"{component_name} requires CUDA, but torch.cuda.is_available() is False in the active Python environment."
+            )
+        return "cuda"
+
+    if sys.platform != "darwin":
+        raise RuntimeError(f"{component_name} MPS mode requires macOS.")
+    if platform.machine().lower() != "arm64":
+        raise RuntimeError(f"{component_name} MPS mode requires Apple Silicon (arm64).")
+
+    mps_backend = getattr(getattr(torch, "backends", None), "mps", None)
+    if mps_backend is None:
+        raise RuntimeError(f"{component_name} requires a torch build with MPS support.")
+    if not bool(mps_backend.is_built()):
+        raise RuntimeError(f"{component_name} requires a torch build compiled with MPS support.")
+    if not bool(mps_backend.is_available()):
+        raise RuntimeError(f"{component_name} requires Apple Silicon MPS, but torch.backends.mps.is_available() is False.")
+    return "mps"
+
+
 def read_text(path: Path) -> str:
     encodings = ("utf-8-sig", "utf-8", "gb18030")
     last_error: Exception | None = None
@@ -193,6 +233,86 @@ def format_timestamp(seconds: float) -> str:
     if hours > 0:
         return f"{hours:02d}:{minutes:02d}:{secs:02d}"
     return f"{minutes:02d}:{secs:02d}"
+
+
+def estimate_audio_duration_seconds(segments: list[dict[str, Any]], turns: list[dict[str, Any]]) -> float:
+    segment_end = max((float_value(segment.get("end")) for segment in segments), default=0.0)
+    turn_end = max((float_value(turn.get("end")) for turn in turns), default=0.0)
+    return round(max(segment_end, turn_end, 0.0), 3)
+
+
+def resolve_refinement_runtime_settings(
+    *,
+    audio_duration_seconds: float,
+    refinement_turn_min_seconds: float,
+    refinement_window_seconds: float,
+    refinement_batch_size: int,
+    refinement_max_turns: int,
+    refinement_long_audio_mode: str,
+    refinement_long_audio_threshold_seconds: float,
+    refinement_long_audio_turn_min_seconds: float,
+    refinement_long_audio_window_seconds: float,
+    refinement_long_audio_batch_size: int,
+    refinement_long_audio_max_turns: int,
+) -> dict[str, Any]:
+    base_settings = {
+        "audio_duration_seconds": round(max(audio_duration_seconds, 0.0), 3),
+        "long_audio_mode": string_value(refinement_long_audio_mode, default=DEFAULT_REFINEMENT_LONG_AUDIO_MODE).lower(),
+        "long_audio_threshold_seconds": max(
+            float_value(refinement_long_audio_threshold_seconds, default=DEFAULT_REFINEMENT_LONG_AUDIO_THRESHOLD_SECONDS),
+            0.0,
+        ),
+        "turn_min_seconds": max(
+            float_value(refinement_turn_min_seconds, default=DEFAULT_REFINEMENT_TURN_MIN_SECONDS),
+            0.4,
+        ),
+        "window_seconds": max(
+            float_value(refinement_window_seconds, default=DEFAULT_REFINEMENT_WINDOW_SECONDS),
+            0.8,
+        ),
+        "batch_size": max(
+            int_value(refinement_batch_size, default=DEFAULT_REFINEMENT_BATCH_SIZE),
+            1,
+        ),
+        "max_turns": max(
+            int_value(refinement_max_turns, default=DEFAULT_REFINEMENT_MAX_TURNS),
+            1,
+        ),
+        "long_audio_applied": False,
+    }
+
+    long_audio_mode = string_value(refinement_long_audio_mode, default=DEFAULT_REFINEMENT_LONG_AUDIO_MODE).lower()
+    long_audio_threshold_seconds = max(
+        float_value(refinement_long_audio_threshold_seconds, default=DEFAULT_REFINEMENT_LONG_AUDIO_THRESHOLD_SECONDS),
+        0.0,
+    )
+    if long_audio_mode in {"off", "disabled", "none"}:
+        return base_settings
+    if long_audio_threshold_seconds <= 0:
+        return base_settings
+    if audio_duration_seconds < long_audio_threshold_seconds:
+        return base_settings
+
+    return {
+        **base_settings,
+        "long_audio_applied": True,
+        "turn_min_seconds": max(
+            float_value(refinement_long_audio_turn_min_seconds, default=DEFAULT_REFINEMENT_LONG_AUDIO_TURN_MIN_SECONDS),
+            0.4,
+        ),
+        "window_seconds": max(
+            float_value(refinement_long_audio_window_seconds, default=DEFAULT_REFINEMENT_LONG_AUDIO_WINDOW_SECONDS),
+            0.8,
+        ),
+        "batch_size": max(
+            int_value(refinement_long_audio_batch_size, default=DEFAULT_REFINEMENT_LONG_AUDIO_BATCH_SIZE),
+            1,
+        ),
+        "max_turns": max(
+            int_value(refinement_long_audio_max_turns, default=DEFAULT_REFINEMENT_LONG_AUDIO_MAX_TURNS),
+            1,
+        ),
+    }
 
 
 def join_text_parts(left: str, right: str) -> str:
@@ -1829,6 +1949,13 @@ def refine_turns_with_embeddings(
     refinement_window_seconds: float,
     refinement_batch_size: int,
     refinement_max_turns: int,
+    refinement_long_audio_mode: str,
+    refinement_long_audio_threshold_seconds: float,
+    refinement_long_audio_turn_min_seconds: float,
+    refinement_long_audio_window_seconds: float,
+    refinement_long_audio_batch_size: int,
+    refinement_long_audio_max_turns: int,
+    audio_duration_seconds: float,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     strategy = string_value(refinement_strategy, default=DEFAULT_REFINEMENT_STRATEGY).lower()
     if strategy not in {"embedding_agglomerative", "embedding_refine"}:
@@ -1840,11 +1967,25 @@ def refine_turns_with_embeddings(
     if len(original_speaker_ids) < 2:
         return turns, {"enabled": False, "status": "skipped_not_enough_original_speakers", "strategy": strategy}
 
+    runtime_settings = resolve_refinement_runtime_settings(
+        audio_duration_seconds=audio_duration_seconds,
+        refinement_turn_min_seconds=refinement_turn_min_seconds,
+        refinement_window_seconds=refinement_window_seconds,
+        refinement_batch_size=refinement_batch_size,
+        refinement_max_turns=refinement_max_turns,
+        refinement_long_audio_mode=refinement_long_audio_mode,
+        refinement_long_audio_threshold_seconds=refinement_long_audio_threshold_seconds,
+        refinement_long_audio_turn_min_seconds=refinement_long_audio_turn_min_seconds,
+        refinement_long_audio_window_seconds=refinement_long_audio_window_seconds,
+        refinement_long_audio_batch_size=refinement_long_audio_batch_size,
+        refinement_long_audio_max_turns=refinement_long_audio_max_turns,
+    )
+
     candidates = build_refinement_turn_windows(
         turns=turns,
-        window_seconds=refinement_window_seconds,
-        min_turn_seconds=refinement_turn_min_seconds,
-        max_turns=refinement_max_turns,
+        window_seconds=float_value(runtime_settings.get("window_seconds"), default=DEFAULT_REFINEMENT_WINDOW_SECONDS),
+        min_turn_seconds=float_value(runtime_settings.get("turn_min_seconds"), default=DEFAULT_REFINEMENT_TURN_MIN_SECONDS),
+        max_turns=int_value(runtime_settings.get("max_turns"), default=DEFAULT_REFINEMENT_MAX_TURNS),
     )
     if len(candidates) < expected_speaker_count:
         return turns, {
@@ -1858,7 +1999,7 @@ def refine_turns_with_embeddings(
         pipeline=pipeline,
         audio_input=audio_input,
         candidates=candidates,
-        batch_size=refinement_batch_size,
+        batch_size=int_value(runtime_settings.get("batch_size"), default=DEFAULT_REFINEMENT_BATCH_SIZE),
     )
     vectors = [item.get("embedding") or [] for item in embedded_candidates if item.get("embedding")]
     if len(vectors) < expected_speaker_count:
@@ -1909,11 +2050,13 @@ def refine_turns_with_embeddings(
         "enabled": True,
         "status": "applied",
         "strategy": strategy,
+        "audio_duration_seconds": round(max(audio_duration_seconds, 0.0), 3),
         "candidate_turn_count": len(candidates),
         "embedded_turn_count": len(labeled_candidates),
         "expected_speaker_count": expected_speaker_count,
         "original_speaker_count": len(original_speaker_ids),
         "fallback_reassigned_count": fallback_reassigned_count,
+        "runtime_settings": runtime_settings,
         "cluster_mapping": [
             {
                 "cluster_label": int(label),
@@ -1950,7 +2093,7 @@ def run_mock_provider(mock_path: str) -> list[dict[str, Any]]:
 
 
 def load_pyannote_pipeline(model_name: str, token_env: str, device: str):
-    require_cuda_runtime(device, "Pyannote diarization")
+    runtime_device = require_torch_accelerator_runtime(device, "Pyannote diarization")
 
     try:
         from pyannote.audio import Pipeline
@@ -1962,7 +2105,7 @@ def load_pyannote_pipeline(model_name: str, token_env: str, device: str):
     if not token:
         raise RuntimeError(f"Environment variable {token_env or 'HF_TOKEN'} is required for pyannote diarization.")
 
-    requested_model = model_name or "pyannote/speaker-diarization-3.1"
+    requested_model = model_name or "pyannote/speaker-diarization-community-1"
     local_snapshot_path = find_huggingface_snapshot_path(requested_model)
     model_source = local_snapshot_path if has_value(local_snapshot_path) else requested_model
 
@@ -1975,7 +2118,7 @@ def load_pyannote_pipeline(model_name: str, token_env: str, device: str):
             pipeline_kwargs["use_auth_token"] = token
 
     pipeline = Pipeline.from_pretrained(model_source, **pipeline_kwargs)
-    pipeline.to(torch.device("cuda"))
+    pipeline.to(torch.device(runtime_device))
     return pipeline
 
 
@@ -2203,6 +2346,12 @@ def main() -> int:
     parser.add_argument("--refinement-window-seconds", type=float, default=DEFAULT_REFINEMENT_WINDOW_SECONDS)
     parser.add_argument("--refinement-batch-size", type=int, default=DEFAULT_REFINEMENT_BATCH_SIZE)
     parser.add_argument("--refinement-max-turns", type=int, default=DEFAULT_REFINEMENT_MAX_TURNS)
+    parser.add_argument("--refinement-long-audio-mode", default=DEFAULT_REFINEMENT_LONG_AUDIO_MODE)
+    parser.add_argument("--refinement-long-audio-threshold-seconds", type=float, default=DEFAULT_REFINEMENT_LONG_AUDIO_THRESHOLD_SECONDS)
+    parser.add_argument("--refinement-long-audio-turn-min-seconds", type=float, default=DEFAULT_REFINEMENT_LONG_AUDIO_TURN_MIN_SECONDS)
+    parser.add_argument("--refinement-long-audio-window-seconds", type=float, default=DEFAULT_REFINEMENT_LONG_AUDIO_WINDOW_SECONDS)
+    parser.add_argument("--refinement-long-audio-batch-size", type=int, default=DEFAULT_REFINEMENT_LONG_AUDIO_BATCH_SIZE)
+    parser.add_argument("--refinement-long-audio-max-turns", type=int, default=DEFAULT_REFINEMENT_LONG_AUDIO_MAX_TURNS)
     args = parser.parse_args()
 
     audio_path = Path(args.audio_path).resolve()
@@ -2269,7 +2418,7 @@ def main() -> int:
                 string_value(args.device),
                 expected_speaker_count,
             )
-            model_name = string_value(args.model, default="pyannote/speaker-diarization-3.1")
+            model_name = string_value(args.model, default="pyannote/speaker-diarization-community-1")
         elif provider == "whisperx":
             turns = run_whisperx_provider(
                 str(audio_path),
@@ -2287,6 +2436,7 @@ def main() -> int:
             "status": "disabled",
         }
         if refinement_enabled and provider == "pyannote" and pipeline is not None and audio_input is not None:
+            audio_duration_seconds = estimate_audio_duration_seconds(segments=segments, turns=turns)
             turns, refinement_summary = refine_turns_with_embeddings(
                 turns=turns,
                 pipeline=pipeline,
@@ -2297,6 +2447,13 @@ def main() -> int:
                 refinement_window_seconds=float_value(args.refinement_window_seconds, default=DEFAULT_REFINEMENT_WINDOW_SECONDS),
                 refinement_batch_size=int_value(args.refinement_batch_size, default=DEFAULT_REFINEMENT_BATCH_SIZE),
                 refinement_max_turns=int_value(args.refinement_max_turns, default=DEFAULT_REFINEMENT_MAX_TURNS),
+                refinement_long_audio_mode=string_value(args.refinement_long_audio_mode, default=DEFAULT_REFINEMENT_LONG_AUDIO_MODE),
+                refinement_long_audio_threshold_seconds=float_value(args.refinement_long_audio_threshold_seconds, default=DEFAULT_REFINEMENT_LONG_AUDIO_THRESHOLD_SECONDS),
+                refinement_long_audio_turn_min_seconds=float_value(args.refinement_long_audio_turn_min_seconds, default=DEFAULT_REFINEMENT_LONG_AUDIO_TURN_MIN_SECONDS),
+                refinement_long_audio_window_seconds=float_value(args.refinement_long_audio_window_seconds, default=DEFAULT_REFINEMENT_LONG_AUDIO_WINDOW_SECONDS),
+                refinement_long_audio_batch_size=int_value(args.refinement_long_audio_batch_size, default=DEFAULT_REFINEMENT_LONG_AUDIO_BATCH_SIZE),
+                refinement_long_audio_max_turns=int_value(args.refinement_long_audio_max_turns, default=DEFAULT_REFINEMENT_LONG_AUDIO_MAX_TURNS),
+                audio_duration_seconds=audio_duration_seconds,
             )
         elif refinement_enabled:
             refinement_summary = {
